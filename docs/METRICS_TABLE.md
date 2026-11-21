@@ -49,9 +49,13 @@ Source: `src/transport/nr-ingest.ts`, `src/core/harvest/harvest-scheduler.ts`, `
 
 ## Schema Versioning
 
-Every NR event type except `NrAiObserveSetupCheck` carries an `event_version` field (currently `1`). Within a version, changes are additive only: new attributes may appear, existing ones keep name and meaning. A rename, removal, or semantic change bumps the version. A fix that stops sending private data, or that corrects a value that was wrong, keeps the version and is called out in the CHANGELOG. Consumers should tolerate unknown attributes and may branch on `event_version` in NRQL.
+Every NR event type except `NrAiObserveSetupCheck` carries an `event_version` field (currently `1`). Within a version, changes are additive only: new attributes may appear, existing ones keep name and meaning. A rename, removal, or semantic change bumps the version. The exception is an attribute the [unit of agent work schema](./UNIT_OF_WORK_SCHEMA.md#stable-attributes-bump-the-schema-version-and-experimental-ones-do-not) marks experimental, which can change under a `minor` changeset with no bump. A fix that stops sending private data, or that corrects a value that was wrong, keeps the version and is called out in the CHANGELOG. Consumers should tolerate unknown attributes and may branch on `event_version` in NRQL.
 
 `timestamp` is Unix epoch milliseconds on every event that has one, except `AiAuditEvent` and `SecurityAlert`, which use epoch seconds. Keep that in mind when joining them to `AiToolCall` by time.
+
+## Unit of Agent Work
+
+The [unit of agent work schema](./UNIT_OF_WORK_SCHEMA.md) is a versioned view over these events. It describes one skill run, slash command, or subagent invocation, marks each attribute stable or experimental, and states where a field has no source. It also has NRQL recipes for skill usage, cost per run, and before-and-after comparisons.
 
 ---
 
@@ -122,7 +126,7 @@ Bash tool calls additionally carry four classifier fields:
 - `bashDestructive` — `true` for recursive rm, force-push, dd, mkfs, drop/truncate, chmod 777, pipe-to-shell, etc. (`--force-with-lease` and `--force-if-includes` are NOT flagged)
 - `bashNetwork` — `true` when the leading command is a network client (curl/wget/ssh/...)
 
-Source: `src/hooks/bash-classifier.ts` — `classifyBash()`, assigned onto the record by `parseBash()` in `src/hooks/tool-parsers.ts`
+Source: `src/hooks/bash-classifier.ts` — `classifyBash()`, assigned onto the record by `parseBash()` in `src/hooks/tool-parsers.ts`. The collector classifies the raw command before redacting it and stores only `bashDestructive` and `bashNetwork` beside the redacted command, so a redaction cannot hide a destructive call. Events from an older collector carry neither flag, and `parseBash()` then classifies the stored text.
 
 #### `AiMcpToolCall`
 
@@ -456,7 +460,7 @@ Emitted for each `Agent`-tool run (`run_source: "agent_tool"`) when the call end
 | ------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `subagent_type`     | string  | Subagent type requested (empty string if none)                                                                                                                                                                                                        |
 | `agent_name`        | string  | Agent name (empty string if none)                                                                                                                                                                                                                     |
-| `agent_model`       | string  | Model the agent ran on (empty string if unknown)                                                                                                                                                                                                      |
+| `agent_model`       | string  | The `Agent` call's `model` input (empty string if it set none)                                                                                                                                                                                        |
 | `agent_description` | string  | **Redacted free text.** The user-supplied `Agent` tool prompt/description, passed through the same credential-pattern redaction as `AiToolCall.command`. Truncated to 256 characters before redaction. User-authored — not a fixed/declarative value. |
 | `run_in_background` | boolean | Whether the agent ran in background mode                                                                                                                                                                                                              |
 | `tool_call_count`   | number  | Tool calls recorded for the spawned subagent until the `Agent` call returns. A resumed subagent also counts calls left from earlier calls. Usually `0` on a background run or a timed-out row.                                                        |
@@ -548,7 +552,7 @@ Source: `src/transport/nr-ingest.ts` — `retryAlertToNrEvent()`
 
 **What it is:** The token cost of each assistant turn, attributed down to the individual tool call (an even share of the turn) and, when a skill is running, to that skill. Where `AiToolCall` shows what the assistant did, this event shows what it cost. Use it to find which tools or skills drive spend, and join it to `AiToolCall` on `tool_use_id` for per-call detail.
 
-Emitted for each tool call in an attributed turn (in `--stdio` mode, only for token reports that belong to this process's own session), carrying the turn's cost and tokens split evenly across the calls, and once for each token report no tool call claimed (a response row). `tool_use_id` cross-references the call's `AiToolCall` row. Every call inside a skill run carries `skill_name`, and so does a response row for a report that arrives while a run is open, so `sum(cost_usd) FACET skill_name` is the full cost of the work each skill drove, including a text-only run's.
+Emitted for each tool call in an attributed turn (in `--stdio` mode, only for token reports that belong to this process's own session), carrying the turn's cost and tokens split evenly across the calls, and once for each token report no tool call claimed (a response row). `tool_use_id` cross-references the call's `AiToolCall` row. Every call inside a skill run carries `skill_name`, and so does a response row for a report that arrives while a run is open, so `sum(cost_usd) FACET skill_name` is the full cost of the work each skill drove, including a text-only run's. It leaves out subagent spend. See the [unit of agent work schema](./UNIT_OF_WORK_SCHEMA.md#the-existing-events-leave-these-gaps).
 
 | Field                   | Type   | Description                                                                                                                                                                                                                            |
 | ----------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -579,7 +583,7 @@ Emitted for each tool call in an attributed turn (in `--stdio` mode, only for to
 | `org_id`                | string | Organization identifier (if configured)                                                                                                                                                                                                |
 | `cost_authority`        | string | `"external"` only when `companionMode` is true and the turn was stamped `claude-code` by the platform that reported it; omitted otherwise. A row can show `platform` `claude-code` from the default and still have no `cost_authority` |
 
-Rows come in two shapes. A tool row has `tool` and `tool_use_id` and measures the usage of the model response that followed the turn, split evenly across the turn's calls, the same approximation `nr_observe_get_cost_per_tool` reports. A response row has `turn_tool_call_count: 0` and no `tool`, `tool_use_id`, or `skill_name`. It is a token report no tool call claimed, such as the first response after a prompt (the one that asks for the tools), and carries that response's whole cost. `sum(cost_usd)` covers every main-agent response, so per-tool queries need `WHERE tool IS NOT NULL`. Rows come from watcher-sourced token events only, never from `nr_observe_report_tokens` calls. Every row of a turn shares the turn's end `timestamp`, so a timeseries of this event spikes at turn boundaries rather than tracing per-call timing. Replayed token events are deduplicated by `(session_id, message_id)` before attribution, so a turn closes once and produces its rows once.
+Rows come in two shapes. A tool row has `tool` and `tool_use_id` and measures the usage of the model response that followed the turn, split evenly across the turn's calls, the same approximation `nr_observe_get_cost_per_tool` reports. A response row has `turn_tool_call_count: 0` and no `tool` or `tool_use_id`. When its report is read while the main agent has a skill run open, it carries that run's `skill_name`, `skill_source`, `skill_run_id`, plus `skill_parent_run_id` when the run has a parent. It is a token report no tool call claimed, such as the first response after a prompt (the one that asks for the tools), and carries that response's whole cost. `sum(cost_usd)` covers every main-agent response, so per-tool queries need `WHERE tool IS NOT NULL`. Rows come from watcher-sourced token events only, never from `nr_observe_report_tokens` calls. Every row of a turn shares the turn's end `timestamp`, so a timeseries of this event spikes at turn boundaries rather than tracing per-call timing. Replayed token events are deduplicated by `(session_id, message_id)` before attribution, so a turn closes once and produces its rows once.
 
 Source: `src/transport/nr-ingest.ts` — `turnCostToNrEvents()` and `ingestTurnCost()`
 
@@ -607,6 +611,48 @@ Emitted once, when a skill run opens, for every run. A run opens on a named `Ski
 | `org_id`              | string | Organization identifier (if configured)                                                                            |
 
 Source: `src/transport/nr-ingest.ts` — `skillRunToNrEvent()` and `ingestSkillRun()`
+
+#### `AiWorkUnit`
+
+**What it is:** One record for each skill run once it ends, with its cost, tokens and wall-clock duration. It is the one row to read for what a skill run cost and how long it took. Use it for cost per run and duration per run by skill, and to compare a skill before and after a rewrite.
+
+Emitted once per run, after the run closes and the token reports for its tool calls have arrived. A run closes at the next prompt in its session, or when the agent that opened it opens another skill. If a token report never comes, the row waits until a later report arrives more than 10 minutes after the close, then goes out with what it has. When Preflight shuts down, it sends every run it still holds, including runs still open. Runs live only in memory, so a crash or `SIGKILL` loses every open run and every closed run still waiting for a token report. A session's last run has no next prompt, so a long-lived `--local` daemon sends it only at shutdown, or when the daemon holds 256 runs and sends the oldest closed one. With none closed it sends the oldest open run, so that row is partial and the run's later calls are on `AiTurnCost` only. A `--stdio` engine holds other sessions' runs until that cap too, because it drops them only when it sends. `unit_kind` is `skill_run` for every row today. A skill run that a subagent opens has a row, but a subagent invocation itself has none yet.
+
+Cost and tokens are the sums of the run's `AiTurnCost` tool rows, so they cover the run's tool calls and keep the same gaps. A reply's cost, the text a skill responds with, is on `AiTurnCost` response rows that carry the run's `skill_name` and is not counted here. So this row's cost can be lower than the run's `AiTurnCost` sum by the reply's cost, and a text-only run reads 0 here while its cost is on `AiTurnCost`. A subagent's own spend stays on `AiSubagentTurn`. A subagent can keep stamping a run after the prompt that closed it. Those calls count only while the row still waits for a token report, so this row can miss them, and its `tool_call_count` and `duration_ms` then depend on report latency. A `--stdio` run that starts before the engine resolves its session id still gets this row, but its `AiSkillRun` and `AiTurnCost` rows from that window are dropped, so this row has cost those rows miss. To roll a session up with `AiSubagentTurn`, key this event on `session_id`, not `parent_session_id`.
+
+| Field                   | Type   | Description                                                                                                                            |
+| ----------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `eventType`             | string | Always `"AiWorkUnit"`                                                                                                                  |
+| `event_version`         | number | Always `1`                                                                                                                             |
+| `timestamp`             | number | Unix epoch milliseconds when the run ended                                                                                             |
+| `unit_kind`             | string | Always `skill_run`                                                                                                                     |
+| `skill_name`            | string | Skill whose run this is (redacted, as on `AiToolCall`)                                                                                 |
+| `skill_source`          | string | `tool` or `slash`                                                                                                                      |
+| `skill_run_id`          | string | Matches `skill_run_id` on the run's `AiSkillRun`, `AiToolCall` and `AiTurnCost` rows                                                   |
+| `skill_parent_run_id`   | string | The run that was open when this one started; absent when none was                                                                      |
+| `started_at`            | number | Unix epoch milliseconds when the run opened, the same as its `AiSkillRun` `timestamp`                                                  |
+| `duration_ms`           | number | From open to the run's last activity: its last tool call's end, its turn's `Stop` for a main-agent run, or the next skill in its agent |
+| `cost_usd`              | number | Sum of `cost_usd` on the run's `AiTurnCost` tool rows                                                                                  |
+| `input_tokens`          | number | Sum of the same rows' `input_tokens`; fractional, like each share                                                                      |
+| `output_tokens`         | number | Sum of the same rows' `output_tokens`                                                                                                  |
+| `cache_read_tokens`     | number | Sum of the same rows' `cache_read_tokens`                                                                                              |
+| `cache_creation_tokens` | number | Sum of the same rows' `cache_creation_tokens`                                                                                          |
+| `tool_call_count`       | number | Tool calls made inside the run                                                                                                         |
+| `priced_call_count`     | number | Of those, the calls whose turn got a token report; lower than `tool_call_count` means `cost_usd` is missing a share                    |
+| `session_id`            | string | Session the run belongs to; falls back to the engine's session when the run has none                                                   |
+| `agent_id`              | string | Subagent that opened the run; absent when the main agent did                                                                           |
+| `parent_session_id`     | string | Equals `session_id` when set, since a subagent shares its parent's session; absent for a main-agent run                                |
+| `developer`             | string | Developer identifier                                                                                                                   |
+| `app_name`              | string | Application name                                                                                                                       |
+| `platform`              | string | Platform of the call that opened the run, else of its first priced turn; `"claude-code"` when neither has one                          |
+| `team_id`               | string | User-defined team label (if configured)                                                                                                |
+| `project_id`            | string | Project identifier (if configured)                                                                                                     |
+| `org_id`                | string | Organization identifier (if configured)                                                                                                |
+| `cost_authority`        | string | `"external"` only when `companionMode` is true and the run's platform was stamped `claude-code`; omitted otherwise                     |
+
+Cost and duration per run by skill: `FROM AiWorkUnit SELECT average(cost_usd), percentile(duration_ms, 50, 90), count(*) FACET skill_name SINCE 30 days ago`.
+
+Source: `src/metrics/skill-run-ledger.ts` and `src/transport/nr-ingest.ts`, `workUnitToNrEvent()` and `ingestWorkUnit()`
 
 ### Setup Validation
 

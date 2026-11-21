@@ -17,7 +17,6 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
-  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -25,6 +24,7 @@ import {
 import { randomBytes } from 'node:crypto';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { createLogger } from '../core/index.js';
+import { renameIntoPlace } from './rename-into-place.js';
 import { redactIdentifier, redactSensitive } from '../config.js';
 import { stripRepoNameCredentials } from '../lib/git-remote.js';
 import { isSyntheticSessionId, type SessionNameSource } from '../hooks/session-resolver.js';
@@ -66,6 +66,7 @@ import type { EfficiencyScorer, EfficiencyScoreComponents } from '../metrics/eff
 import type { TranscriptMessageTracker } from '../metrics/transcript-message-tracker.js';
 import type { SessionOutcomeRecord } from '../metrics/instruction-drift-tracker.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
+import { parsePrRepo } from '../metrics/pr-ref.js';
 import {
   ToolSelectionScorer,
   toToolSelectionSummary,
@@ -506,6 +507,17 @@ function mergeTimeline(
     : merged;
 }
 
+/** The tool name of each call a saved timeline holds with a toolUseId, keyed by that id. */
+export function savedToolNameByUseId(
+  summary: Pick<FullSessionSummary, 'timeline'> | null | undefined,
+): Map<string, string> {
+  const byId = new Map<string, string>();
+  for (const entry of summary?.timeline ?? []) {
+    if (entry.toolUseId) byId.set(entry.toolUseId, entry.toolName);
+  }
+  return byId;
+}
+
 /** Exact-only (non-byte-estimated) share of the cost and token totals. */
 export interface ExactTotals {
   readonly costUsd: number;
@@ -807,8 +819,13 @@ export function mergeSummaries(
       : existing.toolSelectionMetrics;
 
   const timeline = mergeTimeline(existing.timeline, incoming.timeline);
+  // An owner's completed yields only to an in-progress checkpoint stamped
+  // after it: the aggregator stamps last activity and an engine stamps its
+  // own wall clock, so either can pass a completion only on a real resume.
   const outcomeSource =
-    existing.outcome === 'completed' && existing.observerCompletedAt === undefined
+    existing.outcome === 'completed' &&
+    existing.observerCompletedAt === undefined &&
+    !(incoming.outcome === 'in progress' && incoming.endTime > existing.endTime)
       ? existing
       : incoming;
 
@@ -1472,6 +1489,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     skillName: tc.toolName === 'Skill' && tc.skillName ? tc.skillName : undefined,
     agentType: tc.toolName === 'Agent' && tc.agentType ? tc.agentType : undefined,
     createdPrNumber: tc.createdPrNumber,
+    createdPrRepo: parsePrRepo(tc.createdPrRepo),
     mcpPrNumber: tc.mcpPrNumber,
     mcpPrRepo: tc.mcpPrRepo,
     runInBackground: tc.runInBackground === true || undefined,
@@ -2159,6 +2177,7 @@ export function deserializeFullSessionSummary(
               typeof e.createdPrNumber === 'string' && /^\d{1,9}$/.test(e.createdPrNumber)
                 ? e.createdPrNumber
                 : undefined,
+            createdPrRepo: parsePrRepo(e.createdPrRepo),
             mcpPrNumber:
               typeof e.mcpPrNumber === 'string' && /^\d{1,9}$/.test(e.mcpPrNumber)
                 ? e.mcpPrNumber
@@ -2310,42 +2329,6 @@ function hasCorruptCopy(file: SessionFileRead): boolean {
     } catch {
       return false;
     }
-  });
-}
-
-const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
-const RENAME_BACKOFF_MS = [10, 20, 40, 80];
-const SLEEP_CELL = new Int32Array(new SharedArrayBuffer(4));
-
-/**
- * Windows refuses to rename over a file another process has open, which
- * antivirus scanners do briefly after each write. Retry with backoff, then
- * write the target directly so saves never silently stop.
- */
-function renameIntoPlace(tmpPath: string, filepath: string, content: string): void {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      renameSync(tmpPath, filepath);
-      return;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code ?? '';
-      if (!RENAME_RETRY_CODES.has(code)) throw err;
-      if (process.platform !== 'win32' || attempt === RENAME_BACKOFF_MS.length) break;
-      Atomics.wait(SLEEP_CELL, 0, 0, RENAME_BACKOFF_MS[attempt]);
-    }
-  }
-  try {
-    writeFileSync(filepath, content, { mode: 0o600 });
-  } catch (err) {
-    warnOnce(
-      `rename-failed:${filepath}`,
-      'Could not rename session file into place and the direct write failed too',
-      { file: basename(filepath), error: err instanceof Error ? err.message : String(err) },
-    );
-    throw err;
-  }
-  warnOnce(`rename:${filepath}`, 'Could not rename session file into place; wrote it directly', {
-    file: basename(filepath),
   });
 }
 

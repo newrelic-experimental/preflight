@@ -234,6 +234,83 @@ describe('api-handler GET /api/sessions', () => {
     expect(ids).toEqual(['chat-only', 'tools']);
   });
 
+  describe('ids filter', () => {
+    const makeHandler = () => {
+      const fakeSessions = Array.from({ length: 120 }, (_v, i) => ({
+        sessionId: `sess-${i}`,
+        toolCallCount: i + 1,
+      }));
+      return createApiHandler({
+        sessionStore: {
+          loadTodaySessions: () => [],
+          listSessions: () => fakeSessions,
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+    };
+
+    it('returns a session outside the newest page when requested by id', async () => {
+      const req = { method: 'GET', url: '/api/sessions?ids=sess-0' } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeHandler()(req, res);
+      const result = JSON.parse(body()) as Array<{ sessionId: string }>;
+      expect(result.map((s) => s.sessionId)).toEqual(['sess-0']);
+    });
+
+    it('returns every requested session even past the default limit of 50', async () => {
+      const ids = Array.from({ length: 80 }, (_v, i) => `sess-${i}`);
+      const req = { method: 'GET', url: `/api/sessions?ids=${ids.join(',')}` } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeHandler()(req, res);
+      const result = JSON.parse(body()) as Array<{ sessionId: string }>;
+      expect(result).toHaveLength(80);
+    });
+
+    it('returns an empty list for an unknown id', async () => {
+      const req = { method: 'GET', url: '/api/sessions?ids=nope' } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeHandler()(req, res);
+      expect(JSON.parse(body())).toEqual([]);
+    });
+
+    const makeLiveHandler = () =>
+      createApiHandler({
+        sessionStore: {
+          loadTodaySessions: () => [],
+          listSessions: () => [{ sessionId: 'sess-0', toolCallCount: 1 }],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+        sessionTracker: {
+          getMetrics: () => ({
+            sessionId: 'live-session',
+            sessionName: null,
+            sessionStartTime: 1000,
+            sessionDurationMs: 500,
+            toolCallCount: 3,
+          }),
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+      });
+
+    it('leaves out the live session when its id is not requested', async () => {
+      const req = { method: 'GET', url: '/api/sessions?ids=sess-0' } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeLiveHandler()(req, res);
+      const result = JSON.parse(body()) as Array<{ sessionId: string }>;
+      expect(result.map((s) => s.sessionId)).toEqual(['sess-0']);
+    });
+
+    it('includes the live session when its id is requested', async () => {
+      const req = {
+        method: 'GET',
+        url: '/api/sessions?ids=sess-0,live-session',
+      } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeLiveHandler()(req, res);
+      const result = JSON.parse(body()) as Array<{ sessionId: string }>;
+      expect(result.map((s) => s.sessionId)).toEqual(['sess-0', 'live-session']);
+    });
+  });
+
   it('uses default limit of 50 when not specified', async () => {
     const fakeSessions = Array.from({ length: 100 }, (_v, i) => ({
       filename: `2026-05-${String(i + 1).padStart(2, '0')}_sess-${i}.json`,
@@ -470,6 +547,32 @@ describe('api-handler GET /api/sessions', () => {
     expect(status()).toBe(200);
     const result = JSON.parse(body()) as Array<{ sessionId: string }>;
     expect(result.some((s) => s.sessionId === 'other-process-session')).toBe(true);
+  });
+
+  it('omits unrequested live stub rows when filtering by ids', async () => {
+    const now = Date.now();
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadAllSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getLastActivity: () => null,
+        getSessionName: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['liveSessionRegistry'],
+      localStore: {
+        peekAllBuffers: () => [
+          { mode: 'post', sessionId: 'other-process-session', timestamp: now - 1_000 },
+        ],
+      } as unknown as Parameters<typeof createApiHandler>[0]['localStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions?ids=someone-else' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    expect(JSON.parse(body())).toEqual([]);
   });
 
   it('keeps a session in the list once it goes idle past the 3-minute live window', async () => {
@@ -2836,6 +2939,7 @@ describe('api-handler GET /api/usage-insights', () => {
             {
               ...sinceLastMidnight,
               estimatedCostUsd: 2,
+              toolCallCount: 1,
               durationMs: 0,
               subagentCostUsd: 0,
               tokensInput: 0,
@@ -2870,6 +2974,27 @@ describe('api-handler GET /api/usage-insights', () => {
     expect(result.windowDays).toBe(1);
     expect(result.sessionCount).toBe(1);
     expect(result.totalCostUsd).toBe(2);
+  });
+
+  it('window=today also loads older-dated session files modified since local midnight', async () => {
+    let receivedOpts: { since?: Date; includeModifiedSince?: Date } | undefined;
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: (opts?: { since?: Date; includeModifiedSince?: Date }) => {
+          receivedOpts = opts;
+          return [];
+        },
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/usage-insights?window=today' } as IncomingMessage;
+    const { res } = fakeRes();
+    await handler(req, res);
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    expect(receivedOpts?.includeModifiedSince?.getTime()).toBe(startOfToday.getTime());
   });
 
   it('window=today takes precedence over days, which stays unaffected when omitted', async () => {
@@ -4349,10 +4474,10 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
         endTime: startMs + 10_000,
         estimatedCostUsd: 10,
         timeline: [
-          { timestamp: startMs - 30 * 60 * 1000 },
-          { timestamp: startMs + 1_000 },
-          { timestamp: startMs + 2_000 },
-          { timestamp: startMs + 3_000 },
+          { timestamp: startMs - 30 * 60 * 1000, toolName: 'Read' },
+          { timestamp: startMs + 1_000, toolName: 'Read' },
+          { timestamp: startMs + 2_000, toolName: 'Read' },
+          { timestamp: startMs + 3_000, toolName: 'Read' },
         ],
       };
 
@@ -4399,9 +4524,9 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       costByDayUsd: { [olderKey]: 7, [todayKey]: 1.25 },
       antiPatterns: [{}, {}, {}],
       timeline: [
-        { timestamp: todayStart - 3 * 24 * 60 * 60 * 1000 },
-        { timestamp: todayStart - 24 * 60 * 60 * 1000 },
-        { timestamp: todayStart + 1_000 },
+        { timestamp: todayStart - 3 * 24 * 60 * 60 * 1000, toolName: 'Read' },
+        { timestamp: todayStart - 24 * 60 * 60 * 1000, toolName: 'Read' },
+        { timestamp: todayStart + 1_000, toolName: 'Read' },
       ],
     };
     const handler = createApiHandler({
@@ -4435,8 +4560,8 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       costByDayUsd: { [todayKey]: 2 },
       antiPatterns: [{}, {}],
       timeline: [
-        { timestamp: todayStart - 12 * 60 * 60 * 1000 },
-        { timestamp: todayStart + 1_000 },
+        { timestamp: todayStart - 12 * 60 * 60 * 1000, toolName: 'Read' },
+        { timestamp: todayStart + 1_000, toolName: 'Read' },
       ],
     };
     const handler = createApiHandler({
@@ -4794,6 +4919,7 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       repoName?: string;
       cwd?: string;
       createdPrNumber?: string;
+      createdPrRepo?: string;
       success?: boolean;
       runInBackground?: boolean;
     },
@@ -4812,6 +4938,7 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
           command,
           cwd: extra.cwd,
           createdPrNumber: extra.createdPrNumber,
+          createdPrRepo: extra.createdPrRepo,
           runInBackground: extra.runInBackground,
         },
       ],
@@ -4908,6 +5035,164 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
         mcpPrSession('creator', 10_000, { ...mcpCreate, mcpPrRepo: 'acme/app' }, root),
         mcpPrSession('merger', 20_000, { ...mcpMerge, mcpPrRepo: 'acme/other' }, root),
       ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    });
+  });
+
+  describe('two separate clones of one GitHub repo', () => {
+    let roots: string[];
+    const clone = (remote: string): string => {
+      const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pr-874-')));
+      const env = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
+      spawnSync('git', ['init', '-q'], { cwd: root, env, stdio: 'ignore' });
+      spawnSync('git', ['remote', 'add', 'origin', remote], { cwd: root, env, stdio: 'ignore' });
+      roots.push(root);
+      return root;
+    };
+    beforeEach(() => {
+      roots = [];
+    });
+    afterEach(() => {
+      for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
+    });
+    const create = { createdPrNumber: '42', createdPrRepo: 'acme/app' };
+
+    it('clears ready_for_review when the PR created in one clone is merged from the other', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const b = clone('git@github.com:Acme/App.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, ...create }),
+        prSession('merger', 20_000, 'gh pr merge 42 --squash', { cwd: b }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+      expect([...parsed.sessionStatus.sessionIds.completed].sort()).toEqual(['creator', 'merger']);
+    });
+
+    it('clears ready_for_review when the merge names the repo with -R from outside any clone', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, ...create }),
+        prSession('merger', 20_000, 'gh pr merge 42 -R acme/app', { cwd: os.tmpdir() }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    });
+
+    it('keeps ready_for_review when the other clone merges the same number in another repo', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const b = clone('https://github.com/acme/other.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, ...create }),
+        prSession('merger', 20_000, 'gh pr merge 42', { cwd: b }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    });
+
+    it('keeps ready_for_review when a merge in the same clone names another repo with -R', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, ...create }),
+        prSession('merger', 20_000, 'gh pr merge 42 -R acme/other', { cwd: a }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    });
+
+    it('keeps ready_for_review when a PR created against another repo shares a number with a merge in the same clone', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', {
+          cwd: a,
+          createdPrNumber: '42',
+          createdPrRepo: 'acme/upstream',
+        }),
+        prSession('merger', 20_000, 'gh pr merge 42', { cwd: a }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    });
+
+    it('clears ready_for_review when its own clone has several remotes and no default, so the merge has no repo', async () => {
+      const a = clone('https://github.com/fork/app.git');
+      const env = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
+      spawnSync('git', ['remote', 'add', 'upstream', 'https://github.com/acme/app.git'], {
+        cwd: a,
+        env,
+        stdio: 'ignore',
+      });
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, ...create }),
+        prSession('merger', 20_000, 'gh pr merge 42', { cwd: a }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    });
+
+    it('keeps ready_for_review for a create saved before its repo was recorded', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const b = clone('https://github.com/acme/app.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, createdPrNumber: '42' }),
+        prSession('merger', 20_000, 'gh pr merge 42', { cwd: b }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    });
+
+    it('still clears a create saved before its repo was recorded when its own clone merges it', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, createdPrNumber: '42' }),
+        prSession('merger', 20_000, 'gh pr merge 42', { cwd: a }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    });
+  });
+
+  describe('sessions that started before today', () => {
+    const statusWithEarlierSessions = async (
+      today: unknown[],
+      withActivityToday: unknown[],
+    ): Promise<SessionStatusPayload> => {
+      const handler = createApiHandler({
+        localStore: { peekAllBuffers: () => [] },
+        sessionStore: {
+          loadTodaySessions: () => today,
+          loadSessionsWithActivityToday: () => withActivityToday,
+          listSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+      const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await handler(req, res);
+      return JSON.parse(body()) as SessionStatusPayload;
+    };
+    const startedYesterday = <T extends { timeline: object[] }>(session: T) => {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      const startTime = startOfDay.getTime() - 3_600_000;
+      return { ...session, startTime, endTime: 0 };
+    };
+
+    it("clears ready_for_review when a session that started yesterday merges today's PR", async () => {
+      const creator = prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+        createdPrRepo: 'acme/app',
+      });
+      const merger = startedYesterday(
+        prSession('merger', 20_000, 'gh pr merge 42 -R acme/app', { repoName: 'acme/app' }),
+      );
+      const parsed = await statusWithEarlierSessions([creator], [creator, merger]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+      expect([...parsed.sessionStatus.sessionIds.completed].sort()).toEqual(['creator', 'merger']);
+    });
+
+    it('marks a session that started yesterday and opened a PR today as ready_for_review', async () => {
+      const creator = startedYesterday(
+        prSession('creator', 10_000, 'gh pr create --fill', {
+          repoName: 'acme/app',
+          createdPrNumber: '42',
+          createdPrRepo: 'acme/app',
+        }),
+      );
+      const parsed = await statusWithEarlierSessions([], [creator]);
       expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
     });
   });

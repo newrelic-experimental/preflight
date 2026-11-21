@@ -3705,6 +3705,7 @@ describe('buildSessionSummary timeline', () => {
                 success: true,
                 command: 'gh pr create --fill',
                 createdPrNumber: '42',
+                createdPrRepo: 'acme/app',
                 runInBackground: true,
               },
               {
@@ -3731,7 +3732,10 @@ describe('buildSessionSummary timeline', () => {
     });
 
     expect(summary.timeline).toHaveLength(4);
-    expect(summary.timeline![2]!.createdPrNumber).toBe('42');
+    expect(summary.timeline![2]).toMatchObject({
+      createdPrNumber: '42',
+      createdPrRepo: 'acme/app',
+    });
     expect(summary.timeline![3]).toMatchObject({ mcpPrNumber: '42', mcpPrRepo: 'acme/app' });
     expect(summary.timeline![0]!.mcpPrNumber).toBeUndefined();
     expect(summary.timeline![0]!.mcpPrRepo).toBeUndefined();
@@ -3741,6 +3745,10 @@ describe('buildSessionSummary timeline', () => {
     store.saveSession(summary);
     const reloaded = store.loadSession(summary.sessionId);
     expect(reloaded!.timeline![3]).toMatchObject({ mcpPrNumber: '42', mcpPrRepo: 'acme/app' });
+    expect(reloaded!.timeline![2]).toMatchObject({
+      createdPrNumber: '42',
+      createdPrRepo: 'acme/app',
+    });
     expect(summary.timeline![0]!.createdPrNumber).toBeUndefined();
     expect(summary.timeline![2]!.runInBackground).toBe(true);
     expect(summary.timeline![0]!.runInBackground).toBeUndefined();
@@ -3799,6 +3807,33 @@ describe('SessionStore deserialization', () => {
     const session = store.loadSession('pr-num');
     expect(session!.timeline![0]!.createdPrNumber).toBe('42');
     expect(session!.timeline![1]!.createdPrNumber).toBeUndefined();
+  });
+
+  it('keeps a well-formed createdPrRepo on timeline entries, lowercased, and drops anything else', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const raw = JSON.stringify({
+      sessionId: 'pr-repo',
+      startTime: 1000,
+      endTime: 2000,
+      durationMs: 1000,
+      toolCallCount: 4,
+      developer: 'alice',
+      timeline: [
+        { timestamp: 1100, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 'Acme/App' },
+        { timestamp: 1200, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 'acme/app?x=1' },
+        { timestamp: 1300, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 'a/b/c' },
+        { timestamp: 1400, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 7 },
+      ],
+    });
+    writeFileSync(join(tmpDir, 'sessions', '2026-01-01_pr-repo.json'), raw + '\n');
+
+    const session = store.loadSession('pr-repo');
+    expect(session!.timeline!.map((e) => e.createdPrRepo)).toEqual([
+      'acme/app',
+      undefined,
+      undefined,
+      undefined,
+    ]);
   });
 
   it('keeps a GitHub MCP PR target on timeline entries and drops a malformed one', () => {
@@ -4215,6 +4250,85 @@ describe('saveSession cross-process merge', () => {
     expect(loaded?.toolCallCount).toBe(9);
     expect(loaded?.toolBreakdown).toEqual({ Bash: 9 });
   });
+
+  it("lets a resumed session's newer checkpoint replace a stale completed outcome", () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = 'cccc1111-2222-4333-8444-555566667777';
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        outcome: 'completed',
+        endTime: 1000,
+        toolCallCount: 5,
+        toolBreakdown: { Bash: 5 },
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        outcome: 'in progress',
+        endTime: 2000,
+        toolCallCount: 9,
+        toolBreakdown: { Bash: 9 },
+      }),
+    );
+    expect(store.loadSession(id)?.outcome).toBe('in progress');
+  });
+
+  it("lets a chat-only resume's newer checkpoint replace a stale completed outcome", () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = 'eeee1111-2222-4333-8444-555566667777';
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        outcome: 'completed',
+        endTime: 1000,
+        toolCallCount: 5,
+        toolBreakdown: { Bash: 5 },
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        outcome: 'in progress',
+        endTime: 2000,
+        toolCallCount: 5,
+        toolBreakdown: { Bash: 5 },
+      }),
+    );
+    expect(store.loadSession(id)?.outcome).toBe('in progress');
+  });
+
+  it.each([
+    ['equal endTime', 2000, 9, 'in progress'],
+    ['older endTime', 1500, 9, 'in progress'],
+    ['an unknown outcome', 3000, 9, 'unknown'],
+  ])(
+    'keeps a completed outcome against a non-completed write with %s',
+    (_label, endTime, calls, outcome) => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      const id = 'dddd1111-2222-4333-8444-555566667777';
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          outcome: 'completed',
+          endTime: 2000,
+          toolCallCount: 5,
+          toolBreakdown: { Bash: 5 },
+        }),
+      );
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          outcome,
+          endTime,
+          toolCallCount: calls,
+          toolBreakdown: { Bash: calls },
+        }),
+      );
+      expect(store.loadSession(id)?.outcome).toBe('completed');
+    },
+  );
 
   it('unions per-model breakdowns contributed by different processes', () => {
     const store = new SessionStore({ storagePath: tmpDir });

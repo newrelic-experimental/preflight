@@ -434,6 +434,57 @@ describe('multi-instance integration (proposal #11)', () => {
       }
     }
   }, 30_000);
+
+  it('a call with no session id outlives a pending engine that exits, and the engine that adopts a session saves it once', async () => {
+    const store = mkdtempSync(join(tmpdir(), 'nr-mi-unknown-'));
+    const sessionId = 'unknown-adopter';
+    const ts = Date.now() - 1000;
+    const id = 'toolu_no_session';
+    for (const line of [
+      { mode: 'pre', tool: 'Grep', timestamp: ts, toolUseId: id, inputSize: 4 },
+      {
+        mode: 'post',
+        tool: 'Grep',
+        timestamp: ts + 1,
+        toolUseId: id,
+        success: true,
+        outputSize: 4,
+      },
+    ]) {
+      appendToHookBuffer(resolve(store, 'buffer-unknown.jsonl'), JSON.stringify(line) + '\n');
+    }
+    try {
+      const exiting = spawnChild('pending-exit', store, undefined, distIndex, await getFreePort());
+      children.push(exiting);
+      await initialize(exiting);
+      await waitForStderr(exiting, 'Awaiting session_id resolution', BOOT_TIMEOUT_MS);
+      exiting.proc.stdin.end();
+      await waitExit(exiting, 6000);
+
+      const adopter = spawnChild(sessionId, store, undefined, distIndex, await getFreePort());
+      children.push(adopter);
+      await initialize(adopter);
+      await waitForStderr(adopter, 'Awaiting session_id resolution', BOOT_TIMEOUT_MS);
+      mkdirSync(resolve(store, 'session-by-ppid'), { recursive: true, mode: 0o700 });
+      writeFileSync(resolve(store, 'session-by-ppid', `${process.pid}.txt`), sessionId, {
+        mode: 0o600,
+      });
+      await waitForStderr(adopter, 'Session ID resolved', 8000);
+      adopter.proc.stdin.end();
+      await waitExit(adopter, 6000);
+
+      const saved = readdirSync(resolve(store, 'sessions')).find((f) =>
+        f.endsWith(`_${sessionId}.json`),
+      );
+      expect(saved).toBeDefined();
+      const session = JSON.parse(readFileSync(resolve(store, 'sessions', saved!), 'utf-8')) as {
+        toolCallCount?: number;
+      };
+      expect(session.toolCallCount).toBe(1);
+    } finally {
+      rmSync(store, { recursive: true, force: true });
+    }
+  }, 40_000);
 });
 
 describe('AiCodingTask emission in cloud mode', () => {
@@ -503,7 +554,7 @@ describe('AiCodingTask emission in cloud mode', () => {
   function seedToolCalls(
     sessionId: string,
     count: number,
-    tool: 'Bash' | 'Read' | 'AskUserQuestion' = 'Bash',
+    tool: 'Bash' | 'Read' | 'AskUserQuestion' | 'Skill' = 'Bash',
   ): void {
     const bufferPath = resolve(storage, `buffer-${sessionId}.jsonl`);
     const base = Date.now() - 1000;
@@ -516,7 +567,12 @@ describe('AiCodingTask emission in cloud mode', () => {
           mode: 'pre',
           timestamp: base + 2 * i,
           inputSize: 16,
-          toolInput: tool === 'Read' ? { file_path: '/fake/same.ts' } : { command: `echo ${i}` },
+          toolInput:
+            tool === 'Read'
+              ? { file_path: '/fake/same.ts' }
+              : tool === 'Skill'
+                ? { skill: 'lint' }
+                : { command: `echo ${i}` },
         }) + '\n',
       );
       appendToHookBuffer(
@@ -595,6 +651,24 @@ describe('AiCodingTask emission in cloud mode', () => {
     }
 
     expect(capturedTasks()).toHaveLength(1);
+  }, 60_000);
+
+  it('sends a skill run still open at shutdown as one AiWorkUnit', async () => {
+    const child = startCloudEngine(3_600_000, jobDir);
+    try {
+      await waitForBoot(child, BOOT_TIMEOUT_MS);
+      await initialize(child);
+      seedToolCalls(SESSION, 1, 'Skill');
+      seedToolCalls(SESSION, 1);
+      await waitForStats(child, 2, TOOLS_CALL_TIMEOUT_MS);
+    } finally {
+      child.proc.stdin.end();
+      await waitExit(child, 8000);
+    }
+
+    expect(capturedEvents('AiWorkUnit')).toMatchObject([
+      { skill_name: 'lint', tool_call_count: 2 },
+    ]);
   }, 60_000);
 
   it("sends only the adopted session's tasks that closed before the session resolved", async () => {

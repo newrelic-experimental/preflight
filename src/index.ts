@@ -16,7 +16,9 @@ import {
   DEFAULT_STORAGE_PATH,
   digestWebhookUrlOverride,
   loadMcpConfig,
+  parseLogLevel,
   redactSensitive,
+  resolveStartupLogLevel,
 } from './config.js';
 import { checkBasicAuthToken } from './dashboard/basic-auth.js';
 import { DashboardServer } from './dashboard/dashboard-server.js';
@@ -38,6 +40,7 @@ import {
   resolveSessionId,
   resolveSessionName,
   sessionBreadcrumbs,
+  type SessionIdSource,
   watchCwdBreadcrumbForCorrection,
   watchPpidBreadcrumb,
 } from './hooks/session-resolver.js';
@@ -106,13 +109,15 @@ import { RecommendationEngine } from './metrics/recommendation-engine.js';
 import { RetryDetector } from './metrics/retry-detector.js';
 import { SessionTracker } from './metrics/session-tracker.js';
 import { SkillActivationTracker } from './metrics/skill-activation-tracker.js';
-import { createSkillRunEmitter } from './metrics/skill-run-emitter.js';
+import { createSkillRunEmitter, createWorkUnitEmitter } from './metrics/skill-run-emitter.js';
+import { SkillRunLedger } from './metrics/skill-run-ledger.js';
 import { TaskCompletionTracker } from './metrics/task-completion-tracker.js';
 import { TaskDetector, type AiCodingTask } from './metrics/task-detector.js';
 import { HeldTaskSends } from './metrics/held-task-sends.js';
 import { ToolSelectionScorer } from './metrics/tool-selection-scorer.js';
 import { TranscriptMessageTracker } from './metrics/transcript-message-tracker.js';
 import { TrendAnalyzer } from './metrics/trend-analyzer.js';
+import { startModelRecommendationPublisher } from './metrics/model-recommendation-publisher.js';
 import { tokenUsageFromSubagentTurn, tokenUsageFromTokenEvent } from './metrics/token-usage.js';
 import { TurnCostAttributor } from './metrics/turn-cost-attributor.js';
 import { TurnTracker } from './metrics/turn-tracker.js';
@@ -133,6 +138,7 @@ import { purgeOldSessions, purgeOldWeeklySummaries } from './storage/retention.j
 import {
   buildSessionSummary,
   type FullSessionSummary,
+  savedToolNameByUseId,
   SessionStore,
   sessionSummaryToDriftRecord,
 } from './storage/session-store.js';
@@ -228,6 +234,12 @@ function loadConfigOrDie(
  * jest.fn()s without constructing a real NrIngestManager.
  */
 type ProxyTelemetrySink = Pick<NrIngestManager, 'ingestToolCall' | 'ingestProxyRequest'>;
+
+/** A session file's call count and the ids of the calls its timeline holds. */
+interface SavedCalls {
+  readonly count: number;
+  readonly toolUseIds: ReadonlySet<string>;
+}
 
 /**
  * Builds the ProxyManager onToolCall/onRequest callbacks for standalone proxy
@@ -781,7 +793,7 @@ export function parseArgs(argv: string[]): CliOptions {
     .version(VERSION)
     .option('-p, --port <number>', 'HTTP port for proxy mode', '9847')
     .option('-c, --config <path>', 'path to config file')
-    .option('-l, --log-level <level>', 'log level (debug|info|warn|error)', 'info')
+    .option('-l, --log-level <level>', 'log level (debug|info|warn|error, default: info)')
     .option('--stdio', 'use stdio transport (for Claude Code MCP connection)')
     .option('--local', 'start dashboard and event processor without MCP stdio transport')
     .option(
@@ -812,7 +824,7 @@ export function parseArgs(argv: string[]): CliOptions {
   return {
     port: parsed,
     config: opts.config ?? null,
-    logLevel: opts.logLevel as CliOptions['logLevel'],
+    logLevel: parseLogLevel(opts.logLevel),
     stdio,
     local,
     validate,
@@ -849,15 +861,16 @@ async function main(): Promise<void> {
 
   const options = parseArgs(process.argv);
 
-  // Propagate --log-level into the env var that createLogger() reads.
-  // Must be set before any subsystem loggers are constructed.
-  process.env.NEW_RELIC_AI_LOG_LEVEL = options.logLevel;
+  // The shared logger reads NEW_RELIC_AI_LOG_LEVEL on its first emit, so point it at the resolved
+  // level before anything logs. Child processes inherit the variable, so they see the same level.
+  const logLevel = resolveStartupLogLevel(options.logLevel, options.config);
+  process.env.NEW_RELIC_AI_LOG_LEVEL = logLevel;
 
   logger.info('Starting preflight', {
     version: VERSION,
     stdio: options.stdio,
     port: options.port,
-    logLevel: options.logLevel,
+    logLevel,
   });
 
   if (options.validate) {
@@ -891,6 +904,7 @@ async function main(): Promise<void> {
   let sessionStore: SessionStore | undefined;
   let weeklySummaryGenerator: WeeklySummaryGenerator | undefined;
   let persistSession: ((opts?: { periodic?: boolean }) => void) | undefined;
+  let flushSkillRuns: (() => void) | undefined;
   let config: import('./config.js').McpServerConfig | undefined;
   let sessionTracker: SessionTracker | undefined;
   let taskDetector: TaskDetector | undefined;
@@ -908,6 +922,7 @@ async function main(): Promise<void> {
   // independent of dashboard-bind status. Cleared in the shutdown handler.
   let maintenanceGcInterval: NodeJS.Timeout | undefined;
   let retentionInterval: NodeJS.Timeout | undefined;
+  let stopModelRecommendationPublisher: (() => void) | undefined;
   // Periodic re-fetch of ahead/behind-main counts so the Git Efficiency
   // dashboard's "behind main" KPI doesn't stay frozen at its startup value
   // for the life of a long-running `--local` daemon. Cleared in the
@@ -933,12 +948,12 @@ async function main(): Promise<void> {
   // the breadcrumb poll does not outlive the process.
   let sessionResolutionAbort: AbortController | undefined;
   // Aborts the background watchPpidBreadcrumb() correction watch (armed
-  // only when the initial resolution came from the collision-prone cwd
-  // fallback — see resolvedViaCwdOnly) when shutdown fires.
+  // only when the initial resolution came from the cwd or an ancestor's
+  // breadcrumb — see startPpidCorrectionWatch) when shutdown fires.
   let ppidCorrectionAbort: AbortController | undefined;
-  // That watch's listener for tool calls drained under the cwd guess, set
+  // That watch's listener for tool calls drained under the adopted guess, set
   // while it runs (see subscribeToStaleIdActivity in session-resolver.ts).
-  let cwdGuessActivity: { readonly staleId: string; readonly onActivity: () => void } | null = null;
+  let staleIdActivity: { readonly staleId: string; readonly onActivity: () => void } | null = null;
 
   // True whenever the live sessionTraceId came from the collision-prone cwd
   // fallback and hasn't yet been ppid-confirmed. While true, the periodic
@@ -987,6 +1002,7 @@ async function main(): Promise<void> {
       } catch (err) {
         logger.warn('Sending the last tasks at shutdown failed', { error: String(err) });
       }
+      flushSkillRuns?.();
       persistSession?.();
       if (
         config?.otlp?.transport !== 'nr-events-api' &&
@@ -1002,6 +1018,7 @@ async function main(): Promise<void> {
       if (alertEvaluationInterval) clearInterval(alertEvaluationInterval);
       if (maintenanceGcInterval) clearInterval(maintenanceGcInterval);
       if (retentionInterval) clearInterval(retentionInterval);
+      stopModelRecommendationPublisher?.();
       if (branchDivergenceInterval) clearInterval(branchDivergenceInterval);
       if (dashboardRepollInterval) clearInterval(dashboardRepollInterval);
       if (sessionPersistInterval) clearInterval(sessionPersistInterval);
@@ -1213,6 +1230,7 @@ async function main(): Promise<void> {
       options.stdio && !isProvisional
         ? new LocalStore(config.storagePath, sessionTraceId)
         : new LocalStore(config.storagePath);
+    localStore.setOwnIdPending(isProvisional);
     localStore.initialize();
 
     // Register every --local process in the instance registry, regardless
@@ -1227,14 +1245,12 @@ async function main(): Promise<void> {
     // dashboard owner's GC pass can tell which buffer files still have a live
     // owner. Removed in the shutdown handler below. Skipped during the
     // provisional window — the real heartbeat is written after resolution.
-    // A cwd guess leaves a live engine's heartbeat for the guessed session in
-    // place, since a correction must not leave that engine without one.
-    let heartbeatSkipped = false;
-    const writeHeartbeat = (store: LocalStore, viaCwdOnly: boolean): void => {
+    // An unconfirmed guess (cwd or ancestor) leaves a live engine's heartbeat
+    // for the guessed session in place, since a correction must not leave that
+    // engine without one.
+    const writeHeartbeat = (store: LocalStore, keepLiveOwner: boolean): void => {
       const sessionId = store.getSessionId();
-      heartbeatSkipped =
-        viaCwdOnly && !!sessionId && hasLiveOwningEngine(config!.storagePath, sessionId);
-      if (heartbeatSkipped) return;
+      if (keepLiveOwner && sessionId && hasLiveOwningEngine(config!.storagePath, sessionId)) return;
       store.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
         value: config!.companionMode,
         source: config!.companionModeSource,
@@ -1381,12 +1397,19 @@ async function main(): Promise<void> {
     // window is named later via adoptRealSessionId once its real id resolves.
     if (options.stdio) applyAuthoritativeSessionName(sessionTraceId);
     const turnCostAttributor = new TurnCostAttributor({ rateMultiplier });
+    const skillRunEmitterOptions = {
+      stdio: options.stdio === true,
+      getOwnSessionId: () => sessionTraceId,
+      getSink: () => capturedNrIngest,
+    };
+    const skillRunLedger = new SkillRunLedger(createWorkUnitEmitter(skillRunEmitterOptions));
+    flushSkillRuns = () => skillRunLedger.flush();
+    const emitSkillRunOpened = createSkillRunEmitter(skillRunEmitterOptions);
     const skillActivationTracker = new SkillActivationTracker({
-      onRunOpened: createSkillRunEmitter({
-        stdio: options.stdio === true,
-        getOwnSessionId: () => sessionTraceId,
-        getSink: () => capturedNrIngest,
-      }),
+      onRunOpened: (stamp, ctx) => {
+        emitSkillRunOpened(stamp, ctx);
+        skillRunLedger.recordRunOpened(stamp, ctx);
+      },
     });
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
@@ -1482,14 +1505,18 @@ async function main(): Promise<void> {
     const ownUnbookedCosts = new Map<string, UnbookedSeedCost>();
     const firstSaveBaselines = new FirstSaveBaselines();
     // A session's calls in its file before this process first wrote it, none of them this process's.
-    const callsBeforeFirstWrite = new Map<string, number>();
+    const callsBeforeFirstWrite = new Map<string, SavedCalls>();
+    const savedCallsOf = (file: FullSessionSummary | null | undefined): SavedCalls => ({
+      count: file?.toolCallCount ?? 0,
+      toolUseIds: new Set(savedToolNameByUseId(file).keys()),
+    });
     const saveSessionRememberingBaseline = (
       summary: FullSessionSummary,
       from: 'ownTrackers' | 'rollup',
     ): boolean => {
       const saved = sessionStore!.saveSession(summary);
       if (saved && !callsBeforeFirstWrite.has(summary.sessionId)) {
-        callsBeforeFirstWrite.set(summary.sessionId, saved.previous?.toolCallCount ?? 0);
+        callsBeforeFirstWrite.set(summary.sessionId, savedCallsOf(saved.previous));
       }
       // Only a --stdio engine ever adopts a real session id and seeds it.
       if (saved && options.stdio && !rehydratedTrackerSessionIds.has(summary.sessionId)) {
@@ -1812,6 +1839,10 @@ async function main(): Promise<void> {
     });
 
     const trendAnalyzer = new TrendAnalyzer({ sessionStore });
+    stopModelRecommendationPublisher = startModelRecommendationPublisher(
+      trendAnalyzer,
+      config.storagePath,
+    );
     const collaborationProfiler = new CollaborationProfiler({ sessionStore });
     const activeInstructionFilePaths = activePlatform.capabilities.instructionFilePaths;
     const claudeMdTracker = new ClaudeMdTracker({
@@ -2370,8 +2401,8 @@ async function main(): Promise<void> {
           logger.warn('onRecord called before full initialization; skipping');
           return;
         }
-        if (cwdGuessActivity && rawRecord.sessionId === cwdGuessActivity.staleId) {
-          cwdGuessActivity.onActivity();
+        if (staleIdActivity && rawRecord.sessionId === staleIdActivity.staleId) {
+          staleIdActivity.onActivity();
         }
 
         // Capture active task ID before recordToolCall may close the current task
@@ -2430,6 +2461,7 @@ async function main(): Promise<void> {
         const turnId = turnTracker.recordToolCall(rawRecord);
         const turnNumber = turnTracker.getCurrentTurnNumber();
         turnCostAttributor.recordToolCall(rawRecord, turnId);
+        skillRunLedger.recordToolCall(rawRecord);
         decisionTracker.recordToolCall(rawRecord);
         transcriptMessageTracker.observeTranscriptPath(
           rawRecord.transcriptPath as string | undefined,
@@ -2573,6 +2605,7 @@ async function main(): Promise<void> {
           tokenEvent,
           skillActivationTracker.openRun(tokenEvent.sessionId),
         );
+        skillRunLedger.recordClosedTurn(closedTurn);
         if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
         seedLocalTrackersFromFile(tokenEvent.sessionId);
         const usage = tokenUsageFromTokenEvent(tokenEvent);
@@ -2829,6 +2862,7 @@ async function main(): Promise<void> {
         });
       },
       onUserPromptSubmit: (frame) => {
+        skillRunLedger.recordPrompt(frame.sessionId, frame.timestamp);
         const slashRun = skillActivationTracker.recordPrompt(
           frame.sessionId,
           frame.slashCommand ?? null,
@@ -2839,6 +2873,7 @@ async function main(): Promise<void> {
         localSessionAggregator.startTask(frame.sessionId, frame.timestamp);
       },
       onStop: (frame) => {
+        skillRunLedger.recordStop(frame.sessionId, frame.timestamp);
         turnTracker.finalizeTurnAt(frame.timestamp);
         taskDetector!.markBoundary(frame.timestamp);
         localSessionAggregator.markTaskBoundary(frame.sessionId, frame.timestamp);
@@ -2885,26 +2920,30 @@ async function main(): Promise<void> {
         const sessionId = String(rollup.sessionId);
         try {
           const onFile = sessionStore.loadSession(sessionId);
-          const prior = callsBeforeFirstWrite.get(sessionId) ?? onFile?.toolCallCount ?? 0;
+          const prior = callsBeforeFirstWrite.get(sessionId) ?? savedCallsOf(onFile);
           // A file with calls adds this rollup to them, since a max-merge would drop it. It leaves
-          // out a call another process may count, and marks no ids, so that process still can.
+          // out a call the file held before this process first wrote it, or that another process
+          // marked counted or may count, and marks no ids, so that process still can.
           const kept =
-            prior === 0
+            prior.count === 0
               ? rollup
               : localSessionAggregator.withoutCallsOtherProcessesMayCount(
                   rollup,
-                  localStoreForShutdown?.countedToolUseIds(sessionId) ?? new Set<string>(),
+                  new Set([
+                    ...prior.toolUseIds,
+                    ...(localStoreForShutdown?.countedToolUseIds(sessionId) ?? []),
+                  ]),
                 );
           const summary = {
             ...kept,
             ...outcomeOf(sessionId, onFile, Number(rollup.endTime)),
-            toolCallCount: prior + Number(kept.toolCallCount),
+            toolCallCount: prior.count + Number(kept.toolCallCount),
           };
           if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary, 'rollup'))
             continue;
           localSessionAggregator.markSaved(sessionId);
           saved += 1;
-          if (prior === 0) eventProcessor?.persistCountedIdsOfSavedSessions([sessionId]);
+          if (prior.count === 0) eventProcessor?.persistCountedIdsOfSavedSessions([sessionId]);
         } catch (err) {
           logger.warn('Failed to save observed session', { sessionId, error: String(err) });
         }
@@ -3031,8 +3070,8 @@ async function main(): Promise<void> {
     // is safe to arm immediately. unref'd so it never keeps the process alive.
     const SESSION_PERSIST_INTERVAL_MS = getSessionPersistIntervalMs();
     sessionPersistInterval = setInterval(() => {
-      // A cwd guess whose session had a live engine takes the heartbeat once that engine exits.
-      if (heartbeatSkipped && localStoreForShutdown) writeHeartbeat(localStoreForShutdown, true);
+      // Engines of one session share its heartbeat, so each takes it once the engine it names exits.
+      if (localStoreForShutdown) writeHeartbeat(localStoreForShutdown, true);
       // Skip while the live session id is an unconfirmed cwd-fallback guess —
       // see armPendingConfirmation's own comment. Persisting here would write
       // a real, non-synthetic checkpoint file under an identity that might
@@ -3264,27 +3303,32 @@ async function main(): Promise<void> {
     // startPpidCorrectionWatch below) — safe to call more than once.
     const adoptRealSessionId = async (
       realId: string,
-      opts?: { isCorrection?: boolean; viaCwdOnly?: boolean },
+      opts?: { isCorrection?: boolean; source?: SessionIdSource },
     ): Promise<void> => {
       const staleId = sessionTraceId;
+      const viaCwdOnly = opts?.source === 'cwd';
       if (opts?.isCorrection) {
         // A real correction means the previously-adopted id was wrong, and
-        // anything these four trackers accumulated since startWatchers()
-        // scoped them to that wrong id (chiefly ParentTranscriptWatcher
-        // backfill from an unrelated old transcript) belongs to nobody.
+        // anything these trackers accumulated or were seeded with under that
+        // wrong id (ParentTranscriptWatcher backfill from an unrelated old
+        // transcript, an ancestor adoption's checkpoint) belongs to nobody.
         // SessionTracker is cleared below through adoptSessionId(realId, ...,
         // isCorrection), which drops the wrong guess's counts and timeline.
         costTracker.reset(realId);
         modelUsageTracker.reset(realId);
         contextCompositionTracker.reset(realId);
         turnCostAttributor.reset(realId);
+        taskDetector!.reset(realId);
+        qualityProxyTracker.reset(realId);
+        efficiencyScorer.reset(realId);
+        budgetTracker.resetSession();
       }
       // Replace the current LocalStore with one scoped to the real id.
       const realLocalStore = new LocalStore(config!.storagePath, realId);
       realLocalStore.initialize();
       // A corrected guess's heartbeat would keep drain-all processes off its buffer.
       localStoreForShutdown?.removeHeartbeat();
-      writeHeartbeat(realLocalStore, opts?.viaCwdOnly ?? false);
+      writeHeartbeat(realLocalStore, viaCwdOnly || opts?.source === 'ppid-ancestor');
       localStoreForShutdown = realLocalStore;
       try {
         realLocalStore.migrateLegacyBuffer();
@@ -3297,6 +3341,9 @@ async function main(): Promise<void> {
       // realId, and runs before the tracker adopts realId, so adoptSessionId()
       // replays what it drains.
       sessionTraceId = realId;
+      // Keep this above replaceStore. Its halt() runs a final drain-all on the old
+      // store, which must stay drain-all so the adopter gets the no-session buffer.
+      localStore.setOwnIdPending(false);
       eventProcessor!.replaceStore(realLocalStore, false);
 
       sessionTracker!.adoptSessionId(
@@ -3309,7 +3356,7 @@ async function main(): Promise<void> {
       // against the corrected id's own transcript, replacing any name derived
       // for the previously-adopted (wrong) id.
       applyAuthoritativeSessionName(realId);
-      if (opts?.viaCwdOnly) cwdGuessRolledUpWhilePending = rolledUpWhilePending(realId);
+      if (viaCwdOnly) cwdGuessRolledUpWhilePending = rolledUpWhilePending(realId);
       else saveRollups(rolledUpWhilePending(realId), 'running');
       // Session thresholds fired so far belong to a conversation the engine
       // followed while pending, or to a wrong guess. The rehydrate below seeds
@@ -3323,7 +3370,7 @@ async function main(): Promise<void> {
       // startPpidCorrectionWatch right after this returns, whose
       // confirmation branch (ppidId === staleId) calls
       // rehydrateTrackersIfResumed itself once the guess is confirmed.
-      if (!opts?.viaCwdOnly) {
+      if (!viaCwdOnly) {
         rehydrateTrackersIfResumed(realId);
         liftObserverCompleted(realId);
       }
@@ -3465,42 +3512,50 @@ async function main(): Promise<void> {
     };
 
     // Arms a background watch for the ppid breadcrumb after an initial
-    // resolution came from the collision-prone cwd fallback (see
-    // resolvedViaCwdOnly). If/when the ppid breadcrumb later reports a
-    // DIFFERENT, more precise session id, corrects the adoption via the
-    // same adoptRealSessionId() used for the pending -> real transition.
-    // A no-op-forever if the ppid breadcrumb never appears or always
-    // matches — never trusts cwd itself, so it can't be fooled twice.
-    const startPpidCorrectionWatch = (staleId: string): void => {
-      armPendingConfirmation();
+    // resolution came from a breadcrumb other sessions can share: the cwd
+    // fallback (see resolvedViaCwdOnly) or an ancestor's. If/when the ppid
+    // breadcrumb later reports a DIFFERENT, more precise session id, corrects
+    // the adoption via the same adoptRealSessionId() used for the pending ->
+    // real transition. Only a cwd guess holds back checkpoints meanwhile: an
+    // ancestor adoption was already seeded and checkpointed.
+    const startPpidCorrectionWatch = (
+      staleId: string,
+      source: 'cwd' | 'ppid-ancestor',
+      readsParentLevel = true,
+    ): void => {
+      if (source === 'cwd') armPendingConfirmation();
       ppidCorrectionAbort = new AbortController();
       // Guards against both watches below firing: in practice only one ever
       // can (see the win32 branch's own comment), but a shared flag makes
       // that a documented invariant rather than an accident of timing.
       let corrected = false;
-      let activityListener: typeof cwdGuessActivity = null;
+      let activityListener: typeof staleIdActivity = null;
       void watchPpidBreadcrumb({
         writers: breadcrumbWriters,
         storagePath: config!.storagePath,
         signal: ppidCorrectionAbort.signal,
-        includeParentOfPpid: true,
-        staleId,
-        subscribeToStaleIdActivity: (onActivity) => {
-          activityListener = { staleId, onActivity };
-          cwdGuessActivity = activityListener;
-        },
+        ...(readsParentLevel
+          ? {
+              includeParentOfPpid: true as const,
+              staleId,
+              subscribeToStaleIdActivity: (onActivity: () => void) => {
+                activityListener = { staleId, onActivity };
+                staleIdActivity = activityListener;
+              },
+            }
+          : { includeParentOfPpid: false as const }),
       })
         .then(async (ppidId) => {
           if (ppidCorrectionAbort?.signal.aborted || corrected) return;
           if (ppidId === staleId) {
-            // The cwd guess turned out to be correct, as confirmed by our own
+            // The guess turned out to be correct, as confirmed by our own
             // ppid's breadcrumb: the watch never resolves to staleId from an
             // ancestor, whose breadcrumb may be a co-located session's. No
-            // correction needed, so no reason to keep suppressing checkpoints
-            // for the rest of the cap window. It was NOT seeded eagerly (see
-            // the resolvedViaCwdOnly gate on rehydrateTrackersIfResumed's
-            // first call site) precisely because it wasn't confirmed yet —
-            // seed it now that it is.
+            // reason to keep suppressing checkpoints. A cwd guess was NOT
+            // seeded eagerly (see the resolvedViaCwdOnly gate on
+            // rehydrateTrackersIfResumed's first call site) because it wasn't
+            // confirmed yet, so seed it now. An ancestor adoption already was,
+            // and rehydrateTrackersIfResumed seeds each id once.
             saveRollups(cwdGuessRolledUpWhilePending, 'running');
             rehydrateTrackersIfResumed(staleId);
             refreshPriorCostBaseline();
@@ -3509,7 +3564,8 @@ async function main(): Promise<void> {
             return;
           }
           corrected = true;
-          logger.info('Correcting cwd-sourced session id from PPID breadcrumb', {
+          logger.info('Correcting the adopted session id from PPID breadcrumb', {
+            source,
             staleId,
             correctedId: ppidId,
           });
@@ -3523,7 +3579,7 @@ async function main(): Promise<void> {
           clearPendingConfirmation();
         })
         .finally(() => {
-          if (cwdGuessActivity === activityListener) cwdGuessActivity = null;
+          if (staleIdActivity === activityListener) staleIdActivity = null;
         });
 
       // On native Windows the ppid breadcrumb above never matches (see #686
@@ -3595,7 +3651,7 @@ async function main(): Promise<void> {
           hookRecordedReports: hookRecordedReports(),
         });
         sessionResolutionAbort = new AbortController();
-        let resolvedSource: import('./hooks/session-resolver.js').SessionIdSource | undefined;
+        let resolution: { source: SessionIdSource; depth?: number } | undefined;
         void (async () => {
           try {
             const realId = await resolveSessionId({
@@ -3603,7 +3659,7 @@ async function main(): Promise<void> {
               signal: sessionResolutionAbort!.signal,
               writers: breadcrumbWriters,
               onResolutionSource: (info) => {
-                resolvedSource = info.source;
+                resolution = info;
               },
             });
 
@@ -3620,18 +3676,18 @@ async function main(): Promise<void> {
             // eager cost/token seed for a cwd-resolved id (see viaCwdOnly's
             // doc comment there) — startPpidCorrectionWatch below seeds it
             // once confirmed, exactly like the synchronous resolution path.
-            await adoptRealSessionId(realId, { viaCwdOnly: resolvedSource === 'cwd' });
+            await adoptRealSessionId(realId, { source: resolution?.source });
 
             logger.info('Session ID resolved, full initialization complete', {
               sessionTraceId: realId,
             });
 
-            // The ppid breadcrumb is precise (no cross-session collision);
-            // the cwd fallback is not, since it's shared by every session
-            // that ever ran in this directory. Only a cwd-sourced
-            // resolution needs the background correction watch.
-            if (resolvedSource === 'cwd') {
-              startPpidCorrectionWatch(realId);
+            // The ppid breadcrumb is precise; the cwd and ancestor ones are
+            // not, so they arm the correction watch. An ancestor hit one level
+            // above our ppid is the slot the watch's parent level reads, so a
+            // later change there is the host switching sessions.
+            if (resolution?.source === 'cwd' || resolution?.source === 'ppid-ancestor') {
+              startPpidCorrectionWatch(realId, resolution.source, resolution.depth !== 1);
             }
           } catch (err) {
             // Use the signal's own aborted flag rather than matching the error
@@ -3731,7 +3787,7 @@ async function main(): Promise<void> {
         // path — this eager path otherwise has no correction mechanism at
         // all once initialization completes.
         if (resolvedViaCwdOnly) {
-          startPpidCorrectionWatch(sessionTraceId);
+          startPpidCorrectionWatch(sessionTraceId, 'cwd');
         }
       }
     } else {

@@ -633,6 +633,28 @@ describe('LocalSessionAggregator timeline persistence', () => {
     expect(timeline[0]?.createdPrNumber).toBe('42');
   });
 
+  it('persists the created PR repo lowercased, and drops a malformed one', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Bash',
+      timestamp: 100,
+      command: 'gh pr create --fill',
+      createdPrNumber: '42',
+      createdPrRepo: 'Acme/App',
+    });
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Bash',
+      timestamp: 200,
+      command: 'gh pr create --fill',
+      createdPrNumber: '43',
+      createdPrRepo: 'not a repo',
+    });
+    const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline.map((e) => e.createdPrRepo)).toEqual(['acme/app', undefined]);
+  });
+
   it('persists the PR target of a GitHub MCP PR call', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({
