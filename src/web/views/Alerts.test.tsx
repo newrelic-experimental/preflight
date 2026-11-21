@@ -19,7 +19,6 @@ function jsonResponse(body: unknown) {
 
 function renderAlerts(initialSettings: {
   digestWebhookUrl: string | null;
-  digestSchedule: string;
   alerts: { personal: Record<string, number> };
 }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
@@ -45,7 +44,6 @@ function renderAlerts(initialSettings: {
 
 const BASE_SETTINGS = {
   digestWebhookUrl: 'https://hooks.slack.com/services/original',
-  digestSchedule: '0 9 * * 1',
   alerts: {
     personal: {
       dailyCostUsd: 10,
@@ -58,6 +56,13 @@ const BASE_SETTINGS = {
 };
 
 describe('Alerts view', () => {
+  it('shows no digest schedule input, since nothing reads a schedule', async () => {
+    renderAlerts(BASE_SETTINGS);
+    await screen.findByPlaceholderText('https://hooks.slack.com/...');
+    expect(screen.queryByText(/Schedule/)).toBeNull();
+    expect(screen.queryByDisplayValue('0 9 * * 1')).toBeNull();
+  });
+
   it('does not claim these thresholds feed a local alert engine or need a server restart', async () => {
     renderAlerts(BASE_SETTINGS);
     await waitFor(() => expect(screen.getByText(/Alert Thresholds/)).toBeInTheDocument());
@@ -223,5 +228,21 @@ describe('Alerts view — error and loading states', () => {
     expect(within(card as HTMLElement).getByText('Loading...')).toBeInTheDocument();
 
     settingsBox.current?.();
+  });
+});
+
+describe('Alerts view — digest preview', () => {
+  it('Preview digest opens the dialog and POSTs nothing', async () => {
+    renderAlerts({ ...BASE_SETTINGS, digestWebhookUrlSource: 'file' } as typeof BASE_SETTINGS);
+    const posts: string[] = [];
+    const fetchForPreview = globalThis.fetch;
+    globalThis.fetch = ((url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') posts.push(url);
+      return fetchForPreview(url, init);
+    }) as typeof fetch;
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview digest' }));
+    expect(await screen.findByRole('dialog', { name: 'Digest preview' })).toBeTruthy();
+    await screen.findByText(/Could not load the preview|Week /);
+    expect(posts).toEqual([]);
   });
 });

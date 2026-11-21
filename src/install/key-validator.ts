@@ -4,9 +4,9 @@ import { getRegion } from './regions.js';
 
 const logger = createLogger('key-validator');
 
-export function getEventsApiUrl(accountId: string, collectorHost: string | null): string {
+export function getEventsApiUrl(collectorHost: string | null): string {
   const host = getRegion(collectorHost).eventsApiHost;
-  return `https://${host}/v1/accounts/${accountId}/events`;
+  return `https://${host}/v1/accounts/events`;
 }
 
 export function getNerdgraphUrl(collectorHost: string | null): string {
@@ -21,12 +21,11 @@ export interface ValidationResult {
 
 export async function validateLicenseKey(params: {
   licenseKey: string;
-  accountId: string;
   collectorHost: string | null;
   timeoutMs?: number;
 }): Promise<ValidationResult> {
-  const { licenseKey, accountId, collectorHost, timeoutMs = 5000 } = params;
-  const url = getEventsApiUrl(accountId, collectorHost);
+  const { licenseKey, collectorHost, timeoutMs = 5000 } = params;
+  const url = getEventsApiUrl(collectorHost);
   const body = JSON.stringify([{ eventType: 'NrAiObserveSetupCheck', setupCheck: true }]);
 
   const controller = new AbortController();
