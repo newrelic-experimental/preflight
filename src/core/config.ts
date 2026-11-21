@@ -317,20 +317,7 @@ export function loadConfig(overrides?: AgentConfigInput): Readonly<AgentConfig> 
     );
   }
 
-  // Hoist `transport` resolution so we can fail fast when
-  // accountId is missing for transports that need it. Without this check, the
-  // NR Events API URL becomes ".../accounts/null/events", which NR returns 404
-  // on; the harvest scheduler then silently retry-loops every batch until the
-  // retry buffer overflows. Surface the misconfiguration at startup instead.
   const transport = overrides?.transport ?? envTransport('NEW_RELIC_AI_TRANSPORT', 'nr-events-api');
-  if ((transport === 'nr-events-api' || transport === 'both') && accountId === null) {
-    throw new Error(
-      `Missing required configuration: NEW_RELIC_ACCOUNT_ID. ` +
-        `Required when transport is "${transport}" (NR Events API URLs include the account ID in the path). ` +
-        `Set the NEW_RELIC_ACCOUNT_ID environment variable or pass accountId in options. ` +
-        `Only the "otlp" transport mode can omit accountId.`,
-    );
-  }
 
   const highSecurity = overrides?.highSecurity ?? envBool('NEW_RELIC_AI_HIGH_SECURITY', false);
 
