@@ -59,10 +59,7 @@ import { SessionResumeTracker } from './metrics/session-resume-tracker.js';
 import { BudgetTracker } from './metrics/budget-tracker.js';
 import { ClaudeMdTracker } from './metrics/claudemd-tracker.js';
 import { CollaborationProfiler } from './metrics/collaboration-profile.js';
-import {
-  isTokenEventForThisProcess,
-  shouldApplyCostEstimate,
-} from './metrics/cost-estimate-gate.js';
+import { isForThisProcess, shouldApplyCostEstimate } from './metrics/cost-estimate-gate.js';
 import { ContextCompositionTracker } from './metrics/context-composition-tracker.js';
 import { ContextTrackerRegistry } from './metrics/context-tracker.js';
 import { ContextWindowTracker } from './metrics/context-window-tracker.js';
@@ -2329,6 +2326,48 @@ async function main(): Promise<void> {
       }
     };
 
+    const recordForEverySession = (incomingRecord: ToolCallRecord): ToolCallRecord => {
+      // Attributed before any consumer (notably auditTrail below) sees the
+      // record, so audit/security events carry agentId and agentType.
+      // The watcher's on-demand read is synchronous, which is what keeps it
+      // ahead of auditTrail.
+      const attributed = subagentAttribution.attributeAtIntake(
+        incomingRecord,
+        activeSubagentWatcher,
+      );
+      const activeSkill = skillActivationTracker.recordToolCall(attributed);
+      const rawRecord = activeSkill ? { ...attributed, activeSkill } : attributed;
+      if (staleIdActivity && rawRecord.sessionId === staleIdActivity.staleId) {
+        staleIdActivity.onActivity();
+      }
+      sessionTracker!.recordToolCall(rawRecord);
+      localSessionAggregator.recordToolCall(rawRecord);
+      if (rawRecord.sessionId) {
+        liveSessionRegistry!.touch(rawRecord.sessionId, rawRecord.cwd as string | undefined);
+      }
+      // Fallback type source: the parent's Agent call, for subagents whose
+      // transcript has no meta sidecar (see onSubagentTurn). Its PostToolUse
+      // normally fires only after a foreground subagent returns.
+      subagentAttribution.recordAgentToolCall(rawRecord);
+      contextTracker.recordToolCall(rawRecord);
+      // SSE consumers filter by sessionId for the per-session live tail.
+      // Records without a sessionId are legacy buffer entries that surfaced
+      // during the migrateLegacyBuffer() window on first boot — skip the
+      // live emit rather than fabricate a session by falling back to the
+      // MCP's resolved sessionTraceId, which would re-introduce the
+      // fictional-session-ID bug the session-ID resolver removed.
+      if (rawRecord.sessionId) {
+        liveBus.emit('tool-call', {
+          id: rawRecord.id,
+          sessionId: rawRecord.sessionId,
+          tool: rawRecord.toolName,
+          durationMs: rawRecord.durationMs ?? 0,
+          costUsd: 0,
+          ts: rawRecord.timestamp,
+        });
+      }
+      return rawRecord;
+    };
     eventProcessor = new HookEventProcessor({
       store: localStore,
       platformAdapter: activePlatform,
@@ -2344,39 +2383,27 @@ async function main(): Promise<void> {
         const index = toolCallBuffer.findIndex((r) => r.id === record.id);
         if (index >= 0) toolCallBuffer[index] = amendRecord(toolCallBuffer[index]!, record);
       },
-      onRecord: (incomingRecord) => {
-        // Attributed before any consumer (notably auditTrail below) sees the
-        // record, so audit/security events carry agentId and agentType.
-        // The watcher's on-demand read is synchronous, which is what keeps it
-        // ahead of auditTrail.
-        const attributed = subagentAttribution.attributeAtIntake(
-          incomingRecord,
-          activeSubagentWatcher,
-        );
-        const activeSkill = skillActivationTracker.recordToolCall(attributed);
-        const rawRecord = activeSkill ? { ...attributed, activeSkill } : attributed;
-        if (!config || !sessionTracker || !taskDetector) {
+      admitRecord: (incomingRecord) => {
+        const rawRecord = recordForEverySession(incomingRecord);
+        return isForThisProcess({
+          stdio: options.stdio === true,
+          sessionId: rawRecord.sessionId ?? null,
+          ownSessionId: sessionTraceId,
+        })
+          ? rawRecord
+          : null;
+      },
+      onRecord: (rawRecord) => {
+        if (!config || !taskDetector) {
           logger.warn('onRecord called before full initialization; skipping');
           return;
-        }
-        if (staleIdActivity && rawRecord.sessionId === staleIdActivity.staleId) {
-          staleIdActivity.onActivity();
         }
 
         // Capture active task ID before recordToolCall may close the current task
         const taskIdBeforeRecord =
           config.otlp.transport !== 'nr-events-api' ? taskDetector.getActiveTaskId() : null;
 
-        sessionTracker.recordToolCall(rawRecord);
         taskDetector.recordToolCall(rawRecord);
-        localSessionAggregator.recordToolCall(rawRecord);
-        if (rawRecord.sessionId) {
-          liveSessionRegistry!.touch(rawRecord.sessionId, rawRecord.cwd as string | undefined);
-        }
-        // Fallback type source: the parent's Agent call, for subagents whose
-        // transcript has no meta sidecar (see onSubagentTurn). Its PostToolUse
-        // normally fires only after a foreground subagent returns.
-        subagentAttribution.recordAgentToolCall(rawRecord);
         // Agent records reach the tracker through onWorkflowAgent, which also
         // covers the late-post amend path that skips onRecord.
         if (rawRecord.toolName !== 'Agent') workflowRunTracker.recordToolCall(rawRecord);
@@ -2396,7 +2423,6 @@ async function main(): Promise<void> {
         }
 
         contextWindowTracker.recordToolCall(rawRecord);
-        contextTracker.recordToolCall(rawRecord);
         latencyTracker.recordToolCall(rawRecord);
         const thrashingAlert = retryDetector.recordToolCall(rawRecord);
         if (thrashingAlert) {
@@ -2494,22 +2520,6 @@ async function main(): Promise<void> {
         // so the monitor counts them as untracked.
         unforwardedSessionMonitor?.recordToolCall(record.sessionId);
 
-        // SSE consumers filter by sessionId for the per-session live tail.
-        // Records without a sessionId are legacy buffer entries that surfaced
-        // during the migrateLegacyBuffer() window on first boot — skip the
-        // live emit rather than fabricate a session by falling back to the
-        // MCP's resolved sessionTraceId, which would re-introduce the
-        // fictional-session-ID bug the session-ID resolver removed.
-        if (record.sessionId) {
-          liveBus.emit('tool-call', {
-            id: record.id,
-            sessionId: record.sessionId,
-            tool: record.toolName,
-            durationMs: record.durationMs ?? 0,
-            costUsd: 0,
-            ts: record.timestamp,
-          });
-        }
         // Push into the alert collector's rolling tool-call buffer so
         // tool.failure rules have data to evaluate against.
         capturedAlertSnapshotCollector?.recordToolCall({
@@ -2581,9 +2591,9 @@ async function main(): Promise<void> {
         // another session's tokens (drained while the id is still provisional)
         // are priced for that session's rollup only. --local owns no single
         // session and keeps folding everything.
-        const isOwnEvent = isTokenEventForThisProcess({
+        const isOwnEvent = isForThisProcess({
           stdio: options.stdio === true,
-          eventSessionId: tokenEvent.sessionId ?? null,
+          sessionId: tokenEvent.sessionId ?? null,
           ownSessionId: sessionTraceId,
         });
         const closedTurn = turnCostAttributor.recordTokenEvent(
@@ -2730,9 +2740,9 @@ async function main(): Promise<void> {
         const agentType = subagentAttribution.agentTypeFor(turn.agentId);
         seedLocalTrackersFromFile(turn.parentSessionId);
         const usage = tokenUsageFromSubagentTurn(turn);
-        const isOwnTurn = isTokenEventForThisProcess({
+        const isOwnTurn = isForThisProcess({
           stdio: options.stdio === true,
-          eventSessionId: turn.parentSessionId || null,
+          sessionId: turn.parentSessionId || null,
           ownSessionId: sessionTraceId,
         });
         const breakdown = isOwnTurn
@@ -3344,6 +3354,7 @@ async function main(): Promise<void> {
       // this session's events going forward. Its final drain routes tokens by
       // realId, and runs before the tracker adopts realId, so adoptSessionId()
       // replays what it drains.
+      eventProcessor!.replayRecords(localSessionAggregator.recordsOf(realId));
       sessionTraceId = realId;
       // Keep this above replaceStore. Its halt() runs a final drain-all on the old
       // store, which must stay drain-all so the adopter gets the no-session buffer.

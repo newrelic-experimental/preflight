@@ -1,6 +1,6 @@
 import {
   isOwnSessionRecord,
-  isTokenEventForThisProcess,
+  isForThisProcess,
   shouldApplyCostEstimate,
 } from './cost-estimate-gate.js';
 
@@ -68,12 +68,12 @@ describe('isOwnSessionRecord', () => {
   });
 });
 
-describe('isTokenEventForThisProcess', () => {
+describe('isForThisProcess', () => {
   it('keeps every event in --local, which owns no single session', () => {
     expect(
-      isTokenEventForThisProcess({
+      isForThisProcess({
         stdio: false,
-        eventSessionId: 'session-other',
+        sessionId: 'session-other',
         ownSessionId: 'session-own',
       }),
     ).toBe(true);
@@ -81,9 +81,9 @@ describe('isTokenEventForThisProcess', () => {
 
   it('keeps a --stdio engine its own session events', () => {
     expect(
-      isTokenEventForThisProcess({
+      isForThisProcess({
         stdio: true,
-        eventSessionId: 'session-own',
+        sessionId: 'session-own',
         ownSessionId: 'session-own',
       }),
     ).toBe(true);
@@ -91,9 +91,9 @@ describe('isTokenEventForThisProcess', () => {
 
   it('keeps an event that names no session', () => {
     expect(
-      isTokenEventForThisProcess({
+      isForThisProcess({
         stdio: true,
-        eventSessionId: null,
+        sessionId: null,
         ownSessionId: 'session-own',
       }),
     ).toBe(true);
@@ -101,9 +101,9 @@ describe('isTokenEventForThisProcess', () => {
 
   it('treats another session as foreign to a --stdio engine', () => {
     expect(
-      isTokenEventForThisProcess({
+      isForThisProcess({
         stdio: true,
-        eventSessionId: 'session-other',
+        sessionId: 'session-other',
         ownSessionId: 'session-own',
       }),
     ).toBe(false);
@@ -111,9 +111,9 @@ describe('isTokenEventForThisProcess', () => {
 
   it('treats every named session as foreign while the engine id is still provisional', () => {
     expect(
-      isTokenEventForThisProcess({
+      isForThisProcess({
         stdio: true,
-        eventSessionId: 'session-own',
+        sessionId: 'session-own',
         ownSessionId: 'pending-1700000000000',
       }),
     ).toBe(false);

@@ -1,4 +1,4 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { jest, describe, it, expect, beforeAll, beforeEach, afterEach } from '@jest/globals';
 import type { ChildProcess } from 'node:child_process';
 import {
   appendFileSync,
@@ -1863,6 +1863,119 @@ describe('stdio integration', () => {
       expect(savedField(storage, 'own-real-session', 'estimatedCostUsd')).toBeGreaterThan(0);
     }, 30000);
 
+    const writeCall = (
+      storage: string,
+      sessionId: string | null,
+      toolUseId: string,
+      call: object,
+    ) => {
+      const event = { timestamp: Date.now(), ...(sessionId && { sessionId }), toolUseId, ...call };
+      const buffer = resolve(storage, `buffer-${sessionId ?? 'unknown'}.jsonl`);
+      appendToHookBuffer(buffer, JSON.stringify({ mode: 'pre', ...event }) + '\n');
+      appendToHookBuffer(buffer, JSON.stringify({ mode: 'post', ...event }) + '\n');
+    };
+    const toolResult = async (client: Client, name: string) => {
+      const result = await client.callTool({ name, arguments: {} });
+      return JSON.parse((result.content as Array<{ text: string }>)[0]!.text) as Record<
+        string,
+        unknown
+      >;
+    };
+
+    describe('its trackers after it adopts, having drained another session', () => {
+      const failingTest = { tool: 'Bash', toolInput: { command: 'npm test' }, success: false };
+      const ownRead = {
+        tool: 'Read',
+        toolInput: { file_path: '/own/a.ts' },
+        success: true,
+        inputSize: 4000,
+        outputSize: 4000,
+      };
+      let report: Record<string, Record<string, unknown>>;
+
+      beforeAll(async () => {
+        const storage = makeStorage();
+        const client = await startEngine(storage);
+        for (let n = 0; n < 3; n++)
+          writeCall(storage, 'other-real-session', `toolu_o${n}`, failingTest);
+        writeCall(storage, 'own-real-session', 'toolu_own', ownRead);
+        writeCall(storage, null, 'toolu_none', { tool: 'Grep', success: true });
+        const noSession = resolve(storage, 'buffer-unknown.jsonl');
+        await waitFor(
+          () =>
+            !existsSync(resolve(storage, 'buffer-other-real-session.jsonl')) &&
+            !existsSync(resolve(storage, 'buffer-own-real-session.jsonl')),
+        );
+        const heartbeat = resolve(storage, 'active-own-real-session.pid');
+        writeFileSync(
+          resolve(storage, 'session-by-ppid', `${process.pid}.txt`),
+          'own-real-session',
+        );
+        await waitFor(() => existsSync(heartbeat) && !existsSync(noSession));
+        await toolResult(client, 'nr_observe_mark_task_boundary');
+        report = {
+          latency: await toolResult(client, 'nr_observe_get_latency_percentiles'),
+          quality: await toolResult(client, 'nr_observe_get_quality_proxy'),
+          retry: await toolResult(client, 'nr_observe_get_retry_alerts'),
+          turns: await toolResult(client, 'nr_observe_get_turn_analysis'),
+          task: await toolResult(client, 'nr_observe_get_workflow_trace'),
+          cost: await toolResult(client, 'nr_observe_get_cost_breakdown'),
+        };
+        await client.close();
+        await waitFor(() => !existsSync(heartbeat));
+      }, 30000);
+
+      it('times its own call and the one with no session id', () => {
+        expect(report.latency.overall).toMatchObject({ count: 2 });
+      });
+
+      it('takes no quality signal from the other session', () => {
+        expect(report.quality.totalSignals).toBe(0);
+      });
+
+      it("raises no retry alert for the other session's repeats", () => {
+        expect(report.retry.totalAlertsEmitted).toBe(0);
+      });
+
+      it('puts only those two calls in a turn', () => {
+        const turns = report.turns.recentTurns as Array<{ toolCount: number }>;
+        expect(turns.map((t) => t.toolCount)).toEqual([2]);
+      });
+
+      it('closes a task holding only those two calls', () => {
+        const calls = report.task.tool_calls as Array<{ tool: string }>;
+        expect(calls.map((c) => c.tool).sort()).toEqual(['Grep', 'Read']);
+      });
+
+      it('prices none of the calls it drained while pending from their sizes', () => {
+        expect(report.cost.total_usd).toBe(0);
+      });
+    });
+
+    it('times each of its own calls once when it adopts its session mid-stream', async () => {
+      const storage = makeStorage();
+      const client = await startEngine(storage);
+      const heartbeat = resolve(storage, 'active-own-real-session.pid');
+      let n = 0;
+      const writer = setInterval(() => {
+        writeCall(storage, 'own-real-session', `toolu_${n++}`, { tool: 'Read', success: true });
+      }, 2);
+      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), 'own-real-session');
+      try {
+        await waitFor(() => existsSync(heartbeat));
+      } finally {
+        clearInterval(writer);
+      }
+      await waitFor(() => !existsSync(resolve(storage, 'buffer-own-real-session.jsonl')));
+      const stats = await toolResult(client, 'nr_observe_get_session_stats');
+      const latency = await toolResult(client, 'nr_observe_get_latency_percentiles');
+      await client.close();
+      await waitFor(() => !existsSync(heartbeat));
+
+      expect(stats.tool_calls).toBe(n);
+      expect(latency.overall).toMatchObject({ count: n });
+    }, 30000);
+
     it('saves no session but the guessed one when the ppid breadcrumb corrects the guess', async () => {
       const storage = makeStorage();
       const cwd = makeCwd();
@@ -3123,6 +3236,9 @@ describe('stdio integration', () => {
             expect(await drained(storage, 'conv-edits')).toBe('');
 
             await adopt('real-owner-session');
+            const ownEdit = { conversation_id: 'real-owner-session', file_path: '/repo/b.ts' };
+            runHook(env, { hook_event_name: 'afterFileEdit', ...ownEdit });
+            expect(await drained(storage, 'real-owner-session')).toBe('');
             await close();
 
             expect(savedSession(storage, 'real-owner-session')).not.toBeNull();
@@ -6049,6 +6165,73 @@ describe('--local persisting the sessions it drains', () => {
     } finally {
       child.kill('SIGKILL');
       rmSync(storage, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('feeds its trackers every session it drains, since it owns none', async () => {
+    const { spawn } = await import('node:child_process');
+    const { createServer: createNetServer } = await import('node:net');
+    const storage = mkdtempSync(join(tmpdir(), 'nr-local-trackers-'));
+    const home = mkdtempSync(join(tmpdir(), 'nr-local-trackers-home-'));
+    const buffer = resolve(storage, 'buffer-drained-session.jsonl');
+    for (let n = 0; n < 3; n++) {
+      const call = {
+        tool: 'Bash',
+        timestamp: Date.now() + n,
+        sessionId: 'drained-session',
+        toolUseId: `toolu_${n}`,
+        toolInput: { command: 'npm test' },
+        outputSize: 2000,
+      };
+      appendToHookBuffer(buffer, JSON.stringify({ mode: 'pre', ...call }) + '\n');
+      appendToHookBuffer(buffer, JSON.stringify({ mode: 'post', ...call, success: false }) + '\n');
+    }
+    const port = await new Promise<number>((resolvePort, reject) => {
+      const srv = createNetServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close((err) => (err ? reject(err) : resolvePort(p)));
+      });
+      srv.on('error', reject);
+    });
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      NEW_RELIC_AI_MCP_STORAGE_PATH: storage,
+      NR_AI_DASHBOARD_PORT: String(port),
+      NR_AI_MODE: 'local',
+      NR_AI_ALERTS_ENABLED: 'false',
+      NEW_RELIC_LICENSE_KEY: '',
+      NEW_RELIC_ACCOUNT_ID: '',
+    };
+    for (const key of Object.keys(env)) if (key.startsWith('CLAUDE')) delete env[key];
+    const child = spawn(
+      process.execPath,
+      [resolve(__dirname, '..', 'dist', 'index.js'), '--local'],
+      {
+        env,
+        stdio: 'ignore',
+      },
+    );
+    const getJson = async (path: string) =>
+      (await (await fetch(`http://127.0.0.1:${port}${path}`)).json()) as Record<string, unknown>;
+    try {
+      let retry: Record<string, unknown> = {};
+      for (let i = 0; i < 100 && retry.totalAlertsEmitted !== 1; i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        retry = await getJson('/api/retry-alerts').catch(() => ({}));
+      }
+      const context = await getJson('/api/context?sessionId=drained-session');
+
+      expect(retry.totalAlertsEmitted).toBe(1);
+      expect(context.toolContributions).toEqual([
+        expect.objectContaining({ tool: 'Bash', totalBytes: 6000 }),
+      ]);
+    } finally {
+      child.kill('SIGKILL');
+      rmSync(storage, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
     }
   }, 30000);
 });
