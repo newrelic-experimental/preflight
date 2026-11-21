@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { SkillActivationTracker } from '../metrics/skill-activation-tracker.js';
+import { type ClosedSkillRun, SkillRunLedger } from '../metrics/skill-run-ledger.js';
 import { TurnCostAttributor } from '../metrics/turn-cost-attributor.js';
 import type { WorkflowRunMetrics } from '../metrics/workflow-run-tracker.js';
 import type { ToolCallRecord } from '../storage/types.js';
@@ -11,6 +12,7 @@ import {
   toolCallToNrEvent,
   turnCostToNrEvents,
   workflowRunToNrEvent,
+  workUnitToNrEvent,
 } from './nr-ingest.js';
 
 const DOC = readFileSync(join(process.cwd(), 'docs/UNIT_OF_WORK_SCHEMA.md'), 'utf8');
@@ -78,6 +80,10 @@ function emittedEvents(): Record<string, Record<string, unknown>> {
   const attributor = new TurnCostAttributor();
   attributor.recordToolCall(record);
   const [turnCost] = turnCostToNrEvents(attributor.recordTokenEvent(makeTokenEvent(2000)), ATTRS);
+  const closed: ClosedSkillRun[] = [];
+  const ledger = new SkillRunLedger((run) => closed.push(run));
+  ledger.recordRunOpened(activeSkill, { sessionId: 'sess-1', timestamp: 1000 });
+  ledger.flush();
   return {
     AiSkillRun: skillRunToNrEvent(activeSkill, {
       timestamp: 1000,
@@ -90,6 +96,7 @@ function emittedEvents(): Record<string, Record<string, unknown>> {
     }),
     AiToolCall: toolCallToNrEvent(record, ATTRS),
     AiTurnCost: turnCost,
+    AiWorkUnit: workUnitToNrEvent(closed[0]!, ATTRS),
     AiSubagentTurn: subagentTurnToNrEvent(
       {
         workflow_run_id: 'wf-1',
