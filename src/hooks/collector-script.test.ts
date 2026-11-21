@@ -1546,6 +1546,125 @@ describe('collector-script', () => {
       expect(event.outputContent).not.toContain('eyJhbGciOiJIUzI1NiJ9');
     });
 
+    describe('redacts each string before it is JSON-encoded', () => {
+      const SECRET = /hunter2|sekret/;
+
+      it.each([
+        '\x1b[32mcurl -u me:hunter2 x',
+        '\x1b[1mmysql -psekret db',
+        '\fcurl -u me:hunter2 x',
+        'curl -"u" me:hunter2 x',
+        'curl -u"" me:hunter2 x',
+        'curl -s"u" me:hunter2 x',
+        'curl -"t" hunter2 x',
+      ])('stores %j in content as its redacted command', (command) => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+        processHook(makePreToolUse({ tool_name: 'Bash', tool_input: { command } }));
+        processHook(
+          makePostToolUse({
+            tool_name: 'Bash',
+            tool_input: { command: 'make' },
+            tool_response: { stdout: command, stderr: '' },
+          }),
+        );
+
+        const [pre, post] = readBufferEvents();
+        const stored = (pre!.toolInput as { command: string }).command;
+        expect(stored).not.toMatch(SECRET);
+        expect(JSON.parse(pre!.inputContent as string)).toEqual({ command: stored });
+        expect(JSON.parse(post!.outputContent as string)).toEqual({ stdout: stored, stderr: '' });
+      });
+
+      const nested = {
+        steps: [{ run: '\x1b[32mcurl -u me:hunter2 x' }, 'curl -"u" me:hunter2 y'],
+        'mysql -psekret': 1,
+        env: 'export API_TOKEN="a b"',
+      };
+      const redacted = {
+        steps: [{ run: '\x1b[32mcurl [REDACTED] x' }, 'curl -"[REDACTED] y'],
+        'mysql [REDACTED]': 1,
+        env: 'export API_[REDACTED]',
+      };
+
+      it.each([
+        ['PreToolUse', makePreToolUse({ tool_input: nested }), 'inputContent'],
+        ['PostToolUse', makePostToolUse({ tool_response: nested }), 'outputContent'],
+        ['BeforeTool', makeGeminiBeforeTool({ tool_input: nested }), 'inputContent'],
+        ['AfterTool', makeGeminiAfterTool({ tool_response: nested }), 'outputContent'],
+        [
+          'Antigravity PreToolUse',
+          makeAntigravityPreToolUse({ toolCall: { name: 'run_command', args: nested } }),
+          'inputContent',
+        ],
+        ['StopFailure', makeStopFailure({ error_details: nested }), 'errorDetails'],
+      ])('in arrays, objects and keys of a %s payload', (_, payload, field) => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+        processHook(payload);
+
+        const content = readBufferEvents()[0]![field] as string;
+        expect(JSON.parse(content)).toEqual(redacted);
+      });
+
+      const capped = 'x'.repeat(240) + ' sk-' + 'a'.repeat(40);
+      const cursorRead = JSON.stringify({
+        hook_event_name: 'beforeReadFile',
+        conversation_id: 'conv-1',
+        generation_id: 'gen-1',
+        content: capped,
+        file_path: 'notes.txt',
+      });
+
+      it.each([
+        ['PostToolUse', makePostToolUse({ tool_response: { data: capped } }), 'outputContent'],
+        ['Cursor beforeReadFile', cursorRead, 'outputContent'],
+        [
+          'StopFailure',
+          makeStopFailure({ last_assistant_message: capped }),
+          'lastAssistantMessage',
+        ],
+      ])('redacts a secret that the length cap would cut short in a %s', (name, payload, field) => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
+
+        processHook(payload);
+
+        const text = 'x'.repeat(240) + ' [REDACTED]';
+        expect(readBufferEvents()[0]![field]).toBe(
+          name === 'PostToolUse'
+            ? JSON.stringify({ data: text }).slice(0, 256) + '...[truncated]'
+            : text,
+        );
+      });
+
+      it('keeps a value inside the cap when a later key is longer than the cap', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
+
+        processHook(makePostToolUse({ tool_response: { a: 'value', ['k'.repeat(300)]: 1 } }));
+
+        expect(readBufferEvents()[0]!.outputContent).toMatch(/^\{"a":"value","kkk/);
+      });
+
+      it('marks a string past the cap as truncated when redaction pulls it inside', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
+        const pem =
+          '-----BEGIN PRIVATE KEY-----\n' + 'A'.repeat(300) + '\n-----END PRIVATE KEY-----';
+
+        processHook(
+          makePostToolUse({ tool_response: { a: pem, b: 'curl -u me:hunter2 x', c: 'tail' } }),
+        );
+
+        expect(JSON.parse(readBufferEvents()[0]!.outputContent as string)).toEqual({
+          a: '[REDACTED]',
+          b: '...[truncated]',
+          c: '...[truncated]',
+        });
+      });
+    });
+
     it('truncates content exceeding max length', () => {
       process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
       process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
