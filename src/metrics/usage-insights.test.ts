@@ -236,6 +236,25 @@ describe('computeUsageInsights', () => {
       expect(report.totalTokens).toBe(100);
     });
 
+    it.each([0, null])(
+      'counts an unpriced session (estimatedCostUsd %p) that overlaps today, with pro-rated tokens',
+      (estimatedCostUsd) => {
+        const unpriced = makeSummary({
+          startTime: TODAY_START - 6 * 60 * 60 * 1000,
+          endTime: TODAY_NOW,
+          estimatedCostUsd,
+          tokensInput: 100,
+          tokensOutput: 100,
+        });
+
+        const report = today([unpriced]);
+
+        expect(report.sessionCount).toBe(1);
+        expect(report.totalCostUsd).toBe(0);
+        expect(report.totalTokens).toBe(100);
+      },
+    );
+
     it('excludes a session that ended before local midnight', () => {
       const ended = makeSummary({
         startTime: TODAY_START - 30 * 60_000,
