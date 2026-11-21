@@ -705,6 +705,16 @@ describe('startRetentionSweep()', () => {
     clearInterval(handle as NodeJS.Timeout);
   });
 
+  it('removes week-old self-report claims on start', () => {
+    mkdirSync(resolve(storagePath, 'self-reports', 'conv-old'), { recursive: true });
+    const oldClaim = writeOldFile('self-reports/conv-old', 'report-old-1-0123456789abcdef');
+
+    const handle = startRetentionSweep({ storagePath, retainSessionsDays: 90 });
+
+    expect(existsSync(oldClaim)).toBe(false);
+    clearInterval(handle as NodeJS.Timeout);
+  });
+
   it('re-runs the sweep every 6 hours', () => {
     const handle = startRetentionSweep({ storagePath, retainSessionsDays: 90 });
 
