@@ -9,7 +9,7 @@ description: A versioned view over existing New Relic events that describes one 
 
 This version is independent of the npm package version and of each event's `event_version`. It is published here only. No event carries it, so a consumer detects a breaking change by reading this page or the changelog, not by querying New Relic.
 
-This schema is a view over existing events. A skill run or slash command has one `AiSkillRun` row, sent when the run opens. It names the run but carries no cost, tokens, or duration. A subagent invocation has no such row. You build each unit's cost, tokens, and duration by aggregating the rows listed here. Events reach New Relic only when export is on. Local mode sends none.
+This schema is a view over existing events. A skill run or slash command has one `AiSkillRun` row, sent when the run opens, which names it. It also has one `AiWorkUnit` row, sent when it ends, which carries its duration and its tool calls' cost and tokens. A subagent invocation has neither, so you build its cost, tokens, and duration from the rows listed here, as you do a run's reply cost. Events reach New Relic only when export is on. Local mode sends none.
 
 ## One unit is a skill run, a slash command, or a subagent invocation
 
@@ -68,7 +68,7 @@ Each status means one of the following:
 These gaps affect the questions a shared skill library asks. None has a fix inside this schema, because each needs an emitter change.
 
 - **A reply at the end of a run can miss it or land on the next one.** A response row takes the run open when Preflight reads its report, which can lag the reply by about 2 seconds. A prompt sent inside that window can leave the last reply of the previous run without the stamp, or give it the stamp of a `/<skill>` the prompt opened.
-- **A run with no tool calls has no duration.** Its `AiSkillRun` row names it, and its `AiTurnCost` response rows carry its cost and tokens. It has no `AiToolCall` row, so the duration recipe leaves it out. Count runs from `AiToolCall` and `AiSkillRun` together.
+- **A run with no tool calls has a duration only on `AiWorkUnit`.** Its `AiSkillRun` row names it, and its `AiTurnCost` response rows carry its cost and tokens, which its `AiWorkUnit` row leaves out. It has no `AiToolCall` row, so the duration recipe leaves it out. Count runs from `AiToolCall` and `AiSkillRun` together.
 - **Subagent spend is not on the skill.** `AiSubagentTurn` has no `skill_*` attributes. The only link is `AiToolCall`, where a subagent's calls carry both `agent_id` and `skill_run_id`. A subagent that made no tool call, or whose calls had no `agent_id` when Preflight processed them, has no link. A subagent that opens its own skill links to two runs.
 - **`AiTurnCost` rows on subagent calls hold main-agent cost.** Subagent tool calls enter the same burst as main-agent calls, so they take a share of the main agent's next response. The subagent's own spend is on `AiSubagentTurn`. The session total holds, but the split between skills can shift.
 - **Run boundaries are inferred.** There is no signal for a skill returning, so work after a nested skill finishes stays on the nested run. A follow-up prompt ends the run, so later work on the same skill is not counted. A subagent keeps the run the main agent had open when the subagent first appeared, even after a later prompt, which can stretch the derived duration.
@@ -80,7 +80,7 @@ These gaps affect the questions a shared skill library asks. None has a fix insi
 | Question                                      | Answer                                                                                                                  |
 | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | Which skills are used?                        | Answered. `AiSkillRun` counts runs with no tool calls.                                                                  |
-| What does each cost per run?                  | Partly answered. Main-agent cost is approximate at run boundaries. Subagent spend needs an approximate join.            |
+| What does each cost per run?                  | Partly answered. `AiWorkUnit` has each run's tool-call cost. Reply cost is on `AiTurnCost`. Subagents need a join.      |
 | Did a rewrite make a skill cheaper or longer? | Partly answered. Compare two time windows of the approximate cost and duration. The events cannot identify the rewrite. |
 
 ## NRQL recipes answer each question within those gaps
@@ -174,6 +174,9 @@ An attribute is stable when a dashboard in `dashboards/` reads it, or when it is
 | `AiTurnCost`     | `team_id`               | stable       |
 | `AiTurnCost`     | `project_id`            | stable       |
 | `AiTurnCost`     | `org_id`                | stable       |
+| `AiWorkUnit`     | `skill_run_id`          | experimental |
+| `AiWorkUnit`     | `cost_usd`              | experimental |
+| `AiWorkUnit`     | `duration_ms`           | experimental |
 | `AiSubagentTurn` | `timestamp`             | experimental |
 | `AiSubagentTurn` | `agent_id`              | experimental |
 | `AiSubagentTurn` | `agent_type`            | experimental |
