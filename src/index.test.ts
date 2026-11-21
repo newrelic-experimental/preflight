@@ -1717,14 +1717,15 @@ describe('stdio integration', () => {
       );
       return client;
     };
-    const drainCalls = async (storage: string, sessionId: string, count: number, from = 0) => {
+    let drainedCalls = 0;
+    const drainCalls = async (storage: string, sessionId: string, count: number) => {
       const buffer = resolve(storage, `buffer-${sessionId}.jsonl`);
       const lines = Array.from({ length: count }, (_, n) => {
         const call = {
           tool: 'Read',
           timestamp: Date.now() + n,
           sessionId,
-          toolUseId: `toolu_${from + n}`,
+          toolUseId: `toolu_drained_${++drainedCalls}`,
         };
         return [
           { mode: 'pre', ...call },
@@ -2017,6 +2018,55 @@ describe('stdio integration', () => {
       expect(savedCalls(storage, 'other-real-session')).toBe(1);
     }, 30000);
 
+    it('counts a call once when another engine drained its post and saved before this one adopted', async () => {
+      const storage = makeStorage();
+      const client = await startEngine(storage);
+      writeHook(storage, 'own-real-session', 'pre', 'toolu_split');
+      await waitFor(drained(storage, 'own-real-session'));
+      const owner = await startOwner(storage, 'own-real-session');
+      writeHook(storage, 'own-real-session', 'post', 'toolu_split');
+      await waitFor(drained(storage, 'own-real-session'));
+      await stopOwner(storage, owner, 'own-real-session');
+      const savedByOwner = savedCalls(storage, 'own-real-session');
+      await adoptAndStop(storage, client, 'own-real-session');
+
+      expect(savedByOwner).toBe(1);
+      expect(savedCalls(storage, 'own-real-session')).toBe(1);
+    }, 30000);
+
+    it("adds no call that the session's file already holds when its counted mark is missing", async () => {
+      const storage = makeStorage();
+      const owner = await startOwner(storage, 'other-real-session');
+      writeHook(storage, 'other-real-session', 'pre', 'toolu_split');
+      await waitFor(drained(storage, 'other-real-session'));
+      await stopOwner(storage, owner, 'other-real-session');
+      expect(savedCalls(storage, 'other-real-session')).toBe(1);
+      rmSync(resolve(storage, 'counted'), { recursive: true, force: true });
+      const client = await startEngine(storage);
+      writeHook(storage, 'other-real-session', 'post', 'toolu_split');
+      await waitFor(drained(storage, 'other-real-session'));
+      await adoptAndStop(storage, client, 'own-real-session');
+
+      expect(savedCalls(storage, 'other-real-session')).toBe(1);
+    }, 30000);
+
+    it('adds no call the file held before its first checkpoint, at a later checkpoint', async () => {
+      const storage = makeStorage();
+      const owner = await startOwner(storage, 'other-real-session');
+      writeHook(storage, 'other-real-session', 'pre', 'toolu_split');
+      await waitFor(drained(storage, 'other-real-session'));
+      await stopOwner(storage, owner, 'other-real-session');
+      rmSync(resolve(storage, 'counted'), { recursive: true, force: true });
+      const client = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
+      await drainCalls(storage, 'other-real-session', 1);
+      await waitFor(() => savedCalls(storage, 'other-real-session') === 2);
+      writeHook(storage, 'other-real-session', 'post', 'toolu_split');
+      await waitFor(drained(storage, 'other-real-session'));
+      await adoptAndStop(storage, client, 'own-real-session');
+
+      expect(savedCalls(storage, 'other-real-session')).toBe(2);
+    }, 30000);
+
     it('counts a guess once when a correction saves what its own checkpoint already saved', async () => {
       const storage = makeStorage();
       const cwd = makeCwd();
@@ -2102,13 +2152,13 @@ describe('stdio integration', () => {
         for (; next <= 20 && savedCalls(storage, id) === null; next++) {
           // Both engines poll every 100 ms, so a fixed phase could hand every call to one of them.
           await sleep((next * 37) % 100);
-          await drainCalls(storage, id, 1, next);
+          await drainCalls(storage, id, 1);
           for (let i = 0; i < 6 && savedCalls(storage, id) === null; i++) {
             await sleep(100);
           }
         }
         expect(savedCalls(storage, id)).not.toBeNull();
-        return { first, checkpointing, next };
+        return { first, checkpointing };
       };
 
       it('stays completed across its checkpoints after a pending engine with no live owner completes it', async () => {
@@ -2124,11 +2174,11 @@ describe('stdio integration', () => {
 
       it('goes back in progress after a pending engine completes it when the session makes a new call', async () => {
         const storage = makeStorage();
-        const { first, checkpointing, next } = await startWithSessionDrained(storage);
+        const { first, checkpointing } = await startWithSessionDrained(storage);
         await first.close();
         await waitFor(() => outcome(storage) === 'completed');
 
-        await drainCalls(storage, id, 1, next);
+        await drainCalls(storage, id, 1);
         await waitFor(() => outcome(storage) === 'in progress');
         await checkpointing.close();
         await waitFor(() => outcome(storage) === 'completed');
@@ -2147,7 +2197,7 @@ describe('stdio integration', () => {
         );
         const owner = await startEngine(storage, undefined, { CLAUDE_JOB_DIR: jobDir });
         await waitFor(() => existsSync(resolve(storage, `active-${id}.pid`)));
-        await drainCalls(storage, id, 1, 1);
+        await drainCalls(storage, id, 1);
         await owner.close();
         await waitFor(() => outcome(storage) === 'completed');
 
