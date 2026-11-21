@@ -2338,7 +2338,8 @@ async function main(): Promise<void> {
       // is hot-swapped to the scoped store via replaceStore().
       drainAllSessions: !options.stdio || isProvisional,
       onPreToolUse: (event) => {
-        if (event.toolUseId)
+        // Only the main agent's records read a start entry.
+        if (event.toolUseId && !event.agentId)
           skillActivationTracker.recordToolStart(event.sessionId, event.toolUseId);
       },
       onRecordAmend: (record) => {
