@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 // src/hooks/collector-script.ts
-import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, mkdirSync as mkdirSync2, existsSync, utimesSync } from "node:fs";
-import { resolve as resolve2, dirname as dirname2 } from "node:path";
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, mkdirSync as mkdirSync3, existsSync, utimesSync } from "node:fs";
+import { resolve as resolve3, dirname as dirname3 } from "node:path";
 import { homedir } from "node:os";
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 
 // src/redaction-patterns.ts
 var AFTER_ESCAPE = String.raw`\\[nrt]|\\u[0-9a-fA-F]{4}|\x1b\[[0-9;]{0,20}m|%[0-9a-fA-F]{2}`;
@@ -298,6 +298,37 @@ function resolveRecordContent(highSecurity, explicitValue) {
   return highSecurity ? false : explicitValue;
 }
 
+// src/platforms/platform-names.ts
+var PLATFORM_NAMES = [
+  "claude-code",
+  "cursor",
+  "windsurf",
+  "copilot",
+  "copilot-app",
+  "copilot-sdk",
+  "zed",
+  "continue",
+  "amazon-q",
+  "kiro",
+  "droid",
+  "gemini-cli",
+  "cline",
+  "codex",
+  "opencode",
+  "kilocode",
+  "pi",
+  "antigravity",
+  "generic-mcp"
+];
+var ENGINE_ENV_KEYS = ["MCP_CLIENT", "NEW_RELIC_AI_PLATFORM"];
+var aliasKey = (name) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
+var PLATFORM_BY_ALIAS = new Map(
+  PLATFORM_NAMES.map((n) => [aliasKey(n), n])
+);
+function canonicalPlatformName(name) {
+  return name ? PLATFORM_BY_ALIAS.get(aliasKey(name)) : void 0;
+}
+
 // src/platforms/claude-code-adapter.ts
 var CLAUDE_CODE_PLATFORM_NAME = "claude-code";
 var CLAUDE_CODE_ENV_SIGNALS = [
@@ -331,45 +362,140 @@ function hookEventFromArg(arg) {
   );
 }
 
-// src/platforms/platform-names.ts
-var PLATFORM_NAMES = [
-  "claude-code",
-  "cursor",
-  "windsurf",
-  "copilot",
-  "copilot-app",
-  "copilot-sdk",
-  "zed",
-  "continue",
-  "amazon-q",
-  "kiro",
-  "droid",
-  "gemini-cli",
-  "cline",
-  "codex",
-  "opencode",
-  "kilocode",
-  "pi",
-  "antigravity",
-  "generic-mcp"
-];
-var ENGINE_ENV_KEYS = ["MCP_CLIENT", "NEW_RELIC_AI_PLATFORM"];
-var aliasKey = (name) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
-var PLATFORM_BY_ALIAS = new Map(
-  PLATFORM_NAMES.map((n) => [aliasKey(n), n])
-);
-function canonicalPlatformName(name) {
-  return name ? PLATFORM_BY_ALIAS.get(aliasKey(name)) : void 0;
-}
-
 // src/platforms/types.ts
 var UNATTRIBUTED_BREADCRUMB_WRITER = "unattributed";
 
+// src/hooks/self-report.ts
+import { createHash } from "node:crypto";
+import { closeSync, constants, mkdirSync, openSync, unlinkSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+
+// src/hooks/synthetic-session-id.ts
+function isSyntheticSessionId(id) {
+  if (!id) return false;
+  return id.startsWith("local-") || id.startsWith("proxy-") || id.startsWith("pending-");
+}
+
+// src/hooks/self-report.ts
+var REPORT_TOKENS_TOOL_NAME = "nr_observe_report_tokens";
+var MAX_TOKENS = 1e7;
+var REPORT_ID_RE = /^[A-Za-z0-9_-]{8,128}$/;
+var MODEL_RE = /^[a-zA-Z0-9._:-]{1,256}$/;
+var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
+var REQUIRED_COUNTS = ["input_tokens", "output_tokens"];
+var OPTIONAL_COUNTS = ["thinking_tokens", "cache_read_tokens", "cache_creation_tokens"];
+function clampToken(v) {
+  if (!Number.isFinite(v)) return 0;
+  return Math.min(Math.max(0, Math.floor(v)), MAX_TOKENS);
+}
+function isPreflightServerName(name) {
+  return typeof name === "string" && (/preflight/i.test(name) || name === "nr-ai-observability");
+}
+function reportKey(r) {
+  const counts = [r.model, r.inputTokens, r.outputTokens, r.thinkingTokens, r.cacheReadTokens];
+  const digest = createHash("sha256").update(JSON.stringify([...counts, r.cacheCreationTokens])).digest("hex");
+  return `${r.reportId}-${digest.slice(0, 16)}`;
+}
+function isConversationId(id) {
+  return typeof id === "string" && SESSION_ID_RE.test(id) && id !== "unknown" && !isSyntheticSessionId(id);
+}
+function decodeObject(raw) {
+  let value = raw;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return void 0;
+    }
+  }
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
+function parseSelfReport(args) {
+  const fail = (reason) => ({ ok: false, reason });
+  const a = decodeObject(args);
+  if (!a) return fail("arguments are not a JSON object");
+  if (typeof a.report_id !== "string" || !REPORT_ID_RE.test(a.report_id)) {
+    return fail("report_id must be 8 to 128 characters of [A-Za-z0-9_-], new for every call");
+  }
+  if (typeof a.model !== "string" || !MODEL_RE.test(a.model)) {
+    return fail("model must be 1 to 256 characters of [a-zA-Z0-9._:-]");
+  }
+  const counts = {};
+  const readCounts = (fields, fallback) => {
+    for (const field of fields) {
+      const n = a[field] ?? fallback;
+      if (typeof n !== "number" || !Number.isFinite(n) || n < 0) return field;
+      counts[field] = clampToken(n);
+    }
+    return void 0;
+  };
+  const bad = readCounts(REQUIRED_COUNTS) ?? readCounts(OPTIONAL_COUNTS, 0);
+  if (bad) return fail(`${bad} must be a non-negative number`);
+  return {
+    ok: true,
+    report: {
+      reportId: a.report_id,
+      model: a.model,
+      inputTokens: counts.input_tokens,
+      outputTokens: counts.output_tokens,
+      thinkingTokens: counts.thinking_tokens,
+      cacheReadTokens: counts.cache_read_tokens,
+      cacheCreationTokens: counts.cache_creation_tokens
+    }
+  };
+}
+function hookAcknowledged(result, reportId) {
+  const value = decodeObject(result);
+  if (!value || value.isError === true) return false;
+  const replies = Array.isArray(value.content) ? value.content.map(
+    (block) => decodeObject(block?.text)
+  ) : [value];
+  return replies.some(
+    (reply) => reply?.accepted === true && reply.recorded_by === "hook" && reply.report_id === reportId
+  );
+}
+function hookSelfReportLine(call, conversationId, timestamp, platform) {
+  const isReport = call.tool === REPORT_TOKENS_TOOL_NAME && isPreflightServerName(call.server);
+  if (!isReport || !isConversationId(conversationId)) return void 0;
+  const parsed = parseSelfReport(call.args);
+  if (!parsed.ok || !hookAcknowledged(call.result, parsed.report.reportId)) return void 0;
+  const { report } = parsed;
+  return {
+    mode: "self_report",
+    tool: REPORT_TOKENS_TOOL_NAME,
+    timestamp,
+    sessionId: conversationId,
+    ...report,
+    platform
+  };
+}
+function claimPath(storageDir, line) {
+  return resolve(storageDir, "self-reports", line.sessionId, reportKey(line));
+}
+function claimReport(storageDir, line) {
+  const path = claimPath(storageDir, line);
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 448 });
+    closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 384));
+    return true;
+  } catch {
+    return false;
+  }
+}
+function releaseReport(storageDir, line) {
+  try {
+    unlinkSync(claimPath(storageDir, line));
+  } catch {
+    return;
+  }
+}
+
 // src/hooks/session-breadcrumbs.ts
-import { resolve } from "node:path";
+import { resolve as resolve2 } from "node:path";
 var BREADCRUMBS_DIR = "breadcrumbs";
+var STALE_CWD_BREADCRUMB_MS = 7 * 24 * 60 * 60 * 1e3;
 function breadcrumbRoot(storagePath, writer) {
-  return resolve(storagePath, BREADCRUMBS_DIR, writer);
+  return resolve2(storagePath, BREADCRUMBS_DIR, writer);
 }
 function breadcrumbWriter(env) {
   for (const key of ENGINE_ENV_KEYS) {
@@ -382,14 +508,14 @@ function breadcrumbWriter(env) {
 
 // src/storage/hook-buffer.ts
 import {
-  closeSync,
-  constants,
+  closeSync as closeSync2,
+  constants as constants2,
   fstatSync,
-  openSync,
+  openSync as openSync2,
   readFileSync,
   readSync,
   statSync,
-  unlinkSync,
+  unlinkSync as unlinkSync2,
   writeSync
 } from "node:fs";
 var DRAIN_SEAL = "\0preflight-drain-seal\n";
@@ -425,22 +551,39 @@ function isAt(path, file) {
   const now = statSync(path, { bigint: true, throwIfNoEntry: false });
   return now !== void 0 && now.ino === file.ino && now.dev === file.dev;
 }
+var LineWrittenError = class extends Error {
+  constructor(cause) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+};
+function landedBeforeSeal(fd, sealFloor) {
+  return !readRange(fd, sealFloor, offsetAfterWrite(fd)).includes(DRAIN_SEAL);
+}
 function appendOnce(path, data) {
-  const fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_APPEND, 384);
+  const fd = openSync2(path, constants2.O_RDWR | constants2.O_CREAT | constants2.O_APPEND, 384);
+  let landed = false;
   try {
-    const opened = fstatSync(fd, { bigint: true });
-    if (!isAt(path, opened)) return "moved";
-    const sealFloor = Number(opened.size);
-    const written = writeSync(fd, data);
-    if (written < data.length) {
-      writeSync(fd, TORN_LINE_END);
-      return "redo";
+    try {
+      const opened = fstatSync(fd, { bigint: true });
+      if (!isAt(path, opened)) return "moved";
+      const sealFloor = Number(opened.size);
+      const written = writeSync(fd, data);
+      try {
+        if (written < data.length) {
+          writeSync(fd, TORN_LINE_END);
+          return "redo";
+        }
+        landed = isAt(path, opened) || landedBeforeSeal(fd, sealFloor);
+      } catch (err) {
+        landed = written >= data.length - 1 && landedBeforeSeal(fd, sealFloor);
+        throw err;
+      }
+      return landed ? "kept" : "redo";
+    } finally {
+      closeSync2(fd);
     }
-    if (isAt(path, opened)) return "kept";
-    const start = offsetAfterWrite(fd) - data.length;
-    return readRange(fd, sealFloor, start).includes(DRAIN_SEAL) ? "redo" : "kept";
-  } finally {
-    closeSync(fd);
+  } catch (err) {
+    throw landed ? new LineWrittenError(err) : err;
   }
 }
 function appendToHookBuffer(path, text) {
@@ -450,7 +593,7 @@ function appendToHookBuffer(path, text) {
   if (!text.endsWith("\n") || text.indexOf("\n") !== text.length - 1) {
     throw new Error(`Hook buffer text must be exactly one newline-terminated line: ${path}`);
   }
-  const data = Buffer.from(text);
+  const data = Buffer.from("\n" + text);
   let writes = 0;
   for (let opens = 0; opens < MAX_OPENS; opens++) {
     const landing = appendOnce(path, data);
@@ -476,25 +619,451 @@ function mcpPrToolAction(toolName) {
   return Object.hasOwn(MCP_PR_TOOL_ACTION, bare) ? MCP_PR_TOOL_ACTION[bare] : void 0;
 }
 
+// src/hooks/bash-classifier.ts
+var GIT_COMMANDS = /* @__PURE__ */ new Set(["git", "gh", "gitk", "tig"]);
+var PACKAGE_MANAGERS = /* @__PURE__ */ new Set([
+  "npm",
+  "yarn",
+  "pnpm",
+  "bun",
+  "pip",
+  "pip3",
+  "pipx",
+  "poetry",
+  "uv",
+  "cargo",
+  "gem",
+  "bundle",
+  "bundler",
+  "composer",
+  "brew",
+  "apt",
+  "apt-get",
+  "yum",
+  "dnf",
+  "apk"
+]);
+var TEST_RUNNERS = /* @__PURE__ */ new Set([
+  "jest",
+  "vitest",
+  "mocha",
+  "pytest",
+  "rspec",
+  "phpunit",
+  "tap",
+  "ava",
+  "cypress",
+  "playwright",
+  "karma",
+  "tox",
+  "nose",
+  "nose2",
+  "unittest",
+  "busted",
+  "ginkgo"
+]);
+var BUILD_TOOLS = /* @__PURE__ */ new Set([
+  "tsc",
+  "webpack",
+  "vite",
+  "rollup",
+  "esbuild",
+  "parcel",
+  "turbo",
+  "nx",
+  "make",
+  "gmake",
+  "cmake",
+  "ninja",
+  "gradle",
+  "gradlew",
+  "mvn",
+  "sbt",
+  "ant",
+  "rake",
+  "meson",
+  "bazel",
+  "buck",
+  "pants",
+  "swc",
+  "babel"
+]);
+var CONTAINER_TOOLS = /* @__PURE__ */ new Set([
+  "docker",
+  "podman",
+  "docker-compose",
+  "podman-compose",
+  "kubectl",
+  "oc",
+  "helm",
+  "k9s",
+  "kustomize",
+  "kind",
+  "minikube",
+  "skaffold",
+  "buildah",
+  "crictl"
+]);
+var NETWORK_TOOLS = /* @__PURE__ */ new Set([
+  "curl",
+  "wget",
+  "http",
+  "httpie",
+  "xh",
+  "nc",
+  "ncat",
+  "ssh",
+  "scp",
+  "sftp",
+  "rsync",
+  "ftp",
+  "telnet",
+  "mosh"
+]);
+var FS_OPS = /* @__PURE__ */ new Set([
+  "ls",
+  "cat",
+  "cp",
+  "mv",
+  "rm",
+  "rmdir",
+  "mkdir",
+  "touch",
+  "find",
+  "chmod",
+  "chown",
+  "chgrp",
+  "tar",
+  "zip",
+  "unzip",
+  "gzip",
+  "gunzip",
+  "bzip2",
+  "xz",
+  "tree",
+  "ln",
+  "stat",
+  "du",
+  "df",
+  "pwd",
+  "realpath",
+  "readlink",
+  "basename",
+  "dirname"
+]);
+var SEARCH_TOOLS = /* @__PURE__ */ new Set(["grep", "rg", "ag", "ack", "sed", "awk", "fzf"]);
+var SCRIPT_INTERPRETERS = /* @__PURE__ */ new Set([
+  "bash",
+  "sh",
+  "zsh",
+  "ksh",
+  "fish",
+  "dash",
+  "python",
+  "python3",
+  "python2",
+  "node",
+  "deno",
+  "ruby",
+  "perl",
+  "php",
+  "lua",
+  "tsx",
+  "ts-node"
+]);
+var DESTRUCTIVE_PATTERNS = [
+  /\brm\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*\b|--recursive\b)/,
+  // git push --force / -f, but NOT --force-with-lease / --force-if-includes
+  // (which are the recommended *safe* forms). Match the force token anywhere
+  // in the invocation, not just immediately after `push`.
+  /\bgit\s+push\b(?=.*\s(?:--force(?!-(?:with-lease|if-includes))\b|-f\b))/i,
+  /\bgit\s+reset\s+--hard\b/i,
+  // git clean only deletes with -f/--force (clean.requireForce defaults to true);
+  // -n/--dry-run and bare `git clean` are safe and stay unflagged.
+  /\bgit\s+clean\b(?=.*\s(?:-[a-zA-Z]*f[a-zA-Z]*|--force)\b)/i,
+  /\bfind\b.*\s-delete\b/i,
+  /\bdd\s+if=/i,
+  /\bmkfs(?:\.\w+)?\b/i,
+  /\bshred\b/i,
+  /\b(?:DROP|TRUNCATE)\s+(?:TABLE|DATABASE|SCHEMA)\b/i,
+  /\bDELETE\s+FROM\b/i,
+  /\bchmod\s+777\b/,
+  />\s*\/dev\/sd[a-z]/,
+  /\b(?:curl|wget)\b.*\|\s*(?:\/[^\s]*\/)?(?:ba|z|k|da|fi|tc|c)?sh\b/i,
+  /\b(?:curl|wget)\b.*\|\s*(?:\/[^\s]*\/)?(?:node|python3?|perl|ruby)\b/i
+];
+var CLOSED_BY = {
+  single: "'",
+  double: '"',
+  "ansi-c": "'",
+  comment: "\n"
+};
+var ESCAPES_IN = /* @__PURE__ */ new Set(["none", "double", "ansi-c"]);
+var METACHAR = /[\s;&|(]/;
+var HEREDOC_OPERATOR = /(?<!<)<<(-?)[ \t]*/y;
+var WORD_END = /[\s;&|()<>]/;
+var LINE_CONTINUES = /(?<!\\)(?:\\\\)*\\$/;
+function stateOpenedAt(command, i, atWordStart) {
+  const ch = command[i];
+  if (ch === "'") return "single";
+  if (ch === '"') return "double";
+  if (ch === "$" && command[i + 1] === "'") return "ansi-c";
+  if (ch === "#" && atWordStart) return "comment";
+  return "none";
+}
+function readHeredocWord(command, start) {
+  let delimiter = "";
+  let quoted = false;
+  let i = start;
+  while (i < command.length && !WORD_END.test(command[i])) {
+    const ch = command[i];
+    if (ch === "\\") {
+      if (i + 1 >= command.length) return void 0;
+      delimiter += command[i + 1];
+      i += 2;
+    } else if (ch === "'" || ch === '"' || ch === "$" && command[i + 1] === "'") {
+      const open = ch === "$" ? i + 1 : i;
+      const close = command.indexOf(command[open], open + 1);
+      if (close === -1) return void 0;
+      delimiter += command.slice(open + 1, close);
+      i = close + 1;
+    } else {
+      delimiter += ch;
+      i++;
+      continue;
+    }
+    quoted = true;
+  }
+  return i === start ? void 0 : { delimiter, quoted, end: i };
+}
+function heredocBodiesEnd(command, start, heredocs) {
+  let i = start;
+  for (const { delimiter, stripTabs, quoted } of heredocs) {
+    let line = "";
+    while (i < command.length) {
+      const eol = command.indexOf("\n", i);
+      const end = eol === -1 ? command.length : eol;
+      const segment = command.slice(i, end);
+      i = end + 1;
+      if (!quoted && LINE_CONTINUES.test(segment)) {
+        line += segment.slice(0, -1);
+        continue;
+      }
+      line += segment;
+      if ((stripTabs ? line.replace(/^\t+/, "") : line) === delimiter) break;
+      line = "";
+    }
+  }
+  return i;
+}
+function maskQuotedRegions(command) {
+  let out = "";
+  let state = "none";
+  let atWordStart = true;
+  const heredocs = [];
+  const parens = [];
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i];
+    if (ch === "\\" && ESCAPES_IN.has(state)) {
+      out += state === "none" ? command.slice(i, i + 2) : "  ";
+      i += 2;
+      atWordStart = false;
+      continue;
+    }
+    if (state === "none") {
+      HEREDOC_OPERATOR.lastIndex = i;
+      const operator = HEREDOC_OPERATOR.exec(command);
+      const word = operator && readHeredocWord(command, i + operator[0].length);
+      if (operator && word) {
+        heredocs.push({
+          delimiter: word.delimiter,
+          stripTabs: operator[1] === "-",
+          quoted: word.quoted
+        });
+        out += command.slice(i, word.end);
+        i = word.end;
+        atWordStart = false;
+        continue;
+      }
+      state = stateOpenedAt(command, i, atWordStart);
+      if (state === "ansi-c") {
+        out += " ";
+        i++;
+      }
+      if (state !== "none") {
+        out += " ";
+        i++;
+        atWordStart = false;
+        continue;
+      }
+      if (ch === "$" && command[i + 1] === "(") {
+        parens.push("substitution");
+        out += "$(";
+        i += 2;
+        atWordStart = true;
+        continue;
+      }
+      if (ch === "(") parens.push("group");
+      out += ch;
+      i++;
+      atWordStart = ch === ")" ? parens.pop() !== "substitution" : METACHAR.test(ch);
+      if (ch === "\n" && heredocs.length > 0) {
+        const end = heredocBodiesEnd(command, i, heredocs);
+        out += command.slice(i, end);
+        i = end;
+        heredocs.length = 0;
+      }
+      continue;
+    }
+    if (ch === CLOSED_BY[state]) {
+      if (state !== "comment") {
+        out += " ";
+        i++;
+      }
+      state = "none";
+      continue;
+    }
+    out += " ";
+    i++;
+  }
+  return out;
+}
+var SUDO_VALUE_SHORT_FLAG = /^-[ughpUtCr]$/;
+var SUDO_VALUE_LONG_FLAGS = /* @__PURE__ */ new Set([
+  "--user",
+  "--group",
+  "--host",
+  "--prompt",
+  "--role",
+  "--type",
+  "--other-user",
+  "--close-from"
+]);
+var SEGMENT_SPLIT_RE = /\|\||&&|;|\|/;
+var SCRIPT_EXT_RE = /\.(?:sh|bash|zsh|py|js|mjs|cjs|ts|tsx|rb|pl|php|lua)$/i;
+function tokenize(command) {
+  return command.split(/\s+/).filter((t) => t.length > 0);
+}
+function stripEnvTokens(tokens) {
+  while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0] ?? "")) {
+    tokens.shift();
+  }
+}
+function stripSudoTokens(tokens) {
+  while (tokens.length > 0 && tokens[0] === "sudo") {
+    tokens.shift();
+    while (tokens.length > 0) {
+      const flag = tokens[0] ?? "";
+      if (!flag.startsWith("-")) break;
+      tokens.shift();
+      const next = tokens[0];
+      if (next === void 0 || next.startsWith("-")) continue;
+      if (SUDO_VALUE_SHORT_FLAG.test(flag) || SUDO_VALUE_LONG_FLAGS.has(flag)) {
+        tokens.shift();
+      }
+    }
+  }
+}
+function firstSegment(command) {
+  const idx = command.search(SEGMENT_SPLIT_RE);
+  return idx >= 0 ? command.slice(0, idx).trim() : command;
+}
+function refinePackageManager(leading, tokens) {
+  const rest = tokens.slice(1).filter((t) => !t.startsWith("-"));
+  if (rest.length === 0) return "package-manager";
+  let verbIdx = 0;
+  if (rest[0] === "run" || rest[0] === "run-script") {
+    if (rest.length < 2) return "package-manager";
+    verbIdx = 1;
+  }
+  const verb = rest[verbIdx]?.toLowerCase();
+  if (verb === void 0) return "package-manager";
+  if (verb === "test" || verb === "tests" || verb === "t") return "test-runner";
+  if (verb === "build" || verb === "compile") return "build";
+  if (verb === "lint" || verb === "typecheck" || verb === "tsc") return "build";
+  if (leading === "cargo" && verb === "test") return "test-runner";
+  if (leading === "cargo" && verb === "build") return "build";
+  if (leading === "go" && verb === "test") return "test-runner";
+  if (leading === "go" && verb === "build") return "build";
+  return "package-manager";
+}
+function classifyLeading(leading, tokens) {
+  if (leading.length === 0) return "shell-other";
+  if (GIT_COMMANDS.has(leading)) return "git";
+  if (TEST_RUNNERS.has(leading)) return "test-runner";
+  if (BUILD_TOOLS.has(leading)) return "build";
+  if (CONTAINER_TOOLS.has(leading)) return "container";
+  if (NETWORK_TOOLS.has(leading)) return "network";
+  if (SEARCH_TOOLS.has(leading)) return "search";
+  if (FS_OPS.has(leading)) return "fs-op";
+  if (PACKAGE_MANAGERS.has(leading)) return refinePackageManager(leading, tokens);
+  if ((leading === "go" || leading === "cargo") && tokens.length >= 2) {
+    return refinePackageManager(leading, tokens);
+  }
+  if (leading === "npx" || leading === "pnpx" || leading === "bunx") {
+    const next = tokens[1]?.toLowerCase();
+    if (next !== void 0) {
+      if (TEST_RUNNERS.has(next)) return "test-runner";
+      if (BUILD_TOOLS.has(next)) return "build";
+    }
+    return "package-manager";
+  }
+  if (SCRIPT_INTERPRETERS.has(leading)) return "custom-script";
+  return "shell-other";
+}
+function classifyBash(command) {
+  const trimmed = command.trim();
+  if (trimmed.length === 0) {
+    return { category: "shell-other", leading: "", isDestructive: false, isNetwork: false };
+  }
+  const masked = maskQuotedRegions(trimmed);
+  const isDestructive = DESTRUCTIVE_PATTERNS.some((p) => p.test(masked));
+  const segment = firstSegment(trimmed);
+  const tokens = tokenize(segment);
+  stripEnvTokens(tokens);
+  stripSudoTokens(tokens);
+  stripEnvTokens(tokens);
+  if (tokens.length === 0) {
+    return { category: "shell-other", leading: "", isDestructive, isNetwork: false };
+  }
+  const leadingRaw = tokens[0] ?? "";
+  const explicitScriptPath = leadingRaw.startsWith("./") || leadingRaw.startsWith("../") || SCRIPT_EXT_RE.test(leadingRaw);
+  const absolutePath = leadingRaw.startsWith("/");
+  const leading = explicitScriptPath ? leadingRaw : leadingRaw.split("/").pop() ?? leadingRaw;
+  let category = classifyLeading(leading.toLowerCase(), tokens);
+  if (category === "shell-other" && (explicitScriptPath || absolutePath)) {
+    category = "custom-script";
+  }
+  const isNetwork = category === "network" || NETWORK_TOOLS.has(leading.toLowerCase());
+  return { category, leading, isDestructive, isNetwork };
+}
+
+// src/metrics/pr-ref.ts
+var PR_REPO_RE = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
+function parsePrRepo(value) {
+  return typeof value === "string" && PR_REPO_RE.test(value) ? value.toLowerCase() : void 0;
+}
+
 // src/hooks/minted-tool-use-ids.ts
 import { randomUUID } from "node:crypto";
 import {
-  closeSync as closeSync2,
-  mkdirSync,
-  openSync as openSync2,
+  closeSync as closeSync3,
+  mkdirSync as mkdirSync2,
+  openSync as openSync3,
   readdirSync,
   renameSync,
-  unlinkSync as unlinkSync2,
+  unlinkSync as unlinkSync3,
   writeFileSync
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname as dirname2, join } from "node:path";
 var MINTED_IDS_DIR_PREFIX = "minted-ids-";
 var MINTED_ID_PREFIX = "minted-";
 var CLAIM_SUFFIX = ".claimed";
 var OPEN_ENTRY_TTL_MS = 40 * 6e4;
 var MAX_LISTINGS = 5;
 function mintedIdsDir(bufferPath) {
-  return join(dirname(bufferPath), MINTED_IDS_DIR_PREFIX + basename(bufferPath, ".jsonl"));
+  return join(dirname2(bufferPath), MINTED_IDS_DIR_PREFIX + basename(bufferPath, ".jsonl"));
 }
 function toolKey(tool) {
   const name = tool.toLowerCase();
@@ -529,7 +1098,7 @@ function mintToolUseId(bufferPath, tool, at) {
   const id = MINTED_ID_PREFIX + randomUUID();
   try {
     const dir = mintedIdsDir(bufferPath);
-    mkdirSync(dir, { recursive: true, mode: 448 });
+    mkdirSync2(dir, { recursive: true, mode: 448 });
     writeFileSync(join(dir, `${at}.${toolKey(tool)}.${id}`), "", {
       flag: "wx",
       mode: 384
@@ -549,7 +1118,7 @@ function takeMintedToolUseId(bufferPath, tool, at) {
     const counted = entries.filter((entry) => entry.lateUntil !== void 0);
     let contended = false;
     for (const entry of [...open, ...counted]) {
-      if (!claim(join(dir, entry.name), unlinkSync2)) {
+      if (!claim(join(dir, entry.name), unlinkSync3)) {
         contended = true;
         continue;
       }
@@ -561,9 +1130,9 @@ function takeMintedToolUseId(bufferPath, tool, at) {
   return void 0;
 }
 function claim(entry, act) {
-  const claimPath = entry + CLAIM_SUFFIX;
+  const claimPath2 = entry + CLAIM_SUFFIX;
   try {
-    closeSync2(openSync2(claimPath, "wx", 384));
+    closeSync3(openSync3(claimPath2, "wx", 384));
   } catch {
     return false;
   }
@@ -574,7 +1143,7 @@ function claim(entry, act) {
     return false;
   } finally {
     try {
-      unlinkSync2(claimPath);
+      unlinkSync3(claimPath2);
     } catch {
     }
   }
@@ -582,20 +1151,22 @@ function claim(entry, act) {
 
 // src/hooks/collector-script.ts
 import { realpathSync } from "node:fs";
-var SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
-var DEFAULT_STORAGE_DIR = resolve2(homedir(), ".newrelic-preflight");
+var DEFAULT_STORAGE_DIR = resolve3(homedir(), ".newrelic-preflight");
+function getStorageDir() {
+  return process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+}
 function getBufferPath(sessionId) {
   if (process.env.NEW_RELIC_AI_MCP_BUFFER_PATH !== void 0) {
     return process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
   }
-  const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+  const storageDir = getStorageDir();
   const safeId = typeof sessionId === "string" && SESSION_ID_RE.test(sessionId) ? sessionId : "unknown";
-  return resolve2(storageDir, `buffer-${safeId}.jsonl`);
+  return resolve3(storageDir, `buffer-${safeId}.jsonl`);
 }
 var HIGH_SECURITY_FROM_FILE = (() => {
   for (const dir of [".newrelic-preflight", ".nr-ai-observe"]) {
     try {
-      const configPath = resolve2(homedir(), dir, "config.json");
+      const configPath = resolve3(homedir(), dir, "config.json");
       if (existsSync(configPath)) {
         const config = JSON.parse(readFileSync2(configPath, "utf-8"));
         return config.highSecurity === true;
@@ -626,6 +1197,22 @@ function getMaxContentLength() {
   if (parsed > MAX_MAX_CONTENT_LENGTH) return MAX_MAX_CONTENT_LENGTH;
   return parsed;
 }
+var HOOK_EVENT_PLATFORM = {
+  beforeshellexecution: "cursor",
+  aftershellexecution: "cursor",
+  beforemcpexecution: "cursor",
+  aftermcpexecution: "cursor",
+  beforereadfile: "cursor",
+  afterfileedit: "cursor",
+  pre_read_code: "windsurf",
+  post_read_code: "windsurf",
+  pre_write_code: "windsurf",
+  post_write_code: "windsurf",
+  pre_run_command: "windsurf",
+  post_run_command: "windsurf",
+  pre_mcp_tool_use: "windsurf",
+  post_mcp_tool_use: "windsurf"
+};
 function detectStampPlatform() {
   for (const key of ENGINE_ENV_KEYS) {
     const name = canonicalPlatformName(process.env[key]);
@@ -637,6 +1224,12 @@ function detectStampPlatform() {
   return (process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM) || void 0;
 }
 var MAX_REDACT_BYTES = 1048576;
+var MAX_CLASSIFY_CHARS = 16384;
+function bashCommandInput(command) {
+  if (command.length > MAX_CLASSIFY_CHARS) return { command: redact(command) };
+  const { isDestructive, isNetwork } = classifyBash(command);
+  return { command: redact(command), bashDestructive: isDestructive, bashNetwork: isNetwork };
+}
 function redact(value) {
   let result = value;
   if (Buffer.byteLength(value, "utf8") > MAX_REDACT_BYTES) {
@@ -648,7 +1241,7 @@ function redact(value) {
 }
 function hashInput(input) {
   const str = JSON.stringify(input) ?? "";
-  return createHash("sha256").update(str).digest("hex").slice(0, 16);
+  return createHash2("sha256").update(str).digest("hex").slice(0, 16);
 }
 function sizeOf(value) {
   if (value === void 0 || value === null) return 0;
@@ -692,7 +1285,6 @@ function getLinuxAncestorPids(startPpid, maxDepth = 5) {
   }
   return pids;
 }
-var _breadcrumbWriteFailed = false;
 function touch(path) {
   const now = /* @__PURE__ */ new Date();
   try {
@@ -700,72 +1292,74 @@ function touch(path) {
   } catch {
   }
 }
-var _unknownEngineWarned = false;
+function writeOrTouch(dir, name, sessionId) {
+  const path = resolve3(dir, name);
+  let current;
+  try {
+    current = readFileSync2(path, "utf-8").trim();
+  } catch {
+  }
+  if (current === sessionId) {
+    touch(path);
+    return;
+  }
+  try {
+    writeFileSync2(path, sessionId, { mode: 384 });
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err;
+    mkdirSync3(dir, { recursive: true, mode: 448 });
+    writeFileSync2(path, sessionId, { mode: 384 });
+  }
+}
+function breadcrumbRoots(root, legacyRoot) {
+  return legacyRoot === void 0 ? [root] : [root, legacyRoot];
+}
 function writePpidBreadcrumb(sessionId, root, legacyRoot) {
   if (!SESSION_ID_RE.test(sessionId)) return;
   const ppid = process.ppid;
   if (typeof ppid !== "number" || ppid <= 0) return;
   try {
     const pids = getLinuxAncestorPids(ppid);
-    for (const dir of legacyRoot === void 0 ? [root] : [root, legacyRoot]) {
-      const breadcrumbDir = resolve2(dir, "session-by-ppid");
-      mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
+    for (const dir of breadcrumbRoots(root, legacyRoot)) {
       for (const pid of pids) {
-        const breadcrumbPath = resolve2(breadcrumbDir, `${pid}.txt`);
-        if (existsSync(breadcrumbPath)) {
-          try {
-            if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
-              touch(breadcrumbPath);
-              continue;
-            }
-          } catch {
-          }
-        }
-        writeFileSync2(breadcrumbPath, sessionId, { mode: 384 });
+        writeOrTouch(resolve3(dir, "session-by-ppid"), `${pid}.txt`, sessionId);
       }
     }
-    _breadcrumbWriteFailed = false;
   } catch (err) {
-    if (!_breadcrumbWriteFailed) {
-      process.stderr.write(
-        `[preflight-collector] Warning: cannot write PPID breadcrumb: ${String(err)}
+    process.stderr.write(
+      `[preflight-collector] Warning: cannot write PPID breadcrumb: ${String(err)}
 `
-      );
-      _breadcrumbWriteFailed = true;
-    }
+    );
   }
 }
-var _cwdBreadcrumbWriteFailed = false;
 function writeCwdBreadcrumb(sessionId, cwd, root, legacyRoot) {
   if (!SESSION_ID_RE.test(sessionId)) return;
   if (typeof cwd !== "string" || cwd.length === 0) return;
   const sanitizedCwd = cwd.replace(/[\\/:]/g, "-");
   try {
-    for (const dir of legacyRoot === void 0 ? [root] : [root, legacyRoot]) {
-      const breadcrumbDir = resolve2(dir, "session-by-cwd");
-      mkdirSync2(breadcrumbDir, { recursive: true, mode: 448 });
-      const breadcrumbPath = resolve2(breadcrumbDir, `${sanitizedCwd}.txt`);
-      if (existsSync(breadcrumbPath)) {
-        try {
-          if (readFileSync2(breadcrumbPath, "utf-8").trim() === sessionId) {
-            touch(breadcrumbPath);
-            continue;
-          }
-        } catch {
-        }
-      }
-      writeFileSync2(breadcrumbPath, sessionId, { mode: 384 });
+    for (const dir of breadcrumbRoots(root, legacyRoot)) {
+      writeOrTouch(resolve3(dir, "session-by-cwd"), `${sanitizedCwd}.txt`, sessionId);
     }
-    _cwdBreadcrumbWriteFailed = false;
   } catch (err) {
-    if (!_cwdBreadcrumbWriteFailed) {
-      process.stderr.write(
-        `[preflight-collector] Warning: cannot write cwd breadcrumb: ${String(err)}
+    process.stderr.write(
+      `[preflight-collector] Warning: cannot write cwd breadcrumb: ${String(err)}
 `
-      );
-      _cwdBreadcrumbWriteFailed = true;
-    }
+    );
   }
+}
+var UNKNOWN_ENGINE_MARKER = "unknown-engine-warned";
+function claimUnknownEngineWarning(storageDir, names) {
+  const marker = resolve3(storageDir, UNKNOWN_ENGINE_MARKER);
+  try {
+    if (readFileSync2(marker, "utf-8") === names) return false;
+  } catch {
+  }
+  try {
+    mkdirSync3(storageDir, { recursive: true, mode: 448 });
+    writeFileSync2(marker, names, { mode: 384 });
+  } catch {
+  }
+  return true;
 }
 var GITHUB_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/;
 function mcpPrInputMeta(input, action) {
@@ -821,7 +1415,7 @@ function extractInputMeta(toolName, input) {
       if (Array.isArray(obj.replacements)) meta.replacementsCount = obj.replacements.length;
       break;
     case "run_in_terminal":
-      if (typeof obj.command === "string") meta.command = redact(obj.command);
+      if (typeof obj.command === "string") Object.assign(meta, bashCommandInput(obj.command));
       if (typeof obj.explanation === "string") meta.description = redact(obj.explanation);
       if (typeof obj.isBackground === "boolean") meta.run_in_background = obj.isBackground;
       break;
@@ -878,7 +1472,7 @@ function extractInputMeta(toolName, input) {
     // input shape as Bash.
     case "Bash":
     case "PowerShell":
-      if (typeof obj.command === "string") meta.command = redact(obj.command);
+      if (typeof obj.command === "string") Object.assign(meta, bashCommandInput(obj.command));
       if (typeof obj.description === "string") meta.description = redact(obj.description);
       if (typeof obj.timeout === "number") meta.timeout = obj.timeout;
       if (typeof obj.run_in_background === "boolean")
@@ -922,27 +1516,32 @@ function extractInputMeta(toolName, input) {
   }
   return Object.keys(meta).length > 0 ? meta : void 0;
 }
-var PR_URL_RE = /https?:\/\/[^\s"'/]+\/[^\s"'/]+\/[^\s"'/]+\/pull\/(\d{1,9})\b/g;
+var PR_URL_RE = /https?:\/\/[^\s"'/]+\/([^\s"'/]+)\/([^\s"'/]+)\/pull\/(\d{1,9})\b/g;
 var GH_PR_CREATE_RE = /(?:^|[\s;&|(])gh\s+pr\s+create\b/;
-function findCreatedPrNumber(output) {
+function findCreatedPr(output) {
   const texts = [];
   const blocks = Array.isArray(output) ? output : output.content;
   if (!Array.isArray(output) && typeof output.stdout === "string") texts.push(output.stdout);
   if (Array.isArray(blocks)) {
     for (const block of blocks) if (hasStringText(block)) texts.push(block.text);
   }
-  const prNumbers = /* @__PURE__ */ new Set();
+  const prs = /* @__PURE__ */ new Map();
   for (const text of texts) {
-    for (const match of text.matchAll(PR_URL_RE)) prNumbers.add(match[1]);
+    for (const [, owner, repo, createdPrNumber] of text.matchAll(PR_URL_RE)) {
+      const createdPrRepo = parsePrRepo(`${owner}/${repo}`);
+      prs.set(`${owner}/${repo}#${createdPrNumber}`.toLowerCase(), {
+        createdPrNumber,
+        ...createdPrRepo !== void 0 && { createdPrRepo }
+      });
+    }
   }
-  return prNumbers.size === 1 ? [...prNumbers][0] : void 0;
+  return prs.size === 1 ? [...prs.values()][0] : void 0;
 }
 function extractOutputMeta(toolName, output, input) {
   if (output === null || output === void 0 || typeof output !== "object") return void 0;
   const obj = output;
   if (mcpPrToolAction(toolName) === "create") {
-    const createdPrNumber = findCreatedPrNumber(output);
-    return createdPrNumber === void 0 ? void 0 : { createdPrNumber };
+    return findCreatedPr(output);
   }
   if (toolName === "Bash") {
     const meta = {};
@@ -954,8 +1553,7 @@ function extractOutputMeta(toolName, output, input) {
     }
     const command = input !== null && typeof input === "object" ? input.command : void 0;
     if (typeof command === "string" && GH_PR_CREATE_RE.test(command)) {
-      const createdPrNumber = findCreatedPrNumber(obj);
-      if (createdPrNumber !== void 0) meta.createdPrNumber = createdPrNumber;
+      Object.assign(meta, findCreatedPr(obj));
     }
     if (Object.keys(meta).length > 0) return meta;
   }
@@ -1017,19 +1615,18 @@ function processHook(raw, cliEvent) {
   const sessionId = data.session_id ?? data.conversation_id ?? data.trajectory_id ?? data.conversationId;
   if (typeof data.session_id === "string" && data.session_id.length > 0) {
     const writer = breadcrumbWriter(process.env);
-    if (writer === UNATTRIBUTED_BREADCRUMB_WRITER && !_unknownEngineWarned) {
+    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+    if (writer === UNATTRIBUTED_BREADCRUMB_WRITER) {
       const unknownNames = ENGINE_ENV_KEYS.filter(
         (key) => process.env[key] && canonicalPlatformName(process.env[key]) === void 0
-      ).map((key) => `${key}=${JSON.stringify(process.env[key])}`);
-      if (unknownNames.length > 0) {
+      ).map((key) => `${key}=${JSON.stringify(process.env[key])}`).join(", ");
+      if (unknownNames.length > 0 && claimUnknownEngineWarning(storageDir, unknownNames)) {
         process.stderr.write(
-          `[preflight-collector] Warning: ${unknownNames.join(", ")} names no engine Preflight knows; filing the session breadcrumb as unattributed
+          `[preflight-collector] Warning: ${unknownNames} names no engine Preflight knows; filing the session breadcrumb as unattributed
 `
         );
-        _unknownEngineWarned = true;
       }
     }
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
     const tagged = breadcrumbRoot(storageDir, writer);
     writePpidBreadcrumb(data.session_id, tagged, storageDir);
     writeCwdBreadcrumb(data.session_id, data.cwd, tagged, storageDir);
@@ -1048,6 +1645,7 @@ function processHook(raw, cliEvent) {
   const isAntigravityPre = isAntigravityShape && !isAntigravityPost;
   const agyToolUseId = typeof data.stepIdx === "number" ? { toolUseId: String(data.stepIdx) } : {};
   let event;
+  let selfReportCall;
   if (eventName === "pretooluse") {
     event = {
       mode: "pre",
@@ -1148,7 +1746,7 @@ function processHook(raw, cliEvent) {
       timestamp,
       inputSize: sizeOf(command),
       inputHash: hashInput(command),
-      toolInput: { command: redact(command) }
+      toolInput: bashCommandInput(command)
     };
   } else if (eventName === "aftershellexecution") {
     event = {
@@ -1173,6 +1771,12 @@ function processHook(raw, cliEvent) {
       tool: mcpTool,
       timestamp,
       success: true
+    };
+    selfReportCall = {
+      tool: mcpTool,
+      server: data.mcp_server_name,
+      args: data.tool_input,
+      result: data.result_json
     };
   } else if (eventName === "beforereadfile") {
     event = {
@@ -1240,7 +1844,7 @@ function processHook(raw, cliEvent) {
       timestamp,
       inputSize: sizeOf(commandLine),
       inputHash: hashInput(commandLine),
-      toolInput: { command: redact(commandLine) }
+      toolInput: bashCommandInput(commandLine)
     };
   } else if (eventName === "post_run_command") {
     event = {
@@ -1267,6 +1871,12 @@ function processHook(raw, cliEvent) {
       tool: mcpTool,
       timestamp,
       success: true
+    };
+    selfReportCall = {
+      tool: mcpTool,
+      server: toolInfo.mcp_server_name,
+      args: toolInfo.mcp_tool_arguments,
+      result: toolInfo.mcp_result
     };
   } else if (isAntigravityPre) {
     const agyToolName = data.toolCall?.name ?? "unknown";
@@ -1360,16 +1970,19 @@ function processHook(raw, cliEvent) {
   if (data.transcript_path) event.transcriptPath = data.transcript_path;
   if (data.permission_mode) event.permissionMode = data.permission_mode;
   if (sessionId) event.sessionId = sessionId;
-  const stampedPlatform = detectStampPlatform();
+  const stampedPlatform = HOOK_EVENT_PLATFORM[eventName ?? ""] ?? detectStampPlatform();
   if (stampedPlatform) event.platform = stampedPlatform;
+  const selfReport = selfReportCall && stampedPlatform && hookSelfReportLine(selfReportCall, sessionId, timestamp, stampedPlatform);
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;
+  const newReport = selfReport && claimReport(getStorageDir(), selfReport) ? selfReport : void 0;
+  let reportAttempted = false;
   try {
     const bufferPath = getBufferPath(sessionId);
-    const bufferDir = dirname2(bufferPath);
+    const bufferDir = dirname3(bufferPath);
     if (!existsSync(bufferDir)) {
-      mkdirSync2(bufferDir, { recursive: true, mode: 448 });
+      mkdirSync3(bufferDir, { recursive: true, mode: 448 });
     }
     if (event.toolUseId === void 0 && (event.mode === "pre" || event.mode === "post") && !POST_ONLY_EVENTS.has(eventName ?? "")) {
       const id = event.mode === "pre" ? mintToolUseId(bufferPath, String(event.tool), timestamp) : takeMintedToolUseId(bufferPath, String(event.tool), timestamp);
@@ -1377,7 +1990,14 @@ function processHook(raw, cliEvent) {
     }
     const line = JSON.stringify(event) + "\n";
     appendToHookBuffer(bufferPath, line);
+    if (newReport) {
+      reportAttempted = true;
+      appendToHookBuffer(bufferPath, JSON.stringify(newReport) + "\n");
+    }
   } catch (err) {
+    if (newReport && !(reportAttempted && err instanceof LineWrittenError)) {
+      releaseReport(getStorageDir(), newReport);
+    }
     if (!stderrSinkInstalled) {
       stderrSinkInstalled = true;
       process.stderr.on("error", () => void 0);

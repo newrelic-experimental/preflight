@@ -144,7 +144,7 @@ export class WeeklySummaryGenerator {
     this.sessionStore = options.sessionStore;
   }
 
-  generate(weekId: string): WeeklySummary {
+  generate(weekId: string, options: { persist?: boolean } = {}): WeeklySummary {
     // defense-in-depth — reject non-conforming weekIds before filepath construction
     if (!/^\d{4}-W\d{2}$/.test(weekId)) {
       throw new Error(`Invalid weekId format: "${weekId}". Expected YYYY-Wnn.`);
@@ -162,6 +162,8 @@ export class WeeklySummaryGenerator {
     );
 
     const summary = aggregateSessions(weekId, weekSessions);
+
+    if (options.persist === false) return summary;
 
     if (!existsSync(this.summariesDir)) {
       mkdirSync(this.summariesDir, { recursive: true, mode: 0o700 });
