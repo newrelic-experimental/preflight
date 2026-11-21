@@ -1647,7 +1647,17 @@ export function createApiHandler(
     // otherwise appear as confusing "duplicate" rows next to real Claude
     // Code sessions.
     const withActivity = (allSessions as readonly SessionIdentityLike[]).filter(hasRecordedUsage);
-    const sliced = withActivity.slice(-limit);
+    const requestedIds = new Set(
+      (url.searchParams.get('ids') ?? '')
+        .split(',')
+        .map((id) => id.trim())
+        .filter((id) => id.length > 0 && id.length <= 256)
+        .slice(0, 500),
+    );
+    const byIds = requestedIds.size > 0;
+    const sliced = byIds
+      ? withActivity.filter((s) => requestedIds.has((s as { sessionId?: string }).sessionId ?? ''))
+      : withActivity.slice(-limit);
 
     // Append the current live session so it appears in the list before
     // shutdown. Unlike `allSessions` above, `live.sessionId` comes straight
@@ -1668,7 +1678,13 @@ export function createApiHandler(
         toolCallCount: live.toolCallCount,
         estimatedCostUsd: liveCostUsd,
       });
-      if (!alreadyPersisted && liveHasUsage && !isSyntheticSessionId(live.sessionId)) {
+      const liveRequested = !byIds || requestedIds.has(live.sessionId);
+      if (
+        !alreadyPersisted &&
+        liveRequested &&
+        liveHasUsage &&
+        !isSyntheticSessionId(live.sessionId)
+      ) {
         sliced.push({
           sessionId: live.sessionId,
           sessionName: live.sessionName ?? null,
@@ -1710,7 +1726,7 @@ export function createApiHandler(
       // Today-scoped (not 3-min live-scoped): an idle-but-still-open window
       // must keep its stub row here — see computeCrossProcessTodaySessionIds().
       for (const id of computeCrossProcessTodaySessionIds(deps)) {
-        if (!knownIds.has(id)) {
+        if (!knownIds.has(id) && (!byIds || requestedIds.has(id))) {
           const stats = perSession.get(id);
           // getLastActivity is registry-maintained and survives buffer drains,
           // so use it as the stable upper bound for durationMs. Without this,
@@ -1746,7 +1762,7 @@ export function createApiHandler(
       }
       return out;
     });
-    jsonOk(res, slimmed.length > limit ? slimmed.slice(-limit) : slimmed);
+    jsonOk(res, !byIds && slimmed.length > limit ? slimmed.slice(-limit) : slimmed);
   });
 
   // Currently-live session list with metadata. Sourced from LiveSessionRegistry
