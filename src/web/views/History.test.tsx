@@ -313,8 +313,8 @@ const SAMPLE_USAGE_INSIGHTS = {
 };
 
 // Read/Edit costs are attributed; Bash/Write (present in SAMPLE_SESSIONS'
-// toolBreakdown) intentionally have no entry — calls with no attributed
-// cost yet, per a mix of attributed/unattributed sessions in the window.
+// toolBreakdown) intentionally have no entry, as in a window that mixes
+// attributed and unattributed sessions.
 const SAMPLE_COST_PER_TOOL = {
   turns: [],
   costByToolType: {
@@ -1640,19 +1640,49 @@ describe('History — Tools table cost/token columns', () => {
     expect(within(readRow).getByRole('cell', { name: '$3.50' })).toBeInTheDocument();
     expect(within(readRow).getByRole('cell', { name: '12.0k' })).toBeInTheDocument();
 
-    // Bash has calls (from SAMPLE_SESSIONS' toolBreakdown) but no entry in
-    // SAMPLE_COST_PER_TOOL.costByToolType — not yet attributed, so its cost
-    // and tokens cells must both show a dash instead of a fabricated 0.
-    const bashRow = within(toolsTable)
-      .getByRole('cell', { name: 'Bash' })
-      .closest('tr') as HTMLElement;
-    expect(within(bashRow).getAllByRole('cell', { name: '—' })).toHaveLength(2);
+    // Bash has calls only in SAMPLE_SESSIONS, the start-date session list, so
+    // it gets no row next to the windowed response's tools.
+    expect(within(toolsTable).queryByRole('cell', { name: 'Bash' })).toBeNull();
 
     expect(
       screen.getByText(
         'Cost/token breakdown only available for 3 of 4 sessions in this window — older sessions predate per-tool attribution.',
       ),
     ).toBeInTheDocument();
+  });
+
+  it('builds every Tools row from the windowed response, so calls, cost and share come from one population', async () => {
+    renderHistory({
+      costPerTool: {
+        ...SAMPLE_COST_PER_TOOL,
+        costByToolType: {
+          Read: { totalCost: 3, callCount: 6, avgCost: 0.5, tokens: 9000 },
+          Grep: { totalCost: 1, callCount: 4, avgCost: 0.25, tokens: 2000 },
+        },
+      },
+    });
+    const panel = findPanel("What's contributing to your spend");
+    await waitFor(() =>
+      expect(within(findToolsTable(panel)).getByRole('cell', { name: 'Grep' })).toBeInTheDocument(),
+    );
+    const toolsTable = findToolsTable(panel);
+    const cells = (tool: string) =>
+      within(within(toolsTable).getByRole('cell', { name: tool }).closest('tr') as HTMLElement)
+        .getAllByRole('cell')
+        .map((c) => c.textContent);
+    expect(cells('Read')).toEqual(['Read', '6', '$3.00', '9.0k', '75%']);
+    expect(cells('Grep')).toEqual(['Grep', '4', '$1.00', '2.0k', '25%']);
+    expect(within(toolsTable).getAllByRole('row')).toHaveLength(3);
+  });
+
+  it('keeps the calls-only rows when the windowed response has no attributed tools', async () => {
+    renderHistory({
+      costPerTool: { ...SAMPLE_COST_PER_TOOL, costByToolType: {}, attributedSessionCount: 0 },
+    });
+    const panel = findPanel("What's contributing to your spend");
+    await waitFor(() =>
+      expect(within(findToolsTable(panel)).getByRole('cell', { name: 'Bash' })).toBeInTheDocument(),
+    );
   });
 
   it('omits the coverage caveat when every session in the window has attribution data', async () => {

@@ -22,7 +22,11 @@ import { Kpi } from '../components/Kpi';
 import { RankedBars, type RankedBarRow } from '../components/RankedBars';
 import { ShareTable } from '../components/ShareTable';
 import { SpendBars, type SpendBarsDatum } from '../components/SpendBars';
-import { UsageContributionPanel, buildToolTableRows } from '../components/UsageContributionPanel';
+import {
+  UsageContributionPanel,
+  buildToolTableRows,
+  buildWindowedToolTableRows,
+} from '../components/UsageContributionPanel';
 import { Card, Panel, Pill, Tabs, type PillTone } from '../components/ui';
 import {
   fetchWeekly,
@@ -377,7 +381,11 @@ export function History(): JSX.Element {
   const antiPatternSeries = buildAntiPatternSeries(weeklyChronological);
   const modelPerf = aggregateModelPerformance(windowSessions);
   const modelPerfTotalCost = modelPerf.reduce((sum, m) => sum + m.totalCost, 0);
-  const toolTableRows = buildToolTableRows(windowSessions, costPerTool.data?.costByToolType);
+  const windowedToolCost = costPerTool.data?.costByToolType;
+  const toolTableRows =
+    windowedToolCost && Object.keys(windowedToolCost).length > 0
+      ? buildWindowedToolTableRows(windowedToolCost)
+      : buildToolTableRows(windowSessions, windowedToolCost);
   const toolCostAvailable = costPerTool.data?.costByToolType !== undefined;
   // attribution.buckets.tool is a recently-added persisted field — most
   // historical sessions in the window predate it and simply lack it, so the
