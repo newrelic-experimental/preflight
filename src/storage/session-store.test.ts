@@ -19,7 +19,7 @@ import {
   mergeSummaries,
   sessionSummaryToDriftRecord,
 } from './session-store.js';
-import type { FullSessionSummary } from './session-store.js';
+import type { BuildSessionSummarySources, FullSessionSummary } from './session-store.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
 import { buildCostTrackerSeed } from '../metrics/cost-tracker-seed.js';
@@ -432,6 +432,50 @@ describe('buildSessionSummary anti-patterns', () => {
     expect(summary.antiPatterns).toEqual([
       { type: 'thrashing', file: '/src/auth.ts', iterations: 4 },
     ]);
+  });
+
+  it('scores tool selection with each call attributed by backfillRecord', () => {
+    const [task] = mockTaskDetector.getMetrics().completedTasks;
+    const readTaskDetector = {
+      getCurrentTask: () => null,
+      getMetrics: () => ({
+        ...mockTaskDetector.getMetrics(),
+        completedTasks: [
+          {
+            ...task,
+            toolCalls: ['toolu_a', 'toolu_b', 'toolu_c'].map((toolUseId, i) => ({
+              id: `r${i}`,
+              sessionId: 'ap-session',
+              toolName: 'Read',
+              toolUseId,
+              timestamp: 1_700_000_001_000 + i * 1000,
+              durationMs: 20,
+              success: true,
+              filePath: '/src/shared.ts',
+            })),
+          },
+        ],
+      }),
+    };
+    const agentByToolUse = new Map([
+      ['toolu_a', 'agent-1'],
+      ['toolu_b', 'agent-2'],
+      ['toolu_c', 'agent-3'],
+    ]);
+    const build = (backfillRecord?: BuildSessionSummarySources['backfillRecord']) =>
+      buildSessionSummary({
+        sessionTracker: mockSessionTracker as unknown as SessionTracker,
+        taskDetector: readTaskDetector as unknown as TaskDetector,
+        toolSelectionScorer: new ToolSelectionScorer(),
+        developer: 'alice',
+        ...(backfillRecord && { backfillRecord }),
+      }).toolSelectionMetrics;
+
+    expect(build()).toMatchObject({ totalCalls: 3, redundantReadCount: 1 });
+    expect(build((r) => ({ ...r, agentId: agentByToolUse.get(r.toolUseId ?? '') }))).toMatchObject({
+      totalCalls: 3,
+      redundantReadCount: 0,
+    });
   });
 
   it('keeps one row per incident when multiple incidents share a type', () => {
@@ -3661,6 +3705,7 @@ describe('buildSessionSummary timeline', () => {
                 success: true,
                 command: 'gh pr create --fill',
                 createdPrNumber: '42',
+                createdPrRepo: 'acme/app',
                 runInBackground: true,
               },
               {
@@ -3687,7 +3732,10 @@ describe('buildSessionSummary timeline', () => {
     });
 
     expect(summary.timeline).toHaveLength(4);
-    expect(summary.timeline![2]!.createdPrNumber).toBe('42');
+    expect(summary.timeline![2]).toMatchObject({
+      createdPrNumber: '42',
+      createdPrRepo: 'acme/app',
+    });
     expect(summary.timeline![3]).toMatchObject({ mcpPrNumber: '42', mcpPrRepo: 'acme/app' });
     expect(summary.timeline![0]!.mcpPrNumber).toBeUndefined();
     expect(summary.timeline![0]!.mcpPrRepo).toBeUndefined();
@@ -3697,6 +3745,10 @@ describe('buildSessionSummary timeline', () => {
     store.saveSession(summary);
     const reloaded = store.loadSession(summary.sessionId);
     expect(reloaded!.timeline![3]).toMatchObject({ mcpPrNumber: '42', mcpPrRepo: 'acme/app' });
+    expect(reloaded!.timeline![2]).toMatchObject({
+      createdPrNumber: '42',
+      createdPrRepo: 'acme/app',
+    });
     expect(summary.timeline![0]!.createdPrNumber).toBeUndefined();
     expect(summary.timeline![2]!.runInBackground).toBe(true);
     expect(summary.timeline![0]!.runInBackground).toBeUndefined();
@@ -3755,6 +3807,33 @@ describe('SessionStore deserialization', () => {
     const session = store.loadSession('pr-num');
     expect(session!.timeline![0]!.createdPrNumber).toBe('42');
     expect(session!.timeline![1]!.createdPrNumber).toBeUndefined();
+  });
+
+  it('keeps a well-formed createdPrRepo on timeline entries, lowercased, and drops anything else', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const raw = JSON.stringify({
+      sessionId: 'pr-repo',
+      startTime: 1000,
+      endTime: 2000,
+      durationMs: 1000,
+      toolCallCount: 4,
+      developer: 'alice',
+      timeline: [
+        { timestamp: 1100, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 'Acme/App' },
+        { timestamp: 1200, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 'acme/app?x=1' },
+        { timestamp: 1300, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 'a/b/c' },
+        { timestamp: 1400, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 7 },
+      ],
+    });
+    writeFileSync(join(tmpDir, 'sessions', '2026-01-01_pr-repo.json'), raw + '\n');
+
+    const session = store.loadSession('pr-repo');
+    expect(session!.timeline!.map((e) => e.createdPrRepo)).toEqual([
+      'acme/app',
+      undefined,
+      undefined,
+      undefined,
+    ]);
   });
 
   it('keeps a GitHub MCP PR target on timeline entries and drops a malformed one', () => {
@@ -4171,6 +4250,85 @@ describe('saveSession cross-process merge', () => {
     expect(loaded?.toolCallCount).toBe(9);
     expect(loaded?.toolBreakdown).toEqual({ Bash: 9 });
   });
+
+  it("lets a resumed session's newer checkpoint replace a stale completed outcome", () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = 'cccc1111-2222-4333-8444-555566667777';
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        outcome: 'completed',
+        endTime: 1000,
+        toolCallCount: 5,
+        toolBreakdown: { Bash: 5 },
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        outcome: 'in progress',
+        endTime: 2000,
+        toolCallCount: 9,
+        toolBreakdown: { Bash: 9 },
+      }),
+    );
+    expect(store.loadSession(id)?.outcome).toBe('in progress');
+  });
+
+  it("lets a chat-only resume's newer checkpoint replace a stale completed outcome", () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = 'eeee1111-2222-4333-8444-555566667777';
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        outcome: 'completed',
+        endTime: 1000,
+        toolCallCount: 5,
+        toolBreakdown: { Bash: 5 },
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        outcome: 'in progress',
+        endTime: 2000,
+        toolCallCount: 5,
+        toolBreakdown: { Bash: 5 },
+      }),
+    );
+    expect(store.loadSession(id)?.outcome).toBe('in progress');
+  });
+
+  it.each([
+    ['equal endTime', 2000, 9, 'in progress'],
+    ['older endTime', 1500, 9, 'in progress'],
+    ['an unknown outcome', 3000, 9, 'unknown'],
+  ])(
+    'keeps a completed outcome against a non-completed write with %s',
+    (_label, endTime, calls, outcome) => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      const id = 'dddd1111-2222-4333-8444-555566667777';
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          outcome: 'completed',
+          endTime: 2000,
+          toolCallCount: 5,
+          toolBreakdown: { Bash: 5 },
+        }),
+      );
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          outcome,
+          endTime,
+          toolCallCount: calls,
+          toolBreakdown: { Bash: calls },
+        }),
+      );
+      expect(store.loadSession(id)?.outcome).toBe('completed');
+    },
+  );
 
   it('unions per-model breakdowns contributed by different processes', () => {
     const store = new SessionStore({ storagePath: tmpDir });

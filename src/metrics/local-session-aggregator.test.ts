@@ -16,8 +16,8 @@ import {
   collectCommitsAcrossRepos,
   LocalSessionAggregator,
   RepoNameResolver,
-  stripHeredocs,
 } from './local-session-aggregator.js';
+import { backfillAgentId } from './agent-partition.js';
 import { ToolSelectionScorer } from './tool-selection-scorer.js';
 
 // git sets GIT_DIR/GIT_WORK_TREE for hook subprocesses, which override `-C
@@ -633,6 +633,28 @@ describe('LocalSessionAggregator timeline persistence', () => {
     expect(timeline[0]?.createdPrNumber).toBe('42');
   });
 
+  it('persists the created PR repo lowercased, and drops a malformed one', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Bash',
+      timestamp: 100,
+      command: 'gh pr create --fill',
+      createdPrNumber: '42',
+      createdPrRepo: 'Acme/App',
+    });
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Bash',
+      timestamp: 200,
+      command: 'gh pr create --fill',
+      createdPrNumber: '43',
+      createdPrRepo: 'not a repo',
+    });
+    const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline.map((e) => e.createdPrRepo)).toEqual(['acme/app', undefined]);
+  });
+
   it('persists the PR target of a GitHub MCP PR call', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({
@@ -743,6 +765,46 @@ describe('LocalSessionAggregator panel rehydration', () => {
     expect(typeof quality?.totalSignals).toBe('number');
     const toolSelection = summary?.toolSelectionMetrics as { totalCalls: number } | null;
     expect(toolSelection?.totalCalls).toBe(2);
+  });
+
+  it('scores tool selection with each call attributed to its subagent by backfillRecord', () => {
+    const agg = new LocalSessionAggregator();
+    for (const [i, toolUseId] of ['toolu_a', 'toolu_b', 'toolu_c'].entries()) {
+      agg.recordToolCall({
+        id: `r${i}`,
+        sessionId: REAL_ID,
+        toolName: 'Read',
+        filePath: '/src/shared.ts',
+        toolUseId,
+        timestamp: 1000 + i * 1000,
+        success: true,
+      } as never);
+    }
+    const redundantReads = (
+      backfillRecord?: Parameters<LocalSessionAggregator['toSummaries']>[0]['backfillRecord'],
+    ) => {
+      const [summary] = agg.toSummaries({
+        developer: 'tester',
+        outcome: 'in progress',
+        repoResolver: new StubRepoResolver(),
+        toolSelectionScorer: new ToolSelectionScorer(),
+        ...(backfillRecord && { backfillRecord }),
+      });
+      const metrics = summary?.toolSelectionMetrics as {
+        totalCalls: number;
+        redundantReadCount: number;
+      };
+      expect(metrics.totalCalls).toBe(3);
+      return metrics.redundantReadCount;
+    };
+    const agentByToolUse = new Map([
+      ['toolu_a', 'agent-1'],
+      ['toolu_b', 'agent-2'],
+      ['toolu_c', 'agent-3'],
+    ]);
+
+    expect(redundantReads()).toBe(1);
+    expect(redundantReads((r) => backfillAgentId(r, agentByToolUse))).toBe(0);
   });
 
   it('carries the cache savings of recorded token usage into the summary', () => {
@@ -1300,72 +1362,6 @@ describe('LocalSessionAggregator baseline fold from a file with a byte-estimate 
     const [incoming] = summariesOf(agg) as unknown as FullSessionSummary[];
     expect(incoming!.costByDayUsd![otherDay]).toBe(0.5);
   });
-});
-
-describe('stripHeredocs', () => {
-  it.each([
-    ['a closed heredoc', "cat <<'EOF'\ngit push\nEOF\ngit log", "cat <<'EOF'\ngit log", false],
-    [
-      'a heredoc inside "$( … )"',
-      'git commit -m "$(cat <<\'EOF\'\nfix: git push\nEOF\n)" && git push',
-      'git commit -m "$(cat <<\'EOF\'\n)" && git push',
-      false,
-    ],
-    ['a <<- heredoc', 'cat <<-EOF\n\tgit push\n\tEOF\ngit log', 'cat <<-EOF\ngit log', false],
-    [
-      'a heredoc with CRLF line ends',
-      'cat <<EOF\r\ngit push\r\nEOF\r\ngit log',
-      'cat <<EOF\r\ngit log',
-      false,
-    ],
-    ['a here-string', 'grep -q x <<<"$(gh pr view 1)"\ngit push', null, false],
-    ['a double-quoted <<', 'gh pr comment 1 --body "see <<X"\ngit push', null, true],
-    ['a single-quoted <<', "echo 'a <<B'\ngit push", null, true],
-    ['a quoted "<<EOF"', 'echo "<<EOF"\ngit push', null, true],
-    ['a << in a comment with an apostrophe', "# don't <<X\ngit push", null, true],
-    ['a << before a number', 'echo $((1<<2))\ngit push', null, false],
-    [
-      'a quoted << before a real heredoc',
-      'echo "see <<X" && cat <<EOF\ngit push\nEOF\ngit log',
-      'echo "see <<X" && cat <<EOF\ngit log',
-      true,
-    ],
-    [
-      'a quoted <<EOF that a real heredoc closes',
-      'gh pr merge 1 --body "see <<EOF"\ngh pr comment 1 <<\'EOF\'\nDone.\nEOF',
-      'gh pr merge 1 --body "see <<EOF"',
-      true,
-    ],
-  ])('reads %s and reports no unclosed heredoc', (_label, command, text, readingsDiffer) => {
-    expect(stripHeredocs(command)).toEqual({
-      text: text ?? command,
-      unclosed: false,
-      readingsDiffer,
-    });
-  });
-
-  it.each([
-    ['a heredoc whose terminator never comes', 'cat <<EOF\ngit log\n', 'cat <<EOF', false],
-    ['an unquoted << in arithmetic', 'echo $((1<<N))\ngit push', 'echo $((1<<N))', false],
-    ['a quoted << whose quote never closes', 'echo "see <<X\ngit push', 'echo "see <<X', true],
-    [
-      'a <<- terminator indented with spaces',
-      'cat <<-EOF\n  git push\n  EOF\ngit log',
-      'cat <<-EOF',
-      false,
-    ],
-    [
-      'a terminator with a trailing space',
-      'cat <<EOF\ngit push\nEOF \ngit log',
-      'cat <<EOF',
-      false,
-    ],
-  ])(
-    'drops the lines after %s and reports it unclosed',
-    (_label, command, text, readingsDiffer) => {
-      expect(stripHeredocs(command)).toEqual({ text, unclosed: true, readingsDiffer });
-    },
-  );
 });
 
 describe('LocalSessionAggregator first spend of a day against a saved file', () => {

@@ -5,6 +5,7 @@ import {
   type PlatformConfig,
   type PlatformSessionMetadata,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 /**
  * Maps opencode's built-in tool names (opencode.ai/docs/tools/) to the
@@ -182,7 +183,8 @@ export class OpencodeAdapter implements PlatformAdapter {
 
   isSupported(): boolean {
     return (
-      process.env.MCP_CLIENT === 'opencode' || process.env.NEW_RELIC_AI_PLATFORM === 'opencode'
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'opencode' ||
+      canonicalPlatformName(process.env.NEW_RELIC_AI_PLATFORM) === 'opencode'
     );
   }
 }

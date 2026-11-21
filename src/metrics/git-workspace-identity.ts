@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { basename, dirname, resolve as resolvePath } from 'node:path';
 
 import { repoNameFromRemote } from '../lib/git-remote.js';
+import { parseGhRepoName } from './pr-ref.js';
 
 /** Workspace key for activity whose cwd was never recorded and whose session
  *  has no `repoName` to fall back on. */
@@ -70,6 +71,13 @@ export function cacheKeyOf(dir: string): string {
   return process.platform === 'win32' ? abs.toLowerCase() : abs;
 }
 
+interface Remotes {
+  /** Every remote's lowercased `owner/name`, fetch and push URLs alike. */
+  readonly names: readonly string[];
+  /** Each remote's lowercased `owner/name` from its fetch URL, by remote name. */
+  readonly fetchNameByRemote: ReadonlyMap<string, string>;
+}
+
 export class WorktreeIdentityResolver {
   private readonly cache = new Map<string, CachedIdentity>();
   private readonly ttlMs = 30_000;
@@ -77,10 +85,8 @@ export class WorktreeIdentityResolver {
   // an empty directory must see its `git init` and first commit within a few
   // seconds. It only needs to outlast one replay burst of repeated lookups.
   private readonly missTtlMs = 3_000;
-  private readonly remoteNamesCache = new Map<
-    string,
-    { names: readonly string[]; resolvedAt: number }
-  >();
+  private readonly remotesCache = new Map<string, { remotes: Remotes; resolvedAt: number }>();
+  private readonly ghBaseCache = new Map<string, { name: string | null; resolvedAt: number }>();
 
   resolve(dir: string | null | undefined): WorktreeIdentity | null {
     if (typeof dir !== 'string' || dir.length === 0) return null;
@@ -119,27 +125,79 @@ export class WorktreeIdentityResolver {
    *  case-insensitive. Empty when `dir` isn't a repo, has no remotes, or git
    *  failed. A failure is not cached, so the next call retries. */
   remoteRepoNames(dir: string | null | undefined): readonly string[] {
-    if (typeof dir !== 'string' || dir.length === 0) return [];
+    return this.remotes(dir)?.names ?? [];
+  }
+
+  /**
+   * The lowercased `owner/name` a bare `gh` command run in `dir` targets, or
+   * null when that isn't certain. gh takes the repo `gh repo set-default`
+   * saved as a remote's `gh-resolved` config (`base` for the remote's own
+   * repo, else an `owner/name`), and otherwise, with one remote, that
+   * remote's repo. With several remotes and no default it may prompt or
+   * pick by its own order, so this answers null. A `GH_REPO` in the
+   * environment outside the command isn't visible here.
+   */
+  ghBaseRepoName(dir: string | null | undefined): string | null {
+    const fetchNames = this.remotes(dir)?.fetchNameByRemote;
+    if (!fetchNames || typeof dir !== 'string') return null;
     const key = cacheKeyOf(dir);
     const now = Date.now();
-    const cached = this.remoteNamesCache.get(key);
-    if (cached && now - cached.resolvedAt < this.ttlMs) return cached.names;
+    const cached = this.ghBaseCache.get(key);
+    if (cached && now - cached.resolvedAt < this.ttlMs) return cached.name;
+    try {
+      const result = spawnSync(
+        'git',
+        ['-C', dir, 'config', '--get-regexp', '^remote\\..*\\.gh-resolved$'],
+        GIT_OPTS,
+      );
+      // Exit 1 means no remote has a saved default.
+      if (result.status !== 0 && result.status !== 1) return null;
+      if (typeof result.stdout !== 'string') return null;
+      const defaults = new Set<string | null>();
+      for (const line of result.stdout.split('\n')) {
+        const match = /^remote\.(.+)\.gh-resolved\s+(\S+)$/.exec(line.trim());
+        if (!match) continue;
+        const [, remote, resolved] = match;
+        defaults.add(
+          resolved === 'base' ? (fetchNames.get(remote) ?? null) : parseGhRepoName(resolved),
+        );
+      }
+      const sole = fetchNames.size === 1 ? [...fetchNames.values()][0] : null;
+      const name = defaults.size === 0 ? sole : defaults.size === 1 ? [...defaults][0] : null;
+      this.ghBaseCache.set(key, { name, resolvedAt: now });
+      return name;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The repo's remotes from `git remote -v`. Null when git failed, which is
+   *  not cached. */
+  private remotes(dir: string | null | undefined): Remotes | null {
+    if (typeof dir !== 'string' || dir.length === 0) return null;
+    const key = cacheKeyOf(dir);
+    const now = Date.now();
+    const cached = this.remotesCache.get(key);
+    if (cached && now - cached.resolvedAt < this.ttlMs) return cached.remotes;
     try {
       const result = spawnSync('git', ['-C', dir, 'remote', '-v'], GIT_OPTS);
-      if (typeof result.status !== 'number' || typeof result.stdout !== 'string') return [];
+      if (typeof result.status !== 'number' || typeof result.stdout !== 'string') return null;
       const names = new Set<string>();
+      const fetchNameByRemote = new Map<string, string>();
       if (result.status === 0) {
         for (const line of result.stdout.split('\n')) {
-          const url = line.split(/\s+/)[1];
-          const name = url ? repoNameFromRemote(url) : null;
-          if (name) names.add(name.toLowerCase());
+          const [remote, url, direction] = line.split(/\s+/);
+          const name = url ? repoNameFromRemote(url)?.toLowerCase() : undefined;
+          if (!name) continue;
+          names.add(name);
+          if (direction === '(fetch)') fetchNameByRemote.set(remote, name);
         }
       }
-      const list = [...names];
-      this.remoteNamesCache.set(key, { names: list, resolvedAt: now });
-      return list;
+      const remotes = { names: [...names], fetchNameByRemote };
+      this.remotesCache.set(key, { remotes, resolvedAt: now });
+      return remotes;
     } catch {
-      return [];
+      return null;
     }
   }
 
