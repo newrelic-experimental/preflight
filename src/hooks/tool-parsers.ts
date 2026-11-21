@@ -100,8 +100,12 @@ function parseBash(input: Record<string, unknown>): ToolFields {
     const classification = classifyBash(input.command);
     fields.bashCategory = classification.category;
     fields.bashLeading = classification.leading;
-    fields.bashDestructive = classification.isDestructive;
-    fields.bashNetwork = classification.isNetwork;
+    // The collector classifies the raw command before redacting it and carries
+    // the flags. A carried true can only add to what the stored text shows, since
+    // redaction can hide a destructive command but never makes a safe one look
+    // destructive.
+    fields.bashDestructive = input.bashDestructive === true || classification.isDestructive;
+    fields.bashNetwork = input.bashNetwork === true || classification.isNetwork;
   }
   if (typeof input.description === 'string') fields.commandDescription = input.description;
   if (typeof input.timeout === 'number') fields.commandTimeout = input.timeout;

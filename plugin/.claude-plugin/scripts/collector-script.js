@@ -619,6 +619,426 @@ function mcpPrToolAction(toolName) {
   return Object.hasOwn(MCP_PR_TOOL_ACTION, bare) ? MCP_PR_TOOL_ACTION[bare] : void 0;
 }
 
+// src/hooks/bash-classifier.ts
+var GIT_COMMANDS = /* @__PURE__ */ new Set(["git", "gh", "gitk", "tig"]);
+var PACKAGE_MANAGERS = /* @__PURE__ */ new Set([
+  "npm",
+  "yarn",
+  "pnpm",
+  "bun",
+  "pip",
+  "pip3",
+  "pipx",
+  "poetry",
+  "uv",
+  "cargo",
+  "gem",
+  "bundle",
+  "bundler",
+  "composer",
+  "brew",
+  "apt",
+  "apt-get",
+  "yum",
+  "dnf",
+  "apk"
+]);
+var TEST_RUNNERS = /* @__PURE__ */ new Set([
+  "jest",
+  "vitest",
+  "mocha",
+  "pytest",
+  "rspec",
+  "phpunit",
+  "tap",
+  "ava",
+  "cypress",
+  "playwright",
+  "karma",
+  "tox",
+  "nose",
+  "nose2",
+  "unittest",
+  "busted",
+  "ginkgo"
+]);
+var BUILD_TOOLS = /* @__PURE__ */ new Set([
+  "tsc",
+  "webpack",
+  "vite",
+  "rollup",
+  "esbuild",
+  "parcel",
+  "turbo",
+  "nx",
+  "make",
+  "gmake",
+  "cmake",
+  "ninja",
+  "gradle",
+  "gradlew",
+  "mvn",
+  "sbt",
+  "ant",
+  "rake",
+  "meson",
+  "bazel",
+  "buck",
+  "pants",
+  "swc",
+  "babel"
+]);
+var CONTAINER_TOOLS = /* @__PURE__ */ new Set([
+  "docker",
+  "podman",
+  "docker-compose",
+  "podman-compose",
+  "kubectl",
+  "oc",
+  "helm",
+  "k9s",
+  "kustomize",
+  "kind",
+  "minikube",
+  "skaffold",
+  "buildah",
+  "crictl"
+]);
+var NETWORK_TOOLS = /* @__PURE__ */ new Set([
+  "curl",
+  "wget",
+  "http",
+  "httpie",
+  "xh",
+  "nc",
+  "ncat",
+  "ssh",
+  "scp",
+  "sftp",
+  "rsync",
+  "ftp",
+  "telnet",
+  "mosh"
+]);
+var FS_OPS = /* @__PURE__ */ new Set([
+  "ls",
+  "cat",
+  "cp",
+  "mv",
+  "rm",
+  "rmdir",
+  "mkdir",
+  "touch",
+  "find",
+  "chmod",
+  "chown",
+  "chgrp",
+  "tar",
+  "zip",
+  "unzip",
+  "gzip",
+  "gunzip",
+  "bzip2",
+  "xz",
+  "tree",
+  "ln",
+  "stat",
+  "du",
+  "df",
+  "pwd",
+  "realpath",
+  "readlink",
+  "basename",
+  "dirname"
+]);
+var SEARCH_TOOLS = /* @__PURE__ */ new Set(["grep", "rg", "ag", "ack", "sed", "awk", "fzf"]);
+var SCRIPT_INTERPRETERS = /* @__PURE__ */ new Set([
+  "bash",
+  "sh",
+  "zsh",
+  "ksh",
+  "fish",
+  "dash",
+  "python",
+  "python3",
+  "python2",
+  "node",
+  "deno",
+  "ruby",
+  "perl",
+  "php",
+  "lua",
+  "tsx",
+  "ts-node"
+]);
+var DESTRUCTIVE_PATTERNS = [
+  /\brm\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*\b|--recursive\b)/,
+  // git push --force / -f, but NOT --force-with-lease / --force-if-includes
+  // (which are the recommended *safe* forms). Match the force token anywhere
+  // in the invocation, not just immediately after `push`.
+  /\bgit\s+push\b(?=.*\s(?:--force(?!-(?:with-lease|if-includes))\b|-f\b))/i,
+  /\bgit\s+reset\s+--hard\b/i,
+  // git clean only deletes with -f/--force (clean.requireForce defaults to true);
+  // -n/--dry-run and bare `git clean` are safe and stay unflagged.
+  /\bgit\s+clean\b(?=.*\s(?:-[a-zA-Z]*f[a-zA-Z]*|--force)\b)/i,
+  /\bfind\b.*\s-delete\b/i,
+  /\bdd\s+if=/i,
+  /\bmkfs(?:\.\w+)?\b/i,
+  /\bshred\b/i,
+  /\b(?:DROP|TRUNCATE)\s+(?:TABLE|DATABASE|SCHEMA)\b/i,
+  /\bDELETE\s+FROM\b/i,
+  /\bchmod\s+777\b/,
+  />\s*\/dev\/sd[a-z]/,
+  /\b(?:curl|wget)\b.*\|\s*(?:\/[^\s]*\/)?(?:ba|z|k|da|fi|tc|c)?sh\b/i,
+  /\b(?:curl|wget)\b.*\|\s*(?:\/[^\s]*\/)?(?:node|python3?|perl|ruby)\b/i
+];
+var CLOSED_BY = {
+  single: "'",
+  double: '"',
+  "ansi-c": "'",
+  comment: "\n"
+};
+var ESCAPES_IN = /* @__PURE__ */ new Set(["none", "double", "ansi-c"]);
+var METACHAR = /[\s;&|(]/;
+var HEREDOC_OPERATOR = /(?<!<)<<(-?)[ \t]*/y;
+var WORD_END = /[\s;&|()<>]/;
+var LINE_CONTINUES = /(?<!\\)(?:\\\\)*\\$/;
+function stateOpenedAt(command, i, atWordStart) {
+  const ch = command[i];
+  if (ch === "'") return "single";
+  if (ch === '"') return "double";
+  if (ch === "$" && command[i + 1] === "'") return "ansi-c";
+  if (ch === "#" && atWordStart) return "comment";
+  return "none";
+}
+function readHeredocWord(command, start) {
+  let delimiter = "";
+  let quoted = false;
+  let i = start;
+  while (i < command.length && !WORD_END.test(command[i])) {
+    const ch = command[i];
+    if (ch === "\\") {
+      if (i + 1 >= command.length) return void 0;
+      delimiter += command[i + 1];
+      i += 2;
+    } else if (ch === "'" || ch === '"' || ch === "$" && command[i + 1] === "'") {
+      const open = ch === "$" ? i + 1 : i;
+      const close = command.indexOf(command[open], open + 1);
+      if (close === -1) return void 0;
+      delimiter += command.slice(open + 1, close);
+      i = close + 1;
+    } else {
+      delimiter += ch;
+      i++;
+      continue;
+    }
+    quoted = true;
+  }
+  return i === start ? void 0 : { delimiter, quoted, end: i };
+}
+function heredocBodiesEnd(command, start, heredocs) {
+  let i = start;
+  for (const { delimiter, stripTabs, quoted } of heredocs) {
+    let line = "";
+    while (i < command.length) {
+      const eol = command.indexOf("\n", i);
+      const end = eol === -1 ? command.length : eol;
+      const segment = command.slice(i, end);
+      i = end + 1;
+      if (!quoted && LINE_CONTINUES.test(segment)) {
+        line += segment.slice(0, -1);
+        continue;
+      }
+      line += segment;
+      if ((stripTabs ? line.replace(/^\t+/, "") : line) === delimiter) break;
+      line = "";
+    }
+  }
+  return i;
+}
+function maskQuotedRegions(command) {
+  let out = "";
+  let state = "none";
+  let atWordStart = true;
+  const heredocs = [];
+  const parens = [];
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i];
+    if (ch === "\\" && ESCAPES_IN.has(state)) {
+      out += state === "none" ? command.slice(i, i + 2) : "  ";
+      i += 2;
+      atWordStart = false;
+      continue;
+    }
+    if (state === "none") {
+      HEREDOC_OPERATOR.lastIndex = i;
+      const operator = HEREDOC_OPERATOR.exec(command);
+      const word = operator && readHeredocWord(command, i + operator[0].length);
+      if (operator && word) {
+        heredocs.push({
+          delimiter: word.delimiter,
+          stripTabs: operator[1] === "-",
+          quoted: word.quoted
+        });
+        out += command.slice(i, word.end);
+        i = word.end;
+        atWordStart = false;
+        continue;
+      }
+      state = stateOpenedAt(command, i, atWordStart);
+      if (state === "ansi-c") {
+        out += " ";
+        i++;
+      }
+      if (state !== "none") {
+        out += " ";
+        i++;
+        atWordStart = false;
+        continue;
+      }
+      if (ch === "$" && command[i + 1] === "(") {
+        parens.push("substitution");
+        out += "$(";
+        i += 2;
+        atWordStart = true;
+        continue;
+      }
+      if (ch === "(") parens.push("group");
+      out += ch;
+      i++;
+      atWordStart = ch === ")" ? parens.pop() !== "substitution" : METACHAR.test(ch);
+      if (ch === "\n" && heredocs.length > 0) {
+        const end = heredocBodiesEnd(command, i, heredocs);
+        out += command.slice(i, end);
+        i = end;
+        heredocs.length = 0;
+      }
+      continue;
+    }
+    if (ch === CLOSED_BY[state]) {
+      if (state !== "comment") {
+        out += " ";
+        i++;
+      }
+      state = "none";
+      continue;
+    }
+    out += " ";
+    i++;
+  }
+  return out;
+}
+var SUDO_VALUE_SHORT_FLAG = /^-[ughpUtCr]$/;
+var SUDO_VALUE_LONG_FLAGS = /* @__PURE__ */ new Set([
+  "--user",
+  "--group",
+  "--host",
+  "--prompt",
+  "--role",
+  "--type",
+  "--other-user",
+  "--close-from"
+]);
+var SEGMENT_SPLIT_RE = /\|\||&&|;|\|/;
+var SCRIPT_EXT_RE = /\.(?:sh|bash|zsh|py|js|mjs|cjs|ts|tsx|rb|pl|php|lua)$/i;
+function tokenize(command) {
+  return command.split(/\s+/).filter((t) => t.length > 0);
+}
+function stripEnvTokens(tokens) {
+  while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0] ?? "")) {
+    tokens.shift();
+  }
+}
+function stripSudoTokens(tokens) {
+  while (tokens.length > 0 && tokens[0] === "sudo") {
+    tokens.shift();
+    while (tokens.length > 0) {
+      const flag = tokens[0] ?? "";
+      if (!flag.startsWith("-")) break;
+      tokens.shift();
+      const next = tokens[0];
+      if (next === void 0 || next.startsWith("-")) continue;
+      if (SUDO_VALUE_SHORT_FLAG.test(flag) || SUDO_VALUE_LONG_FLAGS.has(flag)) {
+        tokens.shift();
+      }
+    }
+  }
+}
+function firstSegment(command) {
+  const idx = command.search(SEGMENT_SPLIT_RE);
+  return idx >= 0 ? command.slice(0, idx).trim() : command;
+}
+function refinePackageManager(leading, tokens) {
+  const rest = tokens.slice(1).filter((t) => !t.startsWith("-"));
+  if (rest.length === 0) return "package-manager";
+  let verbIdx = 0;
+  if (rest[0] === "run" || rest[0] === "run-script") {
+    if (rest.length < 2) return "package-manager";
+    verbIdx = 1;
+  }
+  const verb = rest[verbIdx]?.toLowerCase();
+  if (verb === void 0) return "package-manager";
+  if (verb === "test" || verb === "tests" || verb === "t") return "test-runner";
+  if (verb === "build" || verb === "compile") return "build";
+  if (verb === "lint" || verb === "typecheck" || verb === "tsc") return "build";
+  if (leading === "cargo" && verb === "test") return "test-runner";
+  if (leading === "cargo" && verb === "build") return "build";
+  if (leading === "go" && verb === "test") return "test-runner";
+  if (leading === "go" && verb === "build") return "build";
+  return "package-manager";
+}
+function classifyLeading(leading, tokens) {
+  if (leading.length === 0) return "shell-other";
+  if (GIT_COMMANDS.has(leading)) return "git";
+  if (TEST_RUNNERS.has(leading)) return "test-runner";
+  if (BUILD_TOOLS.has(leading)) return "build";
+  if (CONTAINER_TOOLS.has(leading)) return "container";
+  if (NETWORK_TOOLS.has(leading)) return "network";
+  if (SEARCH_TOOLS.has(leading)) return "search";
+  if (FS_OPS.has(leading)) return "fs-op";
+  if (PACKAGE_MANAGERS.has(leading)) return refinePackageManager(leading, tokens);
+  if ((leading === "go" || leading === "cargo") && tokens.length >= 2) {
+    return refinePackageManager(leading, tokens);
+  }
+  if (leading === "npx" || leading === "pnpx" || leading === "bunx") {
+    const next = tokens[1]?.toLowerCase();
+    if (next !== void 0) {
+      if (TEST_RUNNERS.has(next)) return "test-runner";
+      if (BUILD_TOOLS.has(next)) return "build";
+    }
+    return "package-manager";
+  }
+  if (SCRIPT_INTERPRETERS.has(leading)) return "custom-script";
+  return "shell-other";
+}
+function classifyBash(command) {
+  const trimmed = command.trim();
+  if (trimmed.length === 0) {
+    return { category: "shell-other", leading: "", isDestructive: false, isNetwork: false };
+  }
+  const masked = maskQuotedRegions(trimmed);
+  const isDestructive = DESTRUCTIVE_PATTERNS.some((p) => p.test(masked));
+  const segment = firstSegment(trimmed);
+  const tokens = tokenize(segment);
+  stripEnvTokens(tokens);
+  stripSudoTokens(tokens);
+  stripEnvTokens(tokens);
+  if (tokens.length === 0) {
+    return { category: "shell-other", leading: "", isDestructive, isNetwork: false };
+  }
+  const leadingRaw = tokens[0] ?? "";
+  const explicitScriptPath = leadingRaw.startsWith("./") || leadingRaw.startsWith("../") || SCRIPT_EXT_RE.test(leadingRaw);
+  const absolutePath = leadingRaw.startsWith("/");
+  const leading = explicitScriptPath ? leadingRaw : leadingRaw.split("/").pop() ?? leadingRaw;
+  let category = classifyLeading(leading.toLowerCase(), tokens);
+  if (category === "shell-other" && (explicitScriptPath || absolutePath)) {
+    category = "custom-script";
+  }
+  const isNetwork = category === "network" || NETWORK_TOOLS.has(leading.toLowerCase());
+  return { category, leading, isDestructive, isNetwork };
+}
+
 // src/metrics/pr-ref.ts
 var PR_REPO_RE = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
 function parsePrRepo(value) {
@@ -804,6 +1224,12 @@ function detectStampPlatform() {
   return (process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM) || void 0;
 }
 var MAX_REDACT_BYTES = 1048576;
+var MAX_CLASSIFY_CHARS = 16384;
+function bashCommandInput(command) {
+  if (command.length > MAX_CLASSIFY_CHARS) return { command: redact(command) };
+  const { isDestructive, isNetwork } = classifyBash(command);
+  return { command: redact(command), bashDestructive: isDestructive, bashNetwork: isNetwork };
+}
 function redact(value) {
   let result = value;
   if (Buffer.byteLength(value, "utf8") > MAX_REDACT_BYTES) {
@@ -988,7 +1414,7 @@ function extractInputMeta(toolName, input) {
       if (Array.isArray(obj.replacements)) meta.replacementsCount = obj.replacements.length;
       break;
     case "run_in_terminal":
-      if (typeof obj.command === "string") meta.command = redact(obj.command);
+      if (typeof obj.command === "string") Object.assign(meta, bashCommandInput(obj.command));
       if (typeof obj.explanation === "string") meta.description = redact(obj.explanation);
       if (typeof obj.isBackground === "boolean") meta.run_in_background = obj.isBackground;
       break;
@@ -1045,7 +1471,7 @@ function extractInputMeta(toolName, input) {
     // input shape as Bash.
     case "Bash":
     case "PowerShell":
-      if (typeof obj.command === "string") meta.command = redact(obj.command);
+      if (typeof obj.command === "string") Object.assign(meta, bashCommandInput(obj.command));
       if (typeof obj.description === "string") meta.description = redact(obj.description);
       if (typeof obj.timeout === "number") meta.timeout = obj.timeout;
       if (typeof obj.run_in_background === "boolean")
@@ -1320,7 +1746,7 @@ function processHook(raw, cliEvent) {
       timestamp,
       inputSize: sizeOf(command),
       inputHash: hashInput(command),
-      toolInput: { command: redact(command) }
+      toolInput: bashCommandInput(command)
     };
   } else if (eventName === "aftershellexecution") {
     event = {
@@ -1418,7 +1844,7 @@ function processHook(raw, cliEvent) {
       timestamp,
       inputSize: sizeOf(commandLine),
       inputHash: hashInput(commandLine),
-      toolInput: { command: redact(commandLine) }
+      toolInput: bashCommandInput(commandLine)
     };
   } else if (eventName === "post_run_command") {
     event = {
