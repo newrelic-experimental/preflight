@@ -516,6 +516,19 @@ describe('SkillActivationTracker.pinSubagent', () => {
     expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', toolUseId: 'u2' }))).toEqual(lint);
   });
 
+  it('replaces a main-agent run the subagent was first seen under', () => {
+    const t = new SkillActivationTracker();
+    const review = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'review' }));
+    t.recordToolStart('s1', 'agent-call');
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'lint', toolUseId: 'u2' }));
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', toolUseId: 'u3' }))?.name).toBe(
+      'lint',
+    );
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', toolUseId: 'u4' }))).toEqual(review);
+  });
+
   it('falls back to the run open at first sight when the Agent call start was not seen', () => {
     const t = new SkillActivationTracker();
     spawnInReviewThenSimplify(t);
