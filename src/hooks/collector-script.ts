@@ -935,7 +935,12 @@ function processHook(raw: string, cliEvent?: string): void {
   // Both Antigravity branches spread this, so a pre and its post agree on
   // whether they carry a toolUseId: HookEventProcessor pairs a post by its
   // toolUseId whenever it has one, and a pre without one is keyed by a UUID.
-  const agyToolUseId = typeof data.stepIdx === 'number' ? { toolUseId: String(data.stepIdx) } : {};
+  // stepIdx counts within one conversation, so the id leads with the
+  // conversation to stay unique for an engine that drains several.
+  const agyToolUseId =
+    typeof data.stepIdx === 'number'
+      ? { toolUseId: sessionId ? `${sessionId}:${data.stepIdx}` : String(data.stepIdx) }
+      : {};
 
   let event: Record<string, unknown>;
   let selfReportCall: HookReportCall | undefined;
