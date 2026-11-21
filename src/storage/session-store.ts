@@ -819,8 +819,13 @@ export function mergeSummaries(
       : existing.toolSelectionMetrics;
 
   const timeline = mergeTimeline(existing.timeline, incoming.timeline);
+  // An owner's completed yields only to an in-progress checkpoint stamped
+  // after it: the aggregator stamps last activity and an engine stamps its
+  // own wall clock, so either can pass a completion only on a real resume.
   const outcomeSource =
-    existing.outcome === 'completed' && existing.observerCompletedAt === undefined
+    existing.outcome === 'completed' &&
+    existing.observerCompletedAt === undefined &&
+    !(incoming.outcome === 'in progress' && incoming.endTime > existing.endTime)
       ? existing
       : incoming;
 
