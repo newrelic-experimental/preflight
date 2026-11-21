@@ -41,7 +41,7 @@ const COUNTERS = `
   testRunCount testPassCount buildRunCount buildPassCount subagentCostUsd subagentCostByDayUsd.d
   exactTotals.costUsd exactTotals.inputTokens exactTotals.outputTokens exactTotals.costByDayUsd.d
   tokensThinking tokensCacheRead tokensCacheCreation cacheSavingsUsd taskCount contextCompressions
-  agentSpawns costByWorkflowRunId.r.d efficiencyScoreSampleCount
+  agentSpawns costByWorkflowRunId.r.d efficiencyScoreSampleCount selfReportCount
   modelBreakdown.m.requestCount modelBreakdown.m.totalInputTokens modelBreakdown.m.totalOutputTokens
   modelBreakdown.m.totalCostUsd modelBreakdown.m.totalCacheReadTokens
   modelBreakdown.m.totalCacheCreationTokens modelBreakdown.m.totalThinkingTokens
@@ -309,7 +309,7 @@ describe('combining fields that do not always exist', () => {
   });
 
   const optional = `costByDayUsd subagentCostByDayUsd unpricedByModel estimatedByModel
-    unpricedByDay estimatedByDay byteEstimates attribution`;
+    unpricedByDay estimatedByDay byteEstimates attribution selfReportCount`;
   it.each(optional.split(/\s+/))(
     'keeps %s absent when neither file has it, since absent and empty read differently',
     (k) => {

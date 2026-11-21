@@ -1003,12 +1003,11 @@ function byProgress(x: FullSessionSummary, y: FullSessionSummary): number {
 }
 
 /**
- * Combine every file for one session id, of which there must be at least one.
- * Copies of one stretch share activity and max-merge, the copy further along
- * last. Groups hold separate activity and add. A file without a timeline has
- * repeated another file's spend on real installs, so it max-merges under the
- * sum. No current writer drops a timeline it saves onto, so the sum is the
- * latest state and its ledger is kept.
+ * Combine every file for one session id, of which there must be at least one. Copies of one stretch
+ * share activity and max-merge, the copy further along last. Groups hold separate activity and add.
+ * A file without a timeline has repeated another file's spend on real installs, so it max-merges
+ * under the sum. No current writer drops a timeline it saves onto, so the sum is the latest state
+ * and its ledger is kept.
  */
 export function combineSessionFiles(files: readonly FullSessionSummary[]): FullSessionSummary {
   const separate = groupBySharedActivity(files.filter((f) => f.timeline?.length))
@@ -1081,6 +1080,7 @@ function addSummaries(a: FullSessionSummary, b: FullSessionSummary): FullSession
     tokensThinking: a.tokensThinking + b.tokensThinking,
     tokensCacheRead: a.tokensCacheRead + b.tokensCacheRead,
     tokensCacheCreation: a.tokensCacheCreation + b.tokensCacheCreation,
+    selfReportCount: addOptional(a.selfReportCount, b.selfReportCount, (x, y) => x + y),
     cacheSavingsUsd: a.cacheSavingsUsd + b.cacheSavingsUsd,
     efficiencyScore: scores.efficiencyScore,
     efficiencyScoreSampleCount: scores.efficiencyScoreSampleCount,
