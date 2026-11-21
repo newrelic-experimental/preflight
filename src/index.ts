@@ -122,6 +122,7 @@ import { TurnTracker } from './metrics/turn-tracker.js';
 import { WorkflowRunTracker } from './metrics/workflow-run-tracker.js';
 import { CLAUDE_CODE_PLATFORM_NAME } from './platforms/claude-code-adapter.js';
 import { ClaudeCodeAdapter, createDefaultRegistry, GenericMcpAdapter } from './platforms/index.js';
+import { canonicalPlatformName } from './platforms/platform-names.js';
 import { sessionBreadcrumbWriters } from './platforms/types.js';
 import type { ProxyRequestRecord, ProxyToolCallRecord } from './proxy/index.js';
 import { ProxyManager } from './proxy/index.js';
@@ -835,7 +836,9 @@ function hookRecordedReports(): HookRecordedReportOptions | undefined {
   if (!hook) return undefined;
   const options = { hook, homeDir: homedir(), projectDir: process.cwd() };
   // Ambient detection alone also matches hosts launched from Cursor's terminal, which inherit CURSOR_TRACE_ID.
-  const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
+  const explicit = canonicalPlatformName(
+    process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM,
+  );
   return explicit === adapter.platformName || hooksDetected(options) ? options : undefined;
 }
 
