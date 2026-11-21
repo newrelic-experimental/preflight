@@ -21,6 +21,7 @@ export function toolCallSeedOf(summary: FullSessionSummary): ToolCallSeed {
   const sampleCount = summary.efficiencyScoreSampleCount ?? 0;
   return {
     sessionTracker: {
+      sessionId: summary.sessionId,
       toolCallCount: summary.toolCallCount,
       bashCommandCount: summary.bashCommandCount,
       toolNameByUseId: savedToolNameByUseId(summary),

@@ -77,6 +77,12 @@ export interface SessionMetrics {
 // ---------------------------------------------------------------------------
 
 const MAX_TIMELINE_ENTRIES = 10_000;
+
+/** A call's key among the counted ones. Antigravity's ids are step numbers, which sessions may share. */
+function countedKey(sessionId: string, toolUseId: string): string {
+  return `${sessionId}\u0000${toolUseId}`;
+}
+
 const AMENDABLE_ERROR_TYPES = new Set(['timeout', 'rejected']);
 
 /** A record for a pre that has seen no post yet, which a late post could still amend or count. */
@@ -146,6 +152,8 @@ export function computeDurationStats(durations: number[]): DurationStats {
  * session-store.ts) and are already seeded there.
  */
 export interface SessionTrackerSeed {
+  /** The session the saved file belongs to. */
+  readonly sessionId: string;
   readonly toolCallCount: number;
   readonly bashCommandCount: number;
   /** The tool name of each saved call that has a toolUseId, keyed by that id. */
@@ -192,7 +200,7 @@ export class SessionTracker implements Resettable {
   >();
   private readonly maxAmendable: number;
   /** The most recent calls counted, seeded ones included, so a call another process also drained counts once. */
-  private readonly toolNameByUseId = new Map<string, string>();
+  private readonly toolNameByCountedKey = new Map<string, string>();
   /** What getMetrics() shows until this engine adopts a session, which some engines never do. */
   private drainedWhilePending: SessionTracker | null;
 
@@ -215,8 +223,9 @@ export class SessionTracker implements Resettable {
     // A pending engine drains every session; adoptSessionId() replays its own.
     if (record.sessionId && this.sessionId.startsWith('pending-')) return;
     if (record.toolUseId) {
-      if (this.toolNameByUseId.has(record.toolUseId)) return;
-      this.rememberCounted(record.toolUseId, record.toolName);
+      const key = countedKey(record.sessionId ?? this.sessionId, record.toolUseId);
+      if (this.toolNameByCountedKey.has(key)) return;
+      this.rememberCounted(key, record.toolName);
     }
     this.toolCallCount++;
 
@@ -497,23 +506,27 @@ export class SessionTracker implements Resettable {
   seedFromPersisted(seed: SessionTrackerSeed): void {
     let calls = seed.toolCallCount;
     let bashCalls = seed.bashCommandCount;
+    const unseen: [string, string][] = [];
     for (const [toolUseId, toolName] of seed.toolNameByUseId) {
-      if (!this.toolNameByUseId.has(toolUseId)) {
-        this.rememberCounted(toolUseId, toolName);
+      const key = countedKey(seed.sessionId, toolUseId);
+      if (!this.toolNameByCountedKey.has(key)) {
+        unseen.push([key, toolName]);
         continue;
       }
       calls--;
       if (toolName === 'Bash') bashCalls--;
     }
+    // Remembering them only now keeps a full map from evicting the live ids the loop has yet to reach.
+    for (const [key, toolName] of unseen) this.rememberCounted(key, toolName);
     // A max-merged file can hold more ids than its count, so the overlap can exceed it.
     this.toolCallCount += Math.max(0, calls);
     this.bashCommandsRun += Math.max(0, bashCalls);
   }
 
-  private rememberCounted(toolUseId: string, toolName: string): void {
-    if (this.toolNameByUseId.size >= MAX_TIMELINE_ENTRIES)
-      this.toolNameByUseId.delete(this.toolNameByUseId.keys().next().value!);
-    this.toolNameByUseId.set(toolUseId, toolName);
+  private rememberCounted(key: string, toolName: string): void {
+    if (this.toolNameByCountedKey.size >= MAX_TIMELINE_ENTRIES)
+      this.toolNameByCountedKey.delete(this.toolNameByCountedKey.keys().next().value!);
+    this.toolNameByCountedKey.set(key, toolName);
   }
 
   reset(sessionId: string): void {
@@ -547,6 +560,6 @@ export class SessionTracker implements Resettable {
     this.timeline = [];
     this.timelineEntryCount = 0;
     this.amendable.clear();
-    this.toolNameByUseId.clear();
+    this.toolNameByCountedKey.clear();
   }
 }
