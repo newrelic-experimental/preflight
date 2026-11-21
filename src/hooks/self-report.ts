@@ -1,5 +1,14 @@
 import { createHash } from 'node:crypto';
-import { closeSync, constants, mkdirSync, openSync, unlinkSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  rmdirSync,
+  statSync,
+  unlinkSync,
+} from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import type { SelfReportHookEvent } from '../storage/types.js';
 import { isSyntheticSessionId } from './synthetic-session-id.js';
@@ -149,11 +158,25 @@ function claimPath(storageDir: string, line: SelfReportHookEvent): string {
   return resolve(storageDir, 'self-reports', line.sessionId, reportKey(line));
 }
 
+function createClaim(path: string): void {
+  closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600));
+}
+
+/**
+ * Creates the directory only when the claim cannot be opened, so a sweep that removes an empty
+ * conversation directory between the two steps costs one retry instead of the report.
+ */
 export function claimReport(storageDir: string, line: SelfReportHookEvent): boolean {
   const path = claimPath(storageDir, line);
   try {
+    createClaim(path);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+  }
+  try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600));
+    createClaim(path);
     return true;
   } catch {
     return false;
@@ -166,4 +189,43 @@ export function releaseReport(storageDir: string, line: SelfReportHookEvent): vo
   } catch {
     return;
   }
+}
+
+/** A claim only has to outlive the retries of the hook call that wrote it, which land within seconds. */
+export const SELF_REPORT_CLAIM_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function listDir(dir: string): string[] {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Removes claims older than `SELF_REPORT_CLAIM_MAX_AGE_MS`, then each conversation directory left
+ * empty. A newer claim keeps its directory because `rmdirSync` refuses a directory with entries.
+ */
+export function pruneSelfReportClaims(storageDir: string, nowMs: number): number {
+  const root = resolve(storageDir, 'self-reports');
+  let deleted = 0;
+  for (const conversation of listDir(root)) {
+    const dir = resolve(root, conversation);
+    for (const name of listDir(dir)) {
+      const path = resolve(dir, name);
+      try {
+        if (nowMs - statSync(path).mtimeMs <= SELF_REPORT_CLAIM_MAX_AGE_MS) continue;
+        unlinkSync(path);
+        deleted++;
+      } catch {
+        continue;
+      }
+    }
+    try {
+      rmdirSync(dir);
+    } catch {
+      continue;
+    }
+  }
+  return deleted;
 }

@@ -33,6 +33,7 @@ import { DEFAULT_MAX_PENDING, HookEventProcessor } from './hooks/index.js';
 import { isPlatformDetectionFellBack } from './hooks/platform-detection-health.js';
 import { ParentTranscriptWatcher } from './hooks/parent-transcript-watcher.js';
 import { BilledTurnLedger, pruneBilledTurns } from './hooks/billed-turn-ledger.js';
+import { pruneSelfReportClaims } from './hooks/self-report.js';
 import {
   isSyntheticSessionId,
   readJobState,
@@ -381,11 +382,18 @@ export function runRetentionSweep(deps: RetentionSweepDeps): void {
     deps.retainSessionsDays,
     Date.now(),
   );
-  if (deletedSessionFiles > 0 || deletedWeeklySummaryFiles > 0 || deletedBilledTurnDays > 0) {
+  const deletedSelfReportClaims = pruneSelfReportClaims(deps.storagePath, Date.now());
+  if (
+    deletedSessionFiles > 0 ||
+    deletedWeeklySummaryFiles > 0 ||
+    deletedBilledTurnDays > 0 ||
+    deletedSelfReportClaims > 0
+  ) {
     logger.info('Retention purge complete', {
       deletedSessionFiles,
       deletedWeeklySummaryFiles,
       deletedBilledTurnDays,
+      deletedSelfReportClaims,
     });
   }
 }
