@@ -44,12 +44,13 @@ import type { RecommendationEngine } from '../metrics/recommendation-engine.js';
 // Helpers
 // ---------------------------------------------------------------------------
 
+let nextToolUseId = 0;
 function makeRecord(overrides?: Partial<ToolCallRecord>): ToolCallRecord {
   return {
     id: 'rec-001',
     sessionId: 'sess-001',
     toolName: 'Read',
-    toolUseId: 'toolu_001',
+    toolUseId: `toolu_${++nextToolUseId}`,
     timestamp: Date.now(),
     durationMs: 50,
     success: true,

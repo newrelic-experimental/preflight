@@ -4,6 +4,7 @@ import type {
   PlatformSessionMetadata,
   NormalizedToolCall,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 /**
  * Maps Cursor tool names to the normalized Claude Code tool vocabulary.
@@ -153,7 +154,7 @@ export class CursorAdapter implements PlatformAdapter {
     return (
       process.env.CURSOR_SESSION_ID !== undefined ||
       process.env.CURSOR_TRACE_ID !== undefined ||
-      process.env.MCP_CLIENT === 'cursor'
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'cursor'
     );
   }
 }

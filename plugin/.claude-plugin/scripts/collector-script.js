@@ -298,6 +298,37 @@ function resolveRecordContent(highSecurity, explicitValue) {
   return highSecurity ? false : explicitValue;
 }
 
+// src/platforms/platform-names.ts
+var PLATFORM_NAMES = [
+  "claude-code",
+  "cursor",
+  "windsurf",
+  "copilot",
+  "copilot-app",
+  "copilot-sdk",
+  "zed",
+  "continue",
+  "amazon-q",
+  "kiro",
+  "droid",
+  "gemini-cli",
+  "cline",
+  "codex",
+  "opencode",
+  "kilocode",
+  "pi",
+  "antigravity",
+  "generic-mcp"
+];
+var ENGINE_ENV_KEYS = ["MCP_CLIENT", "NEW_RELIC_AI_PLATFORM"];
+var aliasKey = (name) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
+var PLATFORM_BY_ALIAS = new Map(
+  PLATFORM_NAMES.map((n) => [aliasKey(n), n])
+);
+function canonicalPlatformName(name) {
+  return name ? PLATFORM_BY_ALIAS.get(aliasKey(name)) : void 0;
+}
+
 // src/platforms/claude-code-adapter.ts
 var CLAUDE_CODE_PLATFORM_NAME = "claude-code";
 var CLAUDE_CODE_ENV_SIGNALS = [
@@ -329,37 +360,6 @@ function hookEventFromArg(arg) {
   return HOOK_EVENT_TYPES.find(
     (event) => event.toLowerCase() === lower || HOOK_SUBCOMMANDS[event] === lower
   );
-}
-
-// src/platforms/platform-names.ts
-var PLATFORM_NAMES = [
-  "claude-code",
-  "cursor",
-  "windsurf",
-  "copilot",
-  "copilot-app",
-  "copilot-sdk",
-  "zed",
-  "continue",
-  "amazon-q",
-  "kiro",
-  "droid",
-  "gemini-cli",
-  "cline",
-  "codex",
-  "opencode",
-  "kilocode",
-  "pi",
-  "antigravity",
-  "generic-mcp"
-];
-var ENGINE_ENV_KEYS = ["MCP_CLIENT", "NEW_RELIC_AI_PLATFORM"];
-var aliasKey = (name) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
-var PLATFORM_BY_ALIAS = new Map(
-  PLATFORM_NAMES.map((n) => [aliasKey(n), n])
-);
-function canonicalPlatformName(name) {
-  return name ? PLATFORM_BY_ALIAS.get(aliasKey(name)) : void 0;
 }
 
 // src/platforms/types.ts
