@@ -1233,12 +1233,9 @@ async function main(): Promise<void> {
     // provisional window — the real heartbeat is written after resolution.
     // A cwd guess leaves a live engine's heartbeat for the guessed session in
     // place, since a correction must not leave that engine without one.
-    let heartbeatSkipped = false;
-    const writeHeartbeat = (store: LocalStore, viaCwdOnly: boolean): void => {
+    const writeHeartbeat = (store: LocalStore, keepLiveOwner: boolean): void => {
       const sessionId = store.getSessionId();
-      heartbeatSkipped =
-        viaCwdOnly && !!sessionId && hasLiveOwningEngine(config!.storagePath, sessionId);
-      if (heartbeatSkipped) return;
+      if (keepLiveOwner && sessionId && hasLiveOwningEngine(config!.storagePath, sessionId)) return;
       store.writeHeartbeat(process.pid, process.argv.slice(1), process.cwd(), {
         value: config!.companionMode,
         source: config!.companionModeSource,
@@ -3039,8 +3036,8 @@ async function main(): Promise<void> {
     // is safe to arm immediately. unref'd so it never keeps the process alive.
     const SESSION_PERSIST_INTERVAL_MS = getSessionPersistIntervalMs();
     sessionPersistInterval = setInterval(() => {
-      // A cwd guess whose session had a live engine takes the heartbeat once that engine exits.
-      if (heartbeatSkipped && localStoreForShutdown) writeHeartbeat(localStoreForShutdown, true);
+      // Engines of one session share its heartbeat, so each takes it once the engine it names exits.
+      if (localStoreForShutdown) writeHeartbeat(localStoreForShutdown, true);
       // Skip while the live session id is an unconfirmed cwd-fallback guess —
       // see armPendingConfirmation's own comment. Persisting here would write
       // a real, non-synthetic checkpoint file under an identity that might
