@@ -5,6 +5,7 @@ import {
   type PlatformConfig,
   type PlatformSessionMetadata,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 /**
  * Event types forwarded by a Copilot-compatible VS Code extension via HTTP.
@@ -208,6 +209,9 @@ export class CopilotAdapter implements PlatformAdapter {
   }
 
   isSupported(): boolean {
-    return process.env.MCP_CLIENT === 'copilot' || process.env.NEW_RELIC_AI_PLATFORM === 'copilot';
+    return (
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'copilot' ||
+      canonicalPlatformName(process.env.NEW_RELIC_AI_PLATFORM) === 'copilot'
+    );
   }
 }

@@ -5,6 +5,7 @@ import {
   type PlatformConfig,
   type PlatformSessionMetadata,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 /**
  * Maps OpenAI Codex's built-in tool names to the normalized Claude Code tool
@@ -140,6 +141,9 @@ export class CodexAdapter implements PlatformAdapter {
   }
 
   isSupported(): boolean {
-    return process.env.MCP_CLIENT === 'codex' || process.env.NEW_RELIC_AI_PLATFORM === 'codex';
+    return (
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'codex' ||
+      canonicalPlatformName(process.env.NEW_RELIC_AI_PLATFORM) === 'codex'
+    );
   }
 }

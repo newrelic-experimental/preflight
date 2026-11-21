@@ -92,13 +92,32 @@ Show the current server configuration with sensitive fields masked.
   "region": "US",
   "storagePath": "/Users/alice/.newrelic-preflight",
   "dashboardUrl": "https://one.newrelic.com/dashboards/...",
-  "configFilePath": "/Users/alice/.newrelic-preflight/config.json"
+  "configFilePath": "/Users/alice/.newrelic-preflight/config.json",
+  "tiers": [
+    {
+      "name": "personal",
+      "type": "nr",
+      "accountId": "12345",
+      "primary": true,
+      "eventTypes": ["*"]
+    },
+    {
+      "name": "org",
+      "type": "local",
+      "path": "/data/org",
+      "primary": false,
+      "eventTypes": ["AiCodingTask"],
+      "writes": 42,
+      "failures": 0
+    }
+  ],
+  "primaryTier": "personal"
 }
 ```
 
-**Data source:** Server config at startup
+**Data source:** Server config at startup, plus live write counts for local tiers
 
-**How it works:** Returns a sanitized snapshot of the active configuration. `licenseKeyMasked` shows the first 8 characters and last 4 characters only. `nrApiKeyMasked` shows the prefix only. Use this to diagnose misconfiguration (wrong region, unset developer name, unexpected mode) without exposing credentials.
+**How it works:** Returns a sanitized snapshot of the active configuration. `licenseKeyMasked` shows the first 8 characters and last 4 characters only. `nrApiKeyMasked` shows the prefix only. `tiers` lists each tier's destination and event types, so read it instead of `accountId` when `tiers` is configured. A tier's `accountId` is the configured value for display; the license key selects the account events go to. A local tier reports `writes` and `failures`, and a nonzero `failures` means its path cannot be written. Tier license keys are never returned. Use this to diagnose misconfiguration (wrong region, unset developer name, unexpected mode, a tier with the wrong license key or path) without exposing credentials.
 
 **Requires:** Always available
 
@@ -195,18 +214,19 @@ Source: `src/tools/session-stats.ts`
 
 ### `nr_observe_report_tokens`
 
-Self-report token usage for cost tracking. Called by Claude Code to report its own token consumption.
+Self-report token usage for cost tracking. An agent calls it to report its own token consumption. Claude Code records the report in process. A Cursor or Windsurf engine leaves it to the client's post-MCP hook, as described below.
 
 **Parameters:**
 
-| Parameter               | Type   | Required | Description                                         |
-| ----------------------- | ------ | -------- | --------------------------------------------------- |
-| `input_tokens`          | number | Yes      | Input/prompt token count                            |
-| `output_tokens`         | number | Yes      | Output/completion token count                       |
-| `model`                 | string | Yes      | Model identifier (e.g., `claude-sonnet-4-20250514`) |
-| `thinking_tokens`       | number | No       | Extended thinking token count                       |
-| `cache_read_tokens`     | number | No       | Prompt cache read token count                       |
-| `cache_creation_tokens` | number | No       | Prompt cache creation token count                   |
+| Parameter               | Type   | Required | Description                                                                                                                                                  |
+| ----------------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `input_tokens`          | number | Yes      | Input/prompt token count                                                                                                                                     |
+| `output_tokens`         | number | Yes      | Output/completion token count                                                                                                                                |
+| `model`                 | string | Yes      | Model identifier (e.g., `claude-sonnet-4-20250514`)                                                                                                          |
+| `thinking_tokens`       | number | No       | Extended thinking token count                                                                                                                                |
+| `cache_read_tokens`     | number | No       | Prompt cache read token count                                                                                                                                |
+| `cache_creation_tokens` | number | No       | Prompt cache creation token count                                                                                                                            |
+| `report_id`             | string | See note | Cursor and Windsurf only. 8 to 128 of `[A-Za-z0-9_-]`, new per report and kept on retry. Required while the engine is pending. Claude Code does not list it. |
 
 **Returns:**
 
@@ -218,6 +238,29 @@ Self-report token usage for cost tracking. Called by Claude Code to report its o
   "model": "claude-sonnet-4-20250514"
 }
 ```
+
+**Returns (Cursor and Windsurf, with `report_id`):**
+
+```json
+{
+  "accepted": true,
+  "report_id": "3f2b9c1e-5d7a-4e8b-9a6c-1d2e3f4a5b6c",
+  "model": "claude-sonnet-4-20250514",
+  "recorded_by": "hook",
+  "hooks_detected": true,
+  "message": "Preflight's afterMCPExecution hook was found, so the hook should record it in this conversation after the call returns."
+}
+```
+
+`accepted` means the engine handed the report to the hook, not that it is saved. It stays `true` when `hooks_detected` is `false`, because the hook records only an accepted reply and the check can miss a hook that runs. Read `hooks_detected` and `message` to learn whether the report is likely saved.
+
+**On Cursor and Windsurf.** One engine serves every chat in the window, so the hook saves a report to the conversation that made it. These engines stay pending, because their adapters declare no session breadcrumb writers. This path is on when `MCP_CLIENT` or `NEW_RELIC_AI_PLATFORM` names the client, or when its hooks file runs `preflight-collector` for the post-MCP event. A host that Preflight detects as Cursor only from an inherited `CURSOR_TRACE_ID` keeps recording in process. The tool takes a `report_id`, a new random value (such as a UUID) per call. A retry keeps its `report_id`. Preflight saves a report with the same `report_id` and the same counts and model once per conversation, and a reused `report_id` with different counts as a new report. While the engine is pending, `report_id` is required. If an engine of one of these clients ever resolved a session, which none does today, a call without `report_id` would be recorded in that engine's own session, as before.
+
+- The tool replies `{"accepted": true, "recorded_by": "hook", "hooks_detected": ..., ...}`. Preflight's `afterMCPExecution` (Cursor) or `post_mcp_tool_use` (Windsurf) hook then sees this reply and the call's arguments, and writes the report into that conversation's hook buffer. It writes nothing for an error result, another `report_id`, a synthetic or unknown conversation id, or a server whose `mcp_server_name` neither contains `preflight` (such as `newrelic-preflight`) nor is the older `nr-ai-observability`.
+- `hooks_detected` is `false` when neither the user-level hooks file (`~/.cursor/hooks.json`, `~/.codeium/windsurf/hooks.json`) nor the project's (`.cursor/hooks.json`, `.windsurf/hooks.json`) runs `preflight-collector` for that event. The message then says the report may not be saved and how to add the hook. When the hook is found, the message says it should record the report only if a server key in the client's MCP config (`~/.cursor/mcp.json`, `.cursor/mcp.json`, `~/.codeium/windsurf/mcp_config.json`) contains `preflight`. Otherwise it says the report may not be saved and asks to rename the key. The check is best effort. It reads the project file under the engine's working directory, which may not be the workspace root, and the hook still saves the report if it runs from a file the check does not read.
+- Whichever Preflight process drains the buffer prices the report and saves it with that conversation's session at its next checkpoint. It does not count toward that process's own session cost. The reply does not claim the cost is saved yet.
+- A malformed report returns `invalid_token_report`.
+- Antigravity does not list the tool while pending yet (#1027).
 
 **Data source:** `CostTracker`
 
@@ -1311,6 +1354,30 @@ Data-driven model recommendation ranked by historical efficiency score, cost, an
 - Ranks by efficiency descending, cost ascending on ties, null-efficiency last.
 - Assigns confidence tier based on the top-ranked model's session count.
 
+**Published file:** For consumers that cannot call an MCP tool, such as a SessionStart hook, the overall verdict is also written to `model-recommendation.json` in the configured storage directory (`~/.newrelic-preflight/` by default). It is first written about 10 seconds after startup, then hourly, only while `confidence` is `high`. When confidence drops, the file is removed. The file is rewritten only when the recommended model or its ranked stats change. Writes are atomic (temp file, then rename), and temp files left by a crashed write are removed on the next publish. No hook reads it by default.
+
+```json
+{
+  "schemaVersion": 1,
+  "recommendedModel": "claude-sonnet-4-20250514",
+  "confidence": "high",
+  "basedOn": {
+    "ranked": [
+      {
+        "model": "claude-sonnet-4-20250514",
+        "sessionCount": 25,
+        "avgCostUsd": 0.04,
+        "avgEfficiencyScore": 0.82,
+        "avgTaskSuccessRate": 0.95
+      }
+    ]
+  },
+  "generatedAt": 1746345600000
+}
+```
+
+`basedOn.ranked` is the same list the tool returns. `generatedAt` is the time of the last write, not the verdict's age.
+
 **Requires:** `TrendAnalyzer`
 
 Source: `src/metrics/trend-analyzer.ts`, `src/tools/cross-session-tools.ts`
@@ -1713,6 +1780,8 @@ Tool selection quality score with penalty breakdown for redundant reads, repeate
 ```
 
 **Data source:** `ToolSelectionScorer`
+
+Redundant-read and repeated-failure checks compare calls within one agent, so a call without `agent_id` can be counted against the parent session instead of its subagent. Preflight fills `agent_id` from the subagent transcripts when the hook payload omits it. The live process repeats that fill when it saves the session summary, so the saved `toolSelectionMetrics` resolve more calls than were known at intake. This tool, the dashboard and the stored-session rollups score records as they were saved, so a record the intake pass could not attribute stays unattributed there.
 
 **How it works:** Scores the full session tool call sequence. Penalizes: redundant reads (same file read again without intervening modification), repeated failures (same Bash command failed twice), and unused large outputs (tool returned a large response that was never referenced). Score 0–1 where 1 is perfect selection. `worstOffenders` lists the highest-penalty calls. See [Improving Your Tool Selection Score](ADVANCED.md#improving-your-tool-selection-score) for prompt-writing tips to reduce penalties.
 

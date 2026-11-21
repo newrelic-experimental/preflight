@@ -16,6 +16,11 @@ import {
 } from './redaction-patterns.js';
 import { resolveRecordContent } from './record-content-gate.js';
 import { projectIdFromRemote, stripRemoteCredentials } from './lib/git-remote.js';
+import {
+  MAX_REPORTED_SPEND_USD,
+  isPeriodKind,
+  isValidReportedAmountUsd,
+} from './lib/reported-spend.js';
 import { validateTiers, DEFAULT_TIER_NAME, WILDCARD_EVENT_TYPE } from './transport/tier-types.js';
 import type { ResolvedTier } from './transport/tier-types.js';
 import {
@@ -278,10 +283,26 @@ export interface McpServerConfig {
 
 export const DEFAULT_STORAGE_PATH = resolve(homedir(), '.newrelic-preflight');
 
-// Applied only when neither the env var nor the config file specify
-// retainSessionsDays at all — an explicit `null` in config.json still means
-// "retention disabled" (see the resolution logic below).
-const DEFAULT_RETAIN_SESSIONS_DAYS = 90;
+// Day counts for `retainSessionsDays`, keyed by the name users write in
+// `retentionPolicy` or NEW_RELIC_AI_RETENTION_POLICY. `default` is also the
+// fallback when nothing at any level sets retention.
+export const RETENTION_PRESETS = {
+  default: 90,
+  'gdpr-minimisation': 30,
+  'soc2-audit': 365,
+  'hipaa-audit': 2190,
+  minimal: 7,
+} as const;
+
+export type RetentionPolicy = keyof typeof RETENTION_PRESETS;
+
+export function isRetentionPolicy(value: unknown): value is RetentionPolicy {
+  return typeof value === 'string' && Object.hasOwn(RETENTION_PRESETS, value);
+}
+
+// Largest day count a preset sets. The dashboard's retention input accepts up
+// to this so it can show and save every preset's value.
+export const MAX_RETAIN_SESSIONS_DAYS = Math.max(...Object.values(RETENTION_PRESETS));
 
 /**
  * Bump when a change to config.json's shape is non-additive (a field is
@@ -342,6 +363,18 @@ export const ConfigFileSchema = z
     dataResidencyPremium: z.boolean().optional(),
     digestWebhookUrl: z.string().nullable().optional(),
     retainSessionsDays: z.number().nullable().optional(),
+    retentionPolicy: z.string().optional(),
+    reportedSpend: z
+      .array(
+        z.object({
+          periodKind: z.string().refine(isPeriodKind, "must be 'daily' or 'weekly'"),
+          amountUsd: z
+            .number()
+            .refine(isValidReportedAmountUsd, `must be from 0 to ${MAX_REPORTED_SPEND_USD}`),
+          asOf: z.string().refine((v) => !Number.isNaN(Date.parse(v)), 'must be a timestamp'),
+        }),
+      )
+      .optional(),
     // Legacy flat OTLP fields — deprecated in favor of the nested `otlp`
     // object below, but still accepted for backward compatibility (using
     // one logs a deprecation warning; see pickOtlpValue() in loadMcpConfig).
@@ -532,13 +565,54 @@ function envInt(
   return clampNumber(parsed, bounds);
 }
 
-function envLogLevel(key: string, defaultValue: LogLevel): LogLevel {
-  const val = process.env[key]?.toLowerCase();
+export function parseLogLevel(raw: string | undefined): LogLevel | undefined {
+  const val = raw?.toLowerCase();
   if (val === 'debug' || val === 'info' || val === 'warn' || val === 'error') return val;
-  return defaultValue;
+  return undefined;
 }
 
-function loadConfigFile(filePath: string): z.infer<typeof ConfigFileSchema> {
+/**
+ * Documented order: the CLI flag, then NEW_RELIC_AI_MCP_LOG_LEVEL, then
+ * NEW_RELIC_AI_LOG_LEVEL (the variable the shared logger reads), then the
+ * config file's logLevel, then 'info'.
+ */
+function resolveConfiguredLogLevel(
+  cliLevel: LogLevel | undefined,
+  fileLevel: LogLevel | undefined,
+): LogLevel {
+  return (
+    cliLevel ??
+    parseLogLevel(process.env.NEW_RELIC_AI_MCP_LOG_LEVEL) ??
+    parseLogLevel(process.env.NEW_RELIC_AI_LOG_LEVEL) ??
+    fileLevel ??
+    'info'
+  );
+}
+
+/**
+ * The level the logger starts with, before the full config loads. It follows
+ * the same order as loadMcpConfig(). A config file that fails to load counts as
+ * empty here, because loadMcpConfig() reports that error once the config loads.
+ */
+export function resolveStartupLogLevel(
+  cliLevel: LogLevel | undefined,
+  configPath: string | null,
+): LogLevel {
+  let file: z.infer<typeof ConfigFileSchema> = {};
+  try {
+    file = loadConfigFile(configPath ?? resolve(DEFAULT_STORAGE_PATH, 'config.json'), {
+      quiet: true,
+    });
+  } catch {
+    // Reported by loadMcpConfig() when the config loads.
+  }
+  return resolveConfiguredLogLevel(cliLevel, file.logLevel);
+}
+
+function loadConfigFile(
+  filePath: string,
+  options: { quiet?: boolean } = {},
+): z.infer<typeof ConfigFileSchema> {
   let raw: string;
   try {
     raw = readFileSync(filePath, 'utf-8');
@@ -550,10 +624,12 @@ function loadConfigFile(filePath: string): z.infer<typeof ConfigFileSchema> {
     parsed = JSON.parse(raw);
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    logger.error('Invalid JSON in config file', {
-      filePath,
-      error: errorMsg,
-    });
+    if (!options.quiet) {
+      logger.error('Invalid JSON in config file', {
+        filePath,
+        error: errorMsg,
+      });
+    }
     throw new Error(`Config file parsing failed at ${filePath}: ${errorMsg}`);
   }
   const validation = ConfigFileSchema.safeParse(parsed);
@@ -564,10 +640,12 @@ function loadConfigFile(filePath: string): z.infer<typeof ConfigFileSchema> {
         return `${path || 'root'}: ${issue.message}`;
       })
       .join('; ');
-    logger.error('Config file validation failed', {
-      filePath,
-      issues,
-    });
+    if (!options.quiet) {
+      logger.error('Config file validation failed', {
+        filePath,
+        issues,
+      });
+    }
     throw new Error(`Config file validation failed at ${filePath}: ${issues}`);
   }
   return validation.data;
@@ -686,6 +764,49 @@ function validateFilePositiveNumber(value: number, fieldName: string): boolean {
   return false;
 }
 
+function policyFromName(raw: string | undefined, source: string): RetentionPolicy | null {
+  if (raw === undefined || raw === '') return null;
+  const name = raw.trim().toLowerCase();
+  if (isRetentionPolicy(name)) return name;
+  logger.warn(
+    `Unknown retention policy "${raw}" in ${source} — ignoring it. Valid names: ${Object.keys(RETENTION_PRESETS).join(', ')}`,
+    { source, value: raw },
+  );
+  return null;
+}
+
+// Precedence: env days > env policy > file days > file policy > default. An
+// explicit day count beats a preset at the same level. A file `null` is an
+// opt-out, so it also beats the file policy.
+function resolveRetainSessionsDays(file: {
+  retainSessionsDays?: number | null;
+  retentionPolicy?: string;
+}): number | null {
+  const envDays = process.env.NEW_RELIC_AI_RETAIN_SESSIONS_DAYS;
+  if (envDays !== undefined && envDays !== '') {
+    const v = parseInt(envDays, 10);
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+  const envPolicy = policyFromName(
+    process.env.NEW_RELIC_AI_RETENTION_POLICY,
+    'NEW_RELIC_AI_RETENTION_POLICY',
+  );
+  if (envPolicy !== null) return RETENTION_PRESETS[envPolicy];
+  if (typeof file.retainSessionsDays === 'number') {
+    // An invalid (non-positive) value falls through rather than to null:
+    // null already means an explicit opt-out, and a typo'd negative number is
+    // a mistake, not an opt-out.
+    if (validateFilePositiveNumber(file.retainSessionsDays, 'retainSessionsDays')) {
+      return file.retainSessionsDays;
+    }
+  } else if (file.retainSessionsDays === null) {
+    return null;
+  }
+  const filePolicy = policyFromName(file.retentionPolicy, 'retentionPolicy');
+  if (filePolicy !== null) return RETENTION_PRESETS[filePolicy];
+  return RETENTION_PRESETS.default;
+}
+
 // costRateMultiplier is a discount factor, not an arbitrary positive number —
 // mirrors the bound Claude Code itself enforces on modelPricing.multiplier
 // (docs/settings-reference#modelpricing: "greater than 0 and at most 1").
@@ -752,14 +873,13 @@ function parseProxyUpstreams(
  * type (#479), so the message can change without breaking that fallback.
  */
 export class MissingCloudCredentialError extends Error {
-  readonly missingField: 'licenseKey' | 'accountId';
+  readonly missingField: 'licenseKey';
   readonly mode: Mode;
 
-  constructor(missingField: 'licenseKey' | 'accountId', mode: Mode, configFilePath: string) {
-    const envVar = missingField === 'licenseKey' ? 'NEW_RELIC_LICENSE_KEY' : 'NEW_RELIC_ACCOUNT_ID';
+  constructor(missingField: 'licenseKey', mode: Mode, configFilePath: string) {
     super(
       `Missing required configuration: ${missingField} (mode='${mode}'). ` +
-        `Set the ${envVar} environment variable or add "${missingField}" to ` +
+        `Set the NEW_RELIC_LICENSE_KEY environment variable or add "${missingField}" to ` +
         configFilePath +
         ", or switch to mode='local' to skip cloud transport.",
     );
@@ -988,16 +1108,13 @@ export function loadMcpConfig(
   const accountIdRaw =
     (process.env.NEW_RELIC_ACCOUNT_ID?.trim() ? process.env.NEW_RELIC_ACCOUNT_ID : undefined) ??
     (typeof file.accountId === 'string' ? file.accountId : undefined);
-  if (mode !== 'local' && !accountIdRaw) {
-    throw new MissingCloudCredentialError('accountId', mode, configFilePath);
-  }
   if (accountIdRaw && !/^\d{1,12}$/.test(accountIdRaw)) {
     throw new Error(
       'Invalid configuration: accountId must be 1–12 decimal digits. ' +
         `Received: "${accountIdRaw}"`,
     );
   }
-  // In local mode, undefined if accountId is missing (NR transport won't be used)
+  // Optional: the Events API URL carries no account ID, so this is for display and deploy commands only
   const accountId = accountIdRaw;
 
   // --- tiers: config file only (no env var / CLI flag equivalent exists) ---
@@ -1032,12 +1149,12 @@ export function loadMcpConfig(
     ) {
       resolvedTiers = [];
     }
-  } else if (mode !== 'local' && licenseKey !== undefined && accountId !== undefined) {
+  } else if (mode !== 'local' && licenseKey !== undefined) {
     // Implicit single tier — byte-identical to the existing single-tier default.
     resolvedTiers = [
       {
         name: DEFAULT_TIER_NAME,
-        destination: { type: 'nr', licenseKey, accountId },
+        destination: { type: 'nr', licenseKey, ...(accountId !== undefined && { accountId }) },
         eventTypes: [WILDCARD_EVENT_TYPE],
       },
     ];
@@ -1258,15 +1375,7 @@ export function loadMcpConfig(
       { min: 1, max: 65535 },
     ),
 
-    logLevel:
-      cliOptions?.logLevel ??
-      envLogLevel(
-        'NEW_RELIC_AI_MCP_LOG_LEVEL',
-        typeof file.logLevel === 'string' &&
-          ['debug', 'info', 'warn', 'error'].includes(file.logLevel)
-          ? (file.logLevel as LogLevel)
-          : 'info',
-      ),
+    logLevel: resolveConfiguredLogLevel(cliOptions?.logLevel, file.logLevel),
 
     collectorHost: resolveCollectorHost(
       licenseKey,
@@ -1304,26 +1413,7 @@ export function loadMcpConfig(
 
     digestWebhookUrl: digestWebhookUrlSecret.value ?? null,
 
-    retainSessionsDays: (() => {
-      const raw = process.env.NEW_RELIC_AI_RETAIN_SESSIONS_DAYS;
-      if (raw !== undefined && raw !== '') {
-        const v = parseInt(raw, 10);
-        if (Number.isFinite(v) && v > 0) return v;
-      }
-      if (typeof file.retainSessionsDays === 'number') {
-        // An invalid (non-positive) value falls back to the default rather
-        // than null — null already has a distinct, intentional meaning
-        // (explicit opt-out, handled below); a typo'd negative number is a
-        // mistake, not an opt-out.
-        return validateFilePositiveNumber(file.retainSessionsDays, 'retainSessionsDays')
-          ? file.retainSessionsDays
-          : DEFAULT_RETAIN_SESSIONS_DAYS;
-      }
-      // Explicit `null` in the config file is a deliberate opt-out — distinct
-      // from the key being absent entirely, which falls through to the default.
-      if (file.retainSessionsDays === null) return null;
-      return DEFAULT_RETAIN_SESSIONS_DAYS;
-    })(),
+    retainSessionsDays: resolveRetainSessionsDays(file),
 
     mode,
     tiers: resolvedTiers,
