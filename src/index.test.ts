@@ -1684,7 +1684,14 @@ describe('stdio integration', () => {
 
   describe('an engine that adopts its session after draining others', () => {
     const storages: string[] = [];
+    let pausedPid: number | undefined;
     afterEach(() => {
+      if (pausedPid !== undefined) {
+        try {
+          process.kill(pausedPid, 'SIGCONT');
+        } catch {}
+        pausedPid = undefined;
+      }
       for (const dir of storages.splice(0)) rmSync(dir, { recursive: true, force: true });
     });
     const CHECKPOINT_OFTEN = { NR_AI_SESSION_PERSIST_INTERVAL_MS: '200' };
@@ -2157,37 +2164,47 @@ describe('stdio integration', () => {
         const checkpointing = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
         // Paused, the first engine cannot win the race to drain the next call.
         process.kill(first.pid, 'SIGSTOP');
+        pausedPid = first.pid;
         try {
           await drainCalls(storage, id, 1);
           await waitFor(() => savedCalls(storage, id) !== null);
         } finally {
           process.kill(first.pid, 'SIGCONT');
+          pausedPid = undefined;
         }
         return { first, checkpointing };
       };
 
-      it('stays completed across its checkpoints after a pending engine with no live owner completes it', async () => {
-        const storage = makeStorage();
-        const { first, checkpointing } = await startWithSessionDrained(storage);
-        await first.close();
-        await waitFor(() => outcome(storage) === 'completed');
+      itOffWindows(
+        'stays completed across its checkpoints after a pending engine with no live owner completes it',
+        async () => {
+          const storage = makeStorage();
+          const { first, checkpointing } = await startWithSessionDrained(storage);
+          await first.close();
+          await waitFor(() => outcome(storage) === 'completed');
 
-        expect(await outcomesEvery100Ms(storage, 15)).toEqual(Array(15).fill('completed'));
-        await checkpointing.close();
-        expect(outcome(storage)).toBe('completed');
-      }, 60000);
+          expect(await outcomesEvery100Ms(storage, 15)).toEqual(Array(15).fill('completed'));
+          await checkpointing.close();
+          expect(outcome(storage)).toBe('completed');
+        },
+        60000,
+      );
 
-      it('goes back in progress after a pending engine completes it when the session makes a new call', async () => {
-        const storage = makeStorage();
-        const { first, checkpointing } = await startWithSessionDrained(storage);
-        await first.close();
-        await waitFor(() => outcome(storage) === 'completed');
+      itOffWindows(
+        'goes back in progress after a pending engine completes it when the session makes a new call',
+        async () => {
+          const storage = makeStorage();
+          const { first, checkpointing } = await startWithSessionDrained(storage);
+          await first.close();
+          await waitFor(() => outcome(storage) === 'completed');
 
-        await drainCalls(storage, id, 1);
-        await waitFor(() => outcome(storage) === 'in progress');
-        await checkpointing.close();
-        await waitFor(() => outcome(storage) === 'completed');
-      }, 60000);
+          await drainCalls(storage, id, 1);
+          await waitFor(() => outcome(storage) === 'in progress');
+          await checkpointing.close();
+          await waitFor(() => outcome(storage) === 'completed');
+        },
+        60000,
+      );
 
       it('stays completed across its checkpoints after its own engine completes it', async () => {
         const storage = makeStorage();
