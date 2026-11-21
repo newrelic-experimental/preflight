@@ -10,6 +10,7 @@ import { classifyGitCommand, classifyGitSegments } from './git-event-classifier.
 import { GIT_LOG_SESSION_ID, type GitActivityRecord } from './git-activity-recorder.js';
 import type { WorktreeIdentity } from './git-workspace-identity.js';
 import type { ToolCallRecord } from '../storage/types.js';
+import { readShell } from './shell-lexer.js';
 
 const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
 afterAll(() => stderrSpy.mockRestore());
@@ -65,7 +66,7 @@ function chainActivities(
   overrides: Partial<ToolCallRecord> = {},
 ): GitActivityRecord[] {
   const record = makeToolCallRecord({ command, ...overrides });
-  return classifyGitSegments(command, record, () => null).map(({ event }) => {
+  return classifyGitSegments(readShell(command), record, () => null).map(({ event }) => {
     recordCounter++;
     return {
       kind: 'git',

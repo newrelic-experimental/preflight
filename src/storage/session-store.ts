@@ -66,6 +66,7 @@ import type { EfficiencyScorer, EfficiencyScoreComponents } from '../metrics/eff
 import type { TranscriptMessageTracker } from '../metrics/transcript-message-tracker.js';
 import type { SessionOutcomeRecord } from '../metrics/instruction-drift-tracker.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
+import { parsePrRepo } from '../metrics/pr-ref.js';
 import {
   ToolSelectionScorer,
   toToolSelectionSummary,
@@ -199,6 +200,7 @@ export interface FullSessionSummary extends SessionSummary {
   readonly tokensThinking: number;
   readonly tokensCacheRead: number;
   readonly tokensCacheCreation: number;
+  readonly selfReportCount?: number;
   readonly cacheSavingsUsd: number;
   readonly efficiencyScore: number | null;
   /**
@@ -296,6 +298,7 @@ export interface AttributableActivity {
 }
 
 export interface RecordedUsage extends AttributableActivity {
+  readonly selfReportCount?: number;
   readonly estimatedCostUsd?: number | null;
   readonly tokensInput?: number;
   readonly tokensOutput?: number;
@@ -341,6 +344,7 @@ export function hasRecordedUsage(s: RecordedUsage): boolean {
   return (
     hasAttributableActivity(s) ||
     (s.estimatedCostUsd ?? 0) > 0 ||
+    (s.selfReportCount ?? 0) > 0 ||
     (s.tokensInput ?? 0) + (s.tokensOutput ?? 0) + (s.tokensThinking ?? 0) > 0
   );
 }
@@ -501,6 +505,17 @@ function mergeTimeline(
   return merged.length > MAX_TIMELINE_ENTRIES
     ? merged.slice(merged.length - MAX_TIMELINE_ENTRIES)
     : merged;
+}
+
+/** The tool name of each call a saved timeline holds with a toolUseId, keyed by that id. */
+export function savedToolNameByUseId(
+  summary: Pick<FullSessionSummary, 'timeline'> | null | undefined,
+): Map<string, string> {
+  const byId = new Map<string, string>();
+  for (const entry of summary?.timeline ?? []) {
+    if (entry.toolUseId) byId.set(entry.toolUseId, entry.toolName);
+  }
+  return byId;
 }
 
 /** Exact-only (non-byte-estimated) share of the cost and token totals. */
@@ -804,8 +819,13 @@ export function mergeSummaries(
       : existing.toolSelectionMetrics;
 
   const timeline = mergeTimeline(existing.timeline, incoming.timeline);
+  // An owner's completed yields only to an in-progress checkpoint stamped
+  // after it: the aggregator stamps last activity and an engine stamps its
+  // own wall clock, so either can pass a completion only on a real resume.
   const outcomeSource =
-    existing.outcome === 'completed' && existing.observerCompletedAt === undefined
+    existing.outcome === 'completed' &&
+    existing.observerCompletedAt === undefined &&
+    !(incoming.outcome === 'in progress' && incoming.endTime > existing.endTime)
       ? existing
       : incoming;
 
@@ -814,6 +834,7 @@ export function mergeSummaries(
     incoming.startTime || existing.startTime,
   );
   const endTime = maxNum(existing.endTime, incoming.endTime);
+  const selfReportCount = maxNum(existing.selfReportCount, incoming.selfReportCount);
 
   return {
     ...existing,
@@ -868,6 +889,7 @@ export function mergeSummaries(
     tokensInput: exactTotals.inputTokens + (mergedLedger?.inputTokens ?? 0),
     tokensOutput: exactTotals.outputTokens + (mergedLedger?.outputTokens ?? 0),
     tokensThinking: maxNum(existing.tokensThinking, incoming.tokensThinking),
+    ...(selfReportCount > 0 && { selfReportCount }),
     tokensCacheRead: maxNum(existing.tokensCacheRead, incoming.tokensCacheRead),
     tokensCacheCreation: maxNum(existing.tokensCacheCreation, incoming.tokensCacheCreation),
     cacheSavingsUsd: maxNum(existing.cacheSavingsUsd, incoming.cacheSavingsUsd),
@@ -1267,6 +1289,14 @@ export interface BuildSessionSummarySources {
   outcome?: string;
   platform?: string;
   instructionPromptHash?: string | null;
+  /**
+   * Re-runs the agent attribution join on each tool call before the anti-pattern
+   * and tool-selection analyses. By save time `SubagentWatcher` has tailed more
+   * transcript than at hook intake, so more calls resolve to their subagent.
+   */
+  backfillRecord?: (
+    record: import('../storage/types.js').ToolCallRecord,
+  ) => import('../storage/types.js').ToolCallRecord;
 }
 
 function skillInvocationCounts(
@@ -1357,6 +1387,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     antiPatternDetector,
     efficiencyScorer,
     developer,
+    backfillRecord,
   } = sources;
 
   const sessionMetrics = sessionTracker.getMetrics();
@@ -1396,7 +1427,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
       totalBuildsRun += task.buildRun;
       totalBuildsPassed += task.buildPassed;
       totalAgentSpawns += task.subAgentsSpawned;
-      allToolCalls.push(...task.toolCalls);
+      allToolCalls.push(...(backfillRecord ? task.toolCalls.map(backfillRecord) : task.toolCalls));
     }
 
     // Fold in pre-restart totals recovered by TaskDetector.seedFromPersisted()
@@ -1458,6 +1489,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     skillName: tc.toolName === 'Skill' && tc.skillName ? tc.skillName : undefined,
     agentType: tc.toolName === 'Agent' && tc.agentType ? tc.agentType : undefined,
     createdPrNumber: tc.createdPrNumber,
+    createdPrRepo: parsePrRepo(tc.createdPrRepo),
     mcpPrNumber: tc.mcpPrNumber,
     mcpPrRepo: tc.mcpPrRepo,
     runInBackground: tc.runInBackground === true || undefined,
@@ -1653,6 +1685,7 @@ interface SerializedFullSessionSummary {
   readonly tokensThinking?: unknown;
   readonly tokensCacheRead?: unknown;
   readonly tokensCacheCreation?: unknown;
+  readonly selfReportCount?: unknown;
   readonly cacheSavingsUsd?: unknown;
   readonly efficiencyScore?: unknown;
   readonly efficiencyScoreSampleCount?: unknown;
@@ -2093,6 +2126,8 @@ export function deserializeFullSessionSummary(
     tokensThinking: typeof obj.tokensThinking === 'number' ? obj.tokensThinking : 0,
     tokensCacheRead: typeof obj.tokensCacheRead === 'number' ? obj.tokensCacheRead : 0,
     tokensCacheCreation: typeof obj.tokensCacheCreation === 'number' ? obj.tokensCacheCreation : 0,
+    ...(typeof obj.selfReportCount === 'number' &&
+      obj.selfReportCount > 0 && { selfReportCount: obj.selfReportCount }),
     cacheSavingsUsd: typeof obj.cacheSavingsUsd === 'number' ? obj.cacheSavingsUsd : 0,
     efficiencyScore: typeof obj.efficiencyScore === 'number' ? obj.efficiencyScore : null,
     efficiencyScoreSampleCount:
@@ -2142,6 +2177,7 @@ export function deserializeFullSessionSummary(
               typeof e.createdPrNumber === 'string' && /^\d{1,9}$/.test(e.createdPrNumber)
                 ? e.createdPrNumber
                 : undefined,
+            createdPrRepo: parsePrRepo(e.createdPrRepo),
             mcpPrNumber:
               typeof e.mcpPrNumber === 'string' && /^\d{1,9}$/.test(e.mcpPrNumber)
                 ? e.mcpPrNumber

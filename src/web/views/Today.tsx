@@ -42,6 +42,7 @@ import {
 import {
   fetchRecentAlerts,
   fetchBudget,
+  fetchSettings,
   type BudgetStatus,
   fetchCacheHealth,
   fetchCost,
@@ -87,6 +88,7 @@ import {
   type UsageInsightsReport,
 } from '../api/client';
 import {
+  fmtReportedAsOf,
   fmtTimeOfDay,
   formatMs,
   formatNumber,
@@ -103,6 +105,11 @@ import {
   localStartOfDay,
   todayPortionRatio,
 } from '../../lib/date.js';
+import {
+  findReportedSpend,
+  isReportedSpendStale,
+  type ReportedSpend,
+} from '../../lib/reported-spend.js';
 import { buildWeekForecast } from '../lib/forecast.js';
 
 const HEADER_TIMESTAMP_FORMAT = {
@@ -248,13 +255,16 @@ const BUDGET_DANGER_PCT = 100;
 function DailyBudgetKpi({
   spentUsd,
   capUsd,
+  reported,
 }: {
   spentUsd: number | null;
-  capUsd: number;
+  capUsd: number | null;
+  reported: ReportedSpend | null;
 }): JSX.Element {
   if (spentUsd === null) return <Kpi label="daily budget" value="…" sub="loading…" />;
+  const reportedStale = reported !== null && isReportedSpendStale(reported);
   // Round first so float error cannot drop a boundary: 4.52 / 5.65 * 100 is 79.999…
-  const pct = Math.round((spentUsd / capUsd) * 1e6) / 1e4;
+  const pct = capUsd === null ? 0 : Math.round((spentUsd / capUsd) * 1e6) / 1e4;
   const overBudget = pct > BUDGET_DANGER_PCT;
   const tone: KpiTone =
     pct >= BUDGET_DANGER_PCT ? 'bad' : pct >= BUDGET_WARN_PCT ? 'warn' : 'neutral';
@@ -264,13 +274,24 @@ function DailyBudgetKpi({
       label="daily budget"
       tone={tone}
       value={formatUsd(spentUsd)}
+      marker={reported ? <EstimateMarker /> : undefined}
       sub={
         <>
-          {`of ${formatUsd(capUsd)} · `}
-          <span className={caution ? 'text-accent-amber' : undefined}>
-            {`${Math.floor(pct)}% used`}
-          </span>
-          {overBudget ? ' · over budget' : ''}
+          {capUsd !== null && (
+            <span className="block">
+              {`of ${formatUsd(capUsd)} · `}
+              <span className={caution ? 'text-accent-amber' : undefined}>
+                {`${Math.floor(pct)}% used`}
+              </span>
+              {overBudget ? ' · over budget' : ''}
+            </span>
+          )}
+          {reported && (
+            <span className={`block ${reportedStale ? 'opacity-60' : ''}`}>
+              {`reported ${formatUsd(reported.amountUsd)} as of ${fmtReportedAsOf(reported.asOf, reportedStale)}`}
+              {reportedStale && <span className="ml-1 text-accent-amber">stale</span>}
+            </span>
+          )}
         </>
       }
     />
@@ -297,7 +318,13 @@ export function Today(): JSX.Element {
     queryFn: ({ signal }) => fetchBudget(signal),
     refetchInterval: 10_000,
   });
+  const { data: settings } = useQuery({
+    queryKey: qk.settings,
+    queryFn: ({ signal }) => fetchSettings(signal),
+  });
   const dailyBudgetCap = budget?.daily?.budgetUsd ?? null;
+  const reportedDaily = findReportedSpend(settings?.reportedSpend, 'daily');
+  const showBudgetKpi = dailyBudgetCap !== null || reportedDaily !== null;
   const { data: aggregate, isPending: aggregatePending } = useQuery<TodayAggregateResponse>({
     queryKey: qk.sessionsTodayAggregate,
     queryFn: ({ signal }) => fetchTodayAggregate(signal),
@@ -526,9 +553,7 @@ export function Today(): JSX.Element {
         <>
           <AnimatedCard index={0} className="mb-4">
             <Card padding="lg" tone="elevated" glow="green">
-              <div
-                className={`grid ${dailyBudgetCap !== null ? 'grid-cols-6' : 'grid-cols-5'} gap-4`}
-              >
+              <div className={`grid ${showBudgetKpi ? 'grid-cols-6' : 'grid-cols-5'} gap-4`}>
                 <Kpi
                   label="efficiency"
                   hero
@@ -580,10 +605,11 @@ export function Today(): JSX.Element {
                   value={flagsLoading ? '…' : String(flagsCount)}
                   {...(flagsLoading ? {} : { animate: true, numericValue: flagsCount })}
                 />
-                {dailyBudgetCap !== null && (
+                {showBudgetKpi && (
                   <DailyBudgetKpi
                     spentUsd={spendLoading ? null : todayTotal}
                     capUsd={dailyBudgetCap}
+                    reported={reportedDaily}
                   />
                 )}
               </div>

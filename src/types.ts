@@ -17,7 +17,7 @@ import type { RecommendationEngine } from './metrics/recommendation-engine.js';
 export interface CliOptions {
   readonly port: number;
   readonly config: string | null;
-  readonly logLevel: LogLevel;
+  readonly logLevel?: LogLevel;
   readonly stdio: boolean;
   readonly local: boolean;
   readonly validate: boolean;

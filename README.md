@@ -22,6 +22,8 @@ Your AI coding assistant makes hundreds of decisions every session — what to r
 
 **Local-first by design.** Preflight runs entirely on your machine and sends your data nowhere by default. A live dashboard at `localhost:7777` shows your sessions in real time, fully offline. Connect a New Relic account only when you want more — team rollups, alerting, and cross-session history. You choose: **local-only**, **New Relic**, or **both**.
 
+**Cost and AI activity, not productivity.** Preflight reports what AI coding costs and what the assistant did. In New Relic mode, the Adoption & Cost dashboard shows AI activity signals, such as tasks per developer and PRs the assistant created or merged. These signals are not a measure of developer or team productivity, which is out of scope, because a session has no link to a ticket and Preflight misses work done outside the assistant, such as a merge on GitHub. `nr_observe_get_cost_per_outcome` splits cost by inferred task type, and its ROI estimate comes from fixed hours-saved assumptions, not measured time.
+
 ---
 
 ## Demo
@@ -225,6 +227,7 @@ Add `--project` to `install`/`uninstall` to scope changes to the current directo
 - [**CONTRIBUTING.md**](CONTRIBUTING.md) — Development, testing, submitting PRs
 - [**SECURITY.md**](./SECURITY.md) — Security guidelines and best practices
 - [**PRIVACY.md**](./PRIVACY.md) — Data collection inventory and pre-cloud checklist
+- [**COMPLIANCE.md**](docs/COMPLIANCE.md): for security reviews, the data flow from the developer machine to New Relic, the controls at each hop, the New Relic certifications that cover stored data (such as SOC 2 and ISO 27001), and a security FAQ
 
 ---
 
