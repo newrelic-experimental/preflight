@@ -436,6 +436,110 @@ describe('SkillActivationTracker.openRun', () => {
   });
 });
 
+describe('SkillActivationTracker.recordToolStart', () => {
+  it('stamps a call recorded after a later prompt with the run open when it started', () => {
+    const t = new SkillActivationTracker();
+    const review = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'review' }));
+    t.recordToolStart('s1', 'bash-1');
+    t.recordPrompt('s1', 'simplify');
+
+    expect(t.recordToolCall(makeRecord({ toolName: 'Bash', toolUseId: 'bash-1' }))).toEqual(review);
+    expect(t.recordToolCall(makeRecord({ toolName: 'Bash', toolUseId: 'bash-2' }))?.name).toBe(
+      'simplify',
+    );
+  });
+
+  it('leaves a call that started outside any run unattributed', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolStart('s1', 'bash-1');
+    t.recordPrompt('s1', 'simplify');
+
+    expect(t.recordToolCall(makeRecord({ toolName: 'Bash', toolUseId: 'bash-1' }))).toBeNull();
+  });
+
+  it("does not lend one session's start to another session's call", () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', 'review');
+    t.recordToolStart('s1', 'bash-1');
+    const simplify = t.recordPrompt('s2', 'simplify');
+
+    expect(
+      t.recordToolCall(makeRecord({ sessionId: 's2', toolName: 'Bash', toolUseId: 'bash-1' })),
+    ).toEqual(simplify);
+  });
+
+  it('keeps a subagent call on the run the subagent opened', () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', 'review');
+    const lint = t.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'lint', agentId: 'agent-1' }),
+    );
+    t.recordToolStart('s1', 'read-1');
+
+    expect(t.recordToolCall(makeRecord({ toolUseId: 'read-1', agentId: 'agent-1' }))).toEqual(lint);
+  });
+});
+
+describe('SkillActivationTracker.pinSubagent', () => {
+  function spawnInReviewThenSimplify(t: SkillActivationTracker): SkillStamp | null {
+    const review = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'review' }));
+    t.recordToolStart('s1', 'agent-call');
+    t.recordPrompt('s1', 'simplify');
+    return review;
+  }
+
+  it('stamps a background subagent with the run open when its Agent call started', () => {
+    const t = new SkillActivationTracker();
+    const review = spawnInReviewThenSimplify(t);
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1' }))).toEqual(review);
+  });
+
+  it('replaces the run a subagent was first seen under', () => {
+    const t = new SkillActivationTracker();
+    const review = spawnInReviewThenSimplify(t);
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1' }))?.name).toBe('simplify');
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', toolUseId: 'u2' }))).toEqual(review);
+  });
+
+  it('keeps a run the subagent opened itself', () => {
+    const t = new SkillActivationTracker();
+    spawnInReviewThenSimplify(t);
+    const lint = t.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'lint', agentId: 'agent-1' }),
+    );
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', toolUseId: 'u2' }))).toEqual(lint);
+  });
+
+  it('replaces a main-agent run the subagent was first seen under', () => {
+    const t = new SkillActivationTracker();
+    const review = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'review' }));
+    t.recordToolStart('s1', 'agent-call');
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'lint', toolUseId: 'u2' }));
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', toolUseId: 'u3' }))?.name).toBe(
+      'lint',
+    );
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', toolUseId: 'u4' }))).toEqual(review);
+  });
+
+  it('falls back to the run open at first sight when the Agent call start was not seen', () => {
+    const t = new SkillActivationTracker();
+    spawnInReviewThenSimplify(t);
+    t.pinSubagent('s1', 'agent-1', 'other-call');
+
+    expect(t.hasAgent('s1', 'agent-1')).toBe(false);
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1' }))?.name).toBe('simplify');
+    expect(t.hasAgent('s1', 'agent-1')).toBe(true);
+  });
+});
+
 describe('SkillActivationTracker onRunOpened', () => {
   it('fires once for a Skill tool run with the stamp it returned and the record context', () => {
     const { tracker, opened } = makeTrackerWithOpenLog();
