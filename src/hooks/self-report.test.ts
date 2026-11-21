@@ -1,6 +1,14 @@
-import { existsSync, mkdtempSync, rmSync, utimesSync } from 'node:fs';
+import { jest } from '@jest/globals';
+
+jest.mock('node:fs', () => {
+  const real = jest.requireActual<typeof import('node:fs')>('node:fs');
+  return { ...real, openSync: jest.fn(real.openSync) };
+});
+
+import * as nodeFs from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { SelfReportHookEvent } from '../storage/types.js';
 import {
@@ -71,5 +79,41 @@ describe('pruneSelfReportClaims', () => {
 
   it('returns 0 when no claim has been written yet', () => {
     expect(pruneSelfReportClaims(storageDir, NOW)).toBe(0);
+  });
+});
+
+describe('claimReport while another engine sweeps', () => {
+  const realFs = jest.requireActual<typeof import('node:fs')>('node:fs');
+  const openSync = jest.mocked(nodeFs.openSync);
+  let storageDir: string;
+
+  beforeEach(() => {
+    storageDir = mkdtempSync(join(tmpdir(), 'self-report-claims-'));
+  });
+
+  afterEach(() => {
+    openSync.mockImplementation(realFs.openSync);
+    rmSync(storageDir, { recursive: true, force: true });
+  });
+
+  /** Removes the empty conversation directory just before each of the next `times` opens. */
+  function sweepBeforeOpens(times: number): void {
+    for (let i = 0; i < times; i++) {
+      openSync.mockImplementationOnce((path, flags, mode) => {
+        realFs.rmdirSync(dirname(String(path)));
+        return realFs.openSync(path, flags, mode);
+      });
+    }
+  }
+
+  it.each([1, 2])('still claims the report when the directory is removed %i time(s)', (times) => {
+    const line = makeLine('conv-swept', 'report-swept-1');
+    mkdirSync(join(storageDir, 'self-reports', 'conv-swept'), { recursive: true });
+    sweepBeforeOpens(times);
+
+    expect(claimReport(storageDir, line)).toBe(true);
+
+    expect(existsSync(join(storageDir, 'self-reports', 'conv-swept', reportKey(line)))).toBe(true);
+    expect(claimReport(storageDir, line)).toBe(false);
   });
 });

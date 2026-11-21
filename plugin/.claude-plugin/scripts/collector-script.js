@@ -484,20 +484,23 @@ function claimPath(storageDir, line) {
 function createClaim(path) {
   closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 384));
 }
+var CLAIM_DIR_RETRIES = 3;
 function claimReport(storageDir, line) {
   const path = claimPath(storageDir, line);
-  try {
-    createClaim(path);
-    return true;
-  } catch (err) {
-    if (err.code !== "ENOENT") return false;
-  }
-  try {
-    mkdirSync(dirname(path), { recursive: true, mode: 448 });
-    createClaim(path);
-    return true;
-  } catch {
-    return false;
+  for (let retries = 0; ; retries++) {
+    try {
+      createClaim(path);
+      return true;
+    } catch (err) {
+      if (err.code !== "ENOENT" || retries === CLAIM_DIR_RETRIES) {
+        return false;
+      }
+    }
+    try {
+      mkdirSync(dirname(path), { recursive: true, mode: 448 });
+    } catch {
+      return false;
+    }
   }
 }
 function releaseReport(storageDir, line) {

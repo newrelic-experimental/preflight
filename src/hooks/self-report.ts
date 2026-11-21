@@ -162,24 +162,29 @@ function createClaim(path: string): void {
   closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600));
 }
 
+const CLAIM_DIR_RETRIES = 3;
+
 /**
  * Creates the directory only when the claim cannot be opened, so a sweep that removes an empty
- * conversation directory between the two steps costs one retry instead of the report.
+ * conversation directory before the open costs a retry instead of the report. More than one
+ * engine can sweep, so the directory can vanish again before the retry.
  */
 export function claimReport(storageDir: string, line: SelfReportHookEvent): boolean {
   const path = claimPath(storageDir, line);
-  try {
-    createClaim(path);
-    return true;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return false;
-  }
-  try {
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    createClaim(path);
-    return true;
-  } catch {
-    return false;
+  for (let retries = 0; ; retries++) {
+    try {
+      createClaim(path);
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT' || retries === CLAIM_DIR_RETRIES) {
+        return false;
+      }
+    }
+    try {
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    } catch {
+      return false;
+    }
   }
 }
 
