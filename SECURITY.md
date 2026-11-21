@@ -86,7 +86,7 @@ Apply the same pattern to any user-supplied string that becomes a NR event field
 
 ### `redactSecrets()` — `src/redaction-patterns.ts`
 
-One redaction pass, called by `redactSensitive()` and `redactIdentifier()` in `src/config.ts` and by `redact()` in `collector-script.ts`. It runs `REDACTION_PATTERNS`, token patterns that each redact their whole match, and five argument rules: `NAME=value`, secret flags, mysql `-p`, curl credentials and API-key headers. An argument rule's regex only finds where the secret starts. The mysql and curl rules start at the command name, which counts when it starts a word, including right after a JSON escape or ANSI colour code (`\ncurl`, `\x1b[32mmysql`). A scanner reads the value as one bash word, so quotes, escapes and line continuations stay in it, and an unquoted space, tab, line break, one of `; | & ( ) < >` or the backtick ends it. The scanner starts in the quote the text is in at the match, so a value inside a quoted string never reads past its closing quote. A `#` comment reads like a quote that the line break closes. The pass covers:
+One redaction pass, called by `redactSensitive()` and `redactIdentifier()` in `src/config.ts` and by `redact()` in `collector-script.ts`. It runs `REDACTION_PATTERNS`, token patterns that each redact their whole match, and five argument rules: `NAME=value`, secret flags, mysql `-p`, curl credentials and API-key headers. An argument rule's regex only finds where the secret starts. The mysql and curl rules start at the command name, which counts when it starts a word, including right after a JSON escape or ANSI colour code (`\ncurl`, `\x1b[32mmysql`, `\u001b[32mcurl`). A scanner reads the value as one bash word, so quotes, escapes and line continuations stay in it, and an unquoted space, tab, line break, one of `; | & ( ) < >` or the backtick ends it. The scanner starts in the quote the text is in at the match, so a value inside a quoted string never reads past its closing quote. A `#` comment reads like a quote that the line break closes. The pass covers:
 
 | Pattern                                                                         | What it catches                           |
 | ------------------------------------------------------------------------------- | ----------------------------------------- |
@@ -118,7 +118,7 @@ A quoted flag or command name is not recognised, so `curl "-u" user:pass`, `"cur
 
 **Where applied:**
 
-- `collector-script.ts` — redacts tool input/output before writing to the hook buffer
+- `collector-script.ts` — redacts tool input/output before writing to the hook buffer. Recorded content (`inputContent`, `outputContent`, `errorDetails`) redacts each string of a structured value, keys included, before JSON encoding and before the length cap, so the pass reads the text the tool saw and not its escaped form. A value that arrives as a string is redacted as is, since the collector cannot tell whether it is already encoded.
 - `src/config.ts` — `redactSensitive()` for free-form text, `redactIdentifier()` for identifiers
 
 **Rule:** Any string that might contain secrets and is heading to a log or NR event must pass through `redactSecrets()` first. Use `redactSensitive(text)` (MCP server) or the collector's `redact()`. A loop over `REDACTION_PATTERNS` alone misses the argument rules.

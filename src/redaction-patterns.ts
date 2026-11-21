@@ -8,7 +8,7 @@
 
 // JSON escapes, ANSI colour codes and percent-escapes end in a letter or digit, so a flag
 // right after one would otherwise look like the middle of a word.
-const AFTER_ESCAPE = String.raw`\\[nrt]|\\u[0-9a-fA-F]{4}|\x1b\[[0-9;]{0,20}m|%[0-9a-fA-F]{2}`;
+const AFTER_ESCAPE = String.raw`\\[nrtbf]|\\u[0-9a-fA-F]{4}|(?:\x1b|\\u001[bB])\[[0-9;]{0,20}m|%[0-9a-fA-F]{2}`;
 const CONTINUATION = String.raw`(?:\\\r?\n|\\\\\\n)`;
 
 export const REDACTION_PATTERNS: readonly RegExp[] = [
@@ -351,7 +351,7 @@ const CURL_LONG_CREDENTIAL = /--(?:proxy-)?user(?:=|$)/y;
 const CURL_TAKES_VALUE = charTable('AbcCdDeEFHKmoPQrtTuUwxXyYz');
 const CURL_CREDENTIAL = charTable('tuU');
 // A word such as -"u" ends in a closing quote, so its value is the next word.
-const ONLY_QUOTES = /^["']*$/;
+const ONLY_QUOTES = /^(?:\\*["'])*$/;
 
 // -u and -U hold user:password and -t holds a secret, with the value in the same word (-uuser:pw,
 // -sSu user:pw, --user=user:pw) or the next. Another option's value, as in -o -t.txt, is skipped.

@@ -140,6 +140,11 @@ const REDACTS: Row[] = [
   ['curl -"u" me:hunter2 x', 'u" me:hunter2'],
   ["curl -s'u' me:hunter2 x", "u' me:hunter2"],
   ['curl -o"" -t.txt https://example.com'],
+  [JSON.stringify('\x1b[32mcurl -u me:hunter2 x'), '-u me:hunter2'],
+  [JSON.stringify('\x1b[1mmysql -phunter2 db'), '-phunter2'],
+  [JSON.stringify('\fcurl -u me:hunter2 x'), '-u me:hunter2'],
+  [JSON.stringify('curl -"u" me:hunter2 x'), 'u\\" me:hunter2'],
+  [JSON.stringify('curl -u"" me:hunter2 x'), '-u\\"\\" me:hunter2'],
 ];
 
 const cases = (rows: Row[]): [string, Row][] =>

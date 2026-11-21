@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { createHash as createHash2 } from "node:crypto";
 
 // src/redaction-patterns.ts
-var AFTER_ESCAPE = String.raw`\\[nrt]|\\u[0-9a-fA-F]{4}|\x1b\[[0-9;]{0,20}m|%[0-9a-fA-F]{2}`;
+var AFTER_ESCAPE = String.raw`\\[nrt]|\\u[0-9a-fA-F]{4}|(?:\x1b|\\u001[bB])\[[0-9;]{0,20}m|%[0-9a-fA-F]{2}`;
 var CONTINUATION = String.raw`(?:\\\r?\n|\\\\\\n)`;
 var REDACTION_PATTERNS = [
   /(?:sk-|ghp_|gho_|ghs_|github_pat_|xoxb-|xoxp-|Bearer\s+)[A-Za-z0-9_-]{20,200}/g,
@@ -271,7 +271,7 @@ var CURL = /curl\b/g;
 var CURL_LONG_CREDENTIAL = /--(?:proxy-)?user(?:=|$)/y;
 var CURL_TAKES_VALUE = charTable("AbcCdDeEFHKmoPQrtTuUwxXyYz");
 var CURL_CREDENTIAL = charTable("tuU");
-var ONLY_QUOTES = /^["']*$/;
+var ONLY_QUOTES = /^(?:\\*["'])*$/;
 var curlCredentials = (text, match, quote, spans) => {
   let pending;
   return commandWords(text, match, quote, (from, end) => {
@@ -1300,6 +1300,24 @@ function truncate(value, maxLen) {
   if (value.length <= maxLen) return value;
   return value.slice(0, maxLen) + "...[truncated]";
 }
+function recordedContent(value, maxLen) {
+  const redactUpTo = () => {
+    let left = maxLen;
+    return (text) => {
+      const kept = left > 0 ? redact(text) : "";
+      left -= text.length;
+      return kept;
+    };
+  };
+  const redactValue = redactUpTo();
+  const redactKey = redactUpTo();
+  const content = typeof value === "string" ? redactValue(value) : JSON.stringify(value, (_key, v) => {
+    if (typeof v === "string") return redactValue(v);
+    if (v === null || typeof v !== "object" || Array.isArray(v)) return v;
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [redactKey(k), x]));
+  });
+  return truncate(content, maxLen);
+}
 function countLines(text) {
   if (text === "") return 0;
   return (text.match(/\n/g) || []).length + 1;
@@ -1701,8 +1719,7 @@ function processHook(raw, cliEvent) {
     const inputMeta = extractInputMeta(toolName, data.tool_input);
     if (inputMeta !== void 0) event.toolInput = inputMeta;
     if (recordContent && data.tool_input !== void 0) {
-      const content = typeof data.tool_input === "string" ? data.tool_input : JSON.stringify(data.tool_input);
-      event.inputContent = redact(truncate(content, maxContentLen));
+      event.inputContent = recordedContent(data.tool_input, maxContentLen);
     }
   } else if (eventName === "posttooluse") {
     const toolResponse = data.tool_response ?? data.tool_result;
@@ -1723,8 +1740,7 @@ function processHook(raw, cliEvent) {
     const outputMeta = extractOutputMeta(toolName, toolResponse, data.tool_input);
     if (outputMeta !== void 0) event.toolOutput = outputMeta;
     if (recordContent && toolResponse !== void 0) {
-      const content = typeof toolResponse === "string" ? toolResponse : JSON.stringify(toolResponse);
-      event.outputContent = redact(truncate(content, maxContentLen));
+      event.outputContent = recordedContent(toolResponse, maxContentLen);
     }
   } else if (eventName === "posttoolusefailure") {
     event = {
@@ -1761,8 +1777,7 @@ function processHook(raw, cliEvent) {
     const inputMeta = extractInputMeta(toolName, data.tool_input);
     if (inputMeta !== void 0) event.toolInput = inputMeta;
     if (recordContent && data.tool_input !== void 0) {
-      const content = typeof data.tool_input === "string" ? data.tool_input : JSON.stringify(data.tool_input);
-      event.inputContent = redact(truncate(content, maxContentLen));
+      event.inputContent = recordedContent(data.tool_input, maxContentLen);
     }
   } else if (eventName === "aftertool") {
     const toolResponse = data.tool_response;
@@ -1779,8 +1794,7 @@ function processHook(raw, cliEvent) {
     const outputMeta = extractOutputMeta(toolName, data.tool_response, data.tool_input);
     if (outputMeta !== void 0) event.toolOutput = outputMeta;
     if (recordContent && data.tool_response !== void 0) {
-      const content = typeof data.tool_response === "string" ? data.tool_response : JSON.stringify(data.tool_response);
-      event.outputContent = redact(truncate(content, maxContentLen));
+      event.outputContent = recordedContent(data.tool_response, maxContentLen);
     }
   } else if (eventName === "beforeshellexecution") {
     const command = data.command ?? "";
@@ -1831,7 +1845,7 @@ function processHook(raw, cliEvent) {
       ...data.file_path !== void 0 && { toolInput: { file_path: data.file_path } }
     };
     if (recordContent && data.content !== void 0) {
-      event.outputContent = redact(truncate(data.content, maxContentLen));
+      event.outputContent = recordedContent(data.content, maxContentLen);
     }
   } else if (eventName === "afterfileedit") {
     event = {
@@ -1935,7 +1949,7 @@ function processHook(raw, cliEvent) {
     const inputMeta = extractInputMeta(agyToolName, data.toolCall?.args);
     if (inputMeta !== void 0) event.toolInput = inputMeta;
     if (recordContent && data.toolCall?.args !== void 0) {
-      event.inputContent = redact(truncate(JSON.stringify(data.toolCall.args), maxContentLen));
+      event.inputContent = recordedContent(data.toolCall.args, maxContentLen);
     }
   } else if (isAntigravityPost) {
     const hasError = typeof data.error === "string" && data.error !== "";
@@ -1955,11 +1969,10 @@ function processHook(raw, cliEvent) {
     };
     if (recordContent) {
       if (data.error_details !== void 0) {
-        const details = typeof data.error_details === "string" ? data.error_details : JSON.stringify(data.error_details);
-        event.errorDetails = redact(truncate(details, maxContentLen));
+        event.errorDetails = recordedContent(data.error_details, maxContentLen);
       }
       if (typeof data.last_assistant_message === "string") {
-        event.lastAssistantMessage = redact(truncate(data.last_assistant_message, maxContentLen));
+        event.lastAssistantMessage = recordedContent(data.last_assistant_message, maxContentLen);
       }
     }
   } else if (eventName === "sessionstart") {
