@@ -18,9 +18,13 @@ die() { echo "pf-verify: $*" >&2; exit 1; }
 # developer's ~/.claude/projects, ~/.newrelic-preflight, .env, or NR keys.
 # Inherited CLAUDE* vars are dropped because stdio mode resolves its session from
 # CLAUDE_JOB_DIR, which would bind it to the calling agent's real session.
+# doctor reads info-level log lines, so a caller's log level must not override the pinned one.
 ENV_ARGS=()
 for v in $(compgen -e); do [[ $v == CLAUDE* ]] && ENV_ARGS+=(-u "$v"); done
 ENV_ARGS+=(
+  -u NEW_RELIC_AI_MCP_LOG_LEVEL
+  -u NEW_RELIC_AI_LOG_LEVEL
+  NEW_RELIC_AI_LOG_LEVEL=info
   HOME="$RUN/home"
   NEW_RELIC_AI_MCP_STORAGE_PATH="$RUN/store"
   NR_AI_DASHBOARD_PORT="$PORT"

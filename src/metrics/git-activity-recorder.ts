@@ -12,12 +12,12 @@ import {
   processGhCommand,
   segmentAssignsGhRepo,
   segmentSuccessFollowsCommand,
-  splitShellChain,
   type GitEvent,
 } from './git-event-classifier.js';
 import { UNATTRIBUTED_WORKSPACE_KEY, WorktreeIdentityResolver } from './git-workspace-identity.js';
-import { stripHeredocs } from './local-session-aggregator.js';
 import { mcpPrEvent } from './mcp-pr-tools.js';
+import { ghSegmentRepo, prRefOf, type PrRef } from './pr-ref.js';
+import { readShell } from './shell-lexer.js';
 import type { PrEvent } from './git-efficiency-tracker.js';
 
 /** `sessionId` used for commit records hydrated from `git log` rather than
@@ -43,7 +43,13 @@ export type GitActivityRecord = KeyedRecord & {
     | { readonly kind: 'git'; readonly gitEvent: GitEvent }
     | { readonly kind: 'edit'; readonly filePath: string }
     | { readonly kind: 'verify'; readonly verify: 'build' | 'test' }
-    | { readonly kind: 'pr'; readonly prEvent: PrEvent }
+    | {
+        readonly kind: 'pr';
+        readonly prEvent: PrEvent;
+        /** The PR as `owner/repo#N`, whatever clone the call ran in. Null
+         *  when the repo or number isn't known for certain. */
+        readonly prRef: PrRef | null;
+      }
   );
 
 export class GitActivityRecorder {
@@ -108,10 +114,13 @@ export class GitActivityRecorder {
         mcpPr.prNumber !== null && this.namesOtherRepo(record.mcpPrRepo, cwd)
           ? { ...mcpPr, prNumber: null }
           : mcpPr;
+      const callRepo =
+        mcpPr.action === 'create' ? (record.createdPrRepo ?? record.mcpPrRepo) : record.mcpPrRepo;
       this.ingestActivity({
         sessionId: record.sessionId ?? 'unknown',
         kind: 'pr',
         prEvent,
+        prRef: prRefOf(callRepo, mcpPr.prNumber),
         timestamp: record.timestamp,
         recordId: this.makeRecordId(record, 'pr-mcp'),
         workspaceKey: this.resolveWorkspaceKey(cwd),
@@ -122,11 +131,9 @@ export class GitActivityRecorder {
     if (!rawCommand) return;
     // Classify on the command *minus* any inline script bodies: a heredoc
     // that merely mentions git/gh words is not a git or PR operation.
-    const heredocs = stripHeredocs(rawCommand);
-    const command = heredocs.text;
-    const heredocsUncertain = heredocs.unclosed || heredocs.readingsDiffer;
-    const chain = splitShellChain(command);
-    const { segments } = chain;
+    const reading = readShell(rawCommand);
+    const heredocsUncertain = reading.unclosed || reading.readingsDiffer;
+    const { segments } = reading;
 
     // Track GitHub CLI PR commands. Each segment is checked on its own — a
     // `gh` invocation can be chained before or after a `git` command, or
@@ -154,7 +161,7 @@ export class GitActivityRecorder {
         (record.runInBackground === true ||
           heredocsUncertain ||
           ghPrMergeTogglesAuto(segment) ||
-          !segmentSuccessFollowsCommand(chain, i))
+          !segmentSuccessFollowsCommand(reading, i))
       ) {
         continue;
       }
@@ -164,19 +171,27 @@ export class GitActivityRecorder {
       const captured =
         parsed.action === 'create' && soleCreate ? record.createdPrNumber : undefined;
       const number = parsed.prNumber ?? captured ?? null;
-      const prEvent = {
-        ...parsed,
-        prNumber:
-          number === null ||
-          ghSegmentOverridesRepo(segment) ||
-          segments.slice(0, i).some((earlier) => this.mayLeaveCwdRepo(earlier.trim(), cwd))
-            ? null
-            : number,
-      };
+      const inCwdRepo =
+        number !== null &&
+        !ghSegmentOverridesRepo(segment) &&
+        !segments.slice(0, i).some((earlier) => this.mayLeaveCwdRepo(earlier.trim(), cwd));
+      const prEvent = { ...parsed, prNumber: inCwdRepo ? number : null };
       this.ingestActivity({
         sessionId: record.sessionId ?? 'unknown',
         kind: 'pr',
         prEvent,
+        // A create's URL names its repo outright; a merge's repo is the one
+        // the segment names, else the one gh picks in the cwd's repo.
+        prRef:
+          parsed.action === 'create'
+            ? prRefOf(record.createdPrRepo, number)
+            : parsed.action === 'merge'
+              ? prRefOf(
+                  ghSegmentRepo(segment) ??
+                    (inCwdRepo ? this.identityResolver.ghBaseRepoName(cwd) : null),
+                  number,
+                )
+              : null,
         timestamp: record.timestamp,
         // Indexed so a compound command chaining two `gh pr` calls (rare,
         // but possible) doesn't collide on the same recordId.
@@ -188,7 +203,7 @@ export class GitActivityRecorder {
     const resolveRepo = (dir: string | null): string | null =>
       this.identityResolver.resolve(dir)?.repoName ?? null;
 
-    classifyGitSegments(command, record, resolveRepo).forEach(({ event }, i) => {
+    classifyGitSegments(reading, record, resolveRepo).forEach(({ event }, i) => {
       this.ingestActivity({
         sessionId: record.sessionId ?? 'unknown',
         kind: 'git',
