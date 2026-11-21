@@ -229,7 +229,8 @@ var MYSQL = /\b(?:mysql(?:dump|admin)?|mariadb)\b/g;
 var ESCAPED_P = new RegExp(String.raw`(?<=${AFTER_ESCAPE})-p`, "y");
 var PORT_MAPPING = /[\d.]+:\d/y;
 var REDIRECT = /&>>?|[<>][<>&|]*/y;
-var mysqlPasswords = (text, match, quote, spans) => {
+var ONLY_CONTINUATION = new RegExp(String.raw`^${CONTINUATION}$`);
+function commandWords(text, match, quote, visit) {
   let i = match.index + match[0].length;
   for (; ; ) {
     while (isSpace(unitAt(text, i, quote)) && text.charCodeAt(i) !== LF) {
@@ -242,11 +243,14 @@ var mysqlPasswords = (text, match, quote, spans) => {
     }
     const end = valueEnd(text, i, quote);
     if (end === i) return i;
-    const flag = passwordFlag(text, i, end);
-    if (flag >= 0) spans.push(flag, end);
+    if (!ONLY_CONTINUATION.test(text.slice(i, end))) visit(i, end);
     i = end;
   }
-};
+}
+var mysqlPasswords = (text, match, quote, spans) => commandWords(text, match, quote, (from, end) => {
+  const flag = passwordFlag(text, from, end);
+  if (flag >= 0) spans.push(flag, end);
+});
 function passwordFlag(text, from, end) {
   for (let flag = from; flag + 2 < end; flag++) {
     if (text.charCodeAt(flag) !== 45 || text.charCodeAt(flag + 1) !== 112) continue;
@@ -257,12 +261,45 @@ function passwordFlag(text, from, end) {
   }
   return -1;
 }
+var CURL = /\bcurl\b/g;
+var CURL_LONG_CREDENTIAL = /--(?:proxy-)?user(?:=|$)/y;
+var CURL_TAKES_VALUE = charTable("AbcCdDeEFHKmoPQrtTuUwxXyYz");
+var CURL_CREDENTIAL = charTable("tuU");
+var curlCredentials = (text, match, quote, spans) => {
+  let pending;
+  return commandWords(text, match, quote, (from, end) => {
+    if (pending !== void 0) {
+      if (pending.credential) spans.push(pending.start, end);
+      pending = void 0;
+      return;
+    }
+    const word = text.slice(from, end);
+    CURL_LONG_CREDENTIAL.lastIndex = 0;
+    if (CURL_LONG_CREDENTIAL.test(word)) {
+      if (word.includes("=")) spans.push(from, end);
+      else pending = { start: from, credential: true };
+      return;
+    }
+    if (word[0] !== "-" || word[1] === "-") return;
+    for (let k = 1; k < word.length; k++) {
+      const c = word.charCodeAt(k);
+      if (c >= 128 || CURL_TAKES_VALUE[c] !== 1) continue;
+      const start = k === 1 ? from : from + k;
+      const credential = CURL_CREDENTIAL[c] === 1;
+      if (k + 1 < word.length) {
+        if (credential) spans.push(start, end);
+      } else pending = { start, credential };
+      return;
+    }
+  });
+};
 var RULES = [
   { start: HEADER, redact: headerValue },
   { start: NAME, redact: nameValue },
   ...REDACTION_PATTERNS,
   { start: FLAG, redact: wordValue },
-  { start: MYSQL, redact: mysqlPasswords }
+  { start: MYSQL, redact: mysqlPasswords },
+  { start: CURL, redact: curlCredentials }
 ];
 function redactSecrets(text, counts) {
   let result = text;

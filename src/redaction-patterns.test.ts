@@ -46,6 +46,8 @@ const KEEPS_COMMAND: Row[] = [
   ['# set --token "a\nrm -rf /tmp/x ; echo "b', '--token "a'],
   ["it's --password 'abc ; rm -rf /tmp/x ; echo 'x"],
   [`curl --token "${'a '.repeat(2100)}" ; rm -rf /tmp/x`],
+  ['curl -u user:pass x;rm -rf /tmp/x', '-u user:pass'],
+  ["curl -u 'a b' x && rm -rf /tmp/x", "-u 'a b'"],
 ];
 
 const REDACTS: Row[] = [
@@ -106,6 +108,27 @@ const REDACTS: Row[] = [
   ['cp -p a b'],
   ['some-cli --token \\\n  --verbose'],
   ['some-cli --token \\\n--verbose'],
+  ['curl -u user:pass https://example.com', '-u user:pass'],
+  ['curl -uuser:pass https://example.com', '-uuser:pass'],
+  ['curl --user user:pass https://example.com', '--user user:pass'],
+  ['curl --user=user:pass https://example.com', '--user=user:pass'],
+  ["curl -u 'user:p a s s' https://example.com", "-u 'user:p a s s'"],
+  ['curl --user "user:p a s s" https://example.com', '--user "user:p a s s"'],
+  ['curl -t secret https://example.com', '-t secret'],
+  ['curl -tsecret https://example.com', '-tsecret'],
+  ['curl -sSu user:pass https://example.com', 'u user:pass'],
+  ['curl -U proxy:pass -x http://proxy https://example.com', '-U proxy:pass'],
+  ['curl --proxy-user proxy:pass https://example.com', '--proxy-user proxy:pass'],
+  ['curl -s https://a.example.com && curl -u user:pass x', '-u user:pass'],
+  ['curl -u \\\n  user:pass x', '-u \\\n  user:pass'],
+  [JSON.stringify('curl -u user:pass x\nls'), '-u user:pass'],
+  ['curl -XPUT -d @body.json https://example.com'],
+  ['curl -T upload.txt https://example.com'],
+  ['curl --upload-file upload.txt https://example.com'],
+  ['curl -o -t.txt https://example.com'],
+  ['curl -s https://example.com\nsort -t , -k2 data.csv'],
+  ['docker run -u 1000 node'],
+  ['tmux attach -t main'],
 ];
 
 const cases = (rows: Row[]): [string, Row][] =>
@@ -205,7 +228,7 @@ function shellWord(rand: Rand): string {
 const FLAGS = [
   'curl --token |npm run deploy -- --password |deploy --api-key |deploy --client-secret ',
   '|deploy --db-password |tool --a-b-c-d-token |keytool -password |curl --token=|tool --api_key=',
-  '|deploy --client-secret=|env API_KEY=|export TOKEN=|mysql -u root -p',
+  '|deploy --client-secret=|env API_KEY=|export TOKEN=|mysql -u root -p|curl -u |curl -t ',
 ]
   .join('')
   .split('|');
@@ -280,6 +303,8 @@ const ARGUMENTS = [
   'PASSWORD\n= ',
   'deploy --client-secret=',
   'psql --db-password ',
+  'curl -sSu ',
+  'curl --user=',
 ];
 const PREFIXES = [
   '',
