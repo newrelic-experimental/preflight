@@ -17,7 +17,6 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
-  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -25,6 +24,7 @@ import {
 import { randomBytes } from 'node:crypto';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { createLogger } from '../core/index.js';
+import { renameIntoPlace } from './rename-into-place.js';
 import { redactIdentifier, redactSensitive } from '../config.js';
 import { stripRepoNameCredentials } from '../lib/git-remote.js';
 import { isSyntheticSessionId, type SessionNameSource } from '../hooks/session-resolver.js';
@@ -2329,42 +2329,6 @@ function hasCorruptCopy(file: SessionFileRead): boolean {
     } catch {
       return false;
     }
-  });
-}
-
-const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
-const RENAME_BACKOFF_MS = [10, 20, 40, 80];
-const SLEEP_CELL = new Int32Array(new SharedArrayBuffer(4));
-
-/**
- * Windows refuses to rename over a file another process has open, which
- * antivirus scanners do briefly after each write. Retry with backoff, then
- * write the target directly so saves never silently stop.
- */
-function renameIntoPlace(tmpPath: string, filepath: string, content: string): void {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      renameSync(tmpPath, filepath);
-      return;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code ?? '';
-      if (!RENAME_RETRY_CODES.has(code)) throw err;
-      if (process.platform !== 'win32' || attempt === RENAME_BACKOFF_MS.length) break;
-      Atomics.wait(SLEEP_CELL, 0, 0, RENAME_BACKOFF_MS[attempt]);
-    }
-  }
-  try {
-    writeFileSync(filepath, content, { mode: 0o600 });
-  } catch (err) {
-    warnOnce(
-      `rename-failed:${filepath}`,
-      'Could not rename session file into place and the direct write failed too',
-      { file: basename(filepath), error: err instanceof Error ? err.message : String(err) },
-    );
-    throw err;
-  }
-  warnOnce(`rename:${filepath}`, 'Could not rename session file into place; wrote it directly', {
-    file: basename(filepath),
   });
 }
 
