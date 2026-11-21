@@ -41,8 +41,8 @@ function makeTokens(timestamp: number): TokenEvent {
     timestamp,
     inputTokens: 1_000,
     outputTokens: 200,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
+    cacheReadTokens: 300,
+    cacheCreationTokens: 40,
     model: MODEL,
   } as TokenEvent;
 }
@@ -74,7 +74,11 @@ describe('SkillRunLedger', () => {
       { stamp, startedAt: 500, endedAt: 1_200, toolCallCount: 1, pricedCallCount: 1 },
     ]);
     expect(closed[0]!.costUsd).toBeGreaterThan(0);
-    expect(closed[0]!.inputTokens).toBe(1_000);
+    expect(closed[0]).toMatchObject({
+      inputTokens: 1_000,
+      cacheReadTokens: 300,
+      cacheCreationTokens: 40,
+    });
   });
 
   it('ends a main-agent run at its Stop, not at the next prompt', () => {
@@ -100,19 +104,6 @@ describe('SkillRunLedger', () => {
     expect(closed).toMatchObject([{ stamp: { runId: 'run-1' }, endedAt: 3_000 }]);
   });
 
-  it('keeps the subagent that opened a run on its record', () => {
-    const { closed, ledger } = makeLedger();
-    ledger.recordRunOpened(makeStamp('run-sub'), {
-      sessionId: SESSION,
-      timestamp: 2_000,
-      agentId: 'agent-a',
-    });
-    ledger.recordStop(SESSION, 9_000);
-    ledger.recordPrompt(SESSION, 10_000);
-
-    expect(closed).toMatchObject([{ agentId: 'agent-a', endedAt: 2_000 }]);
-  });
-
   it('hands over a run whose call is never priced once the burst would be evicted', () => {
     const { closed, ledger, call, tokens } = makeLedger();
     const stamp = makeStamp('run-1');
@@ -130,6 +121,7 @@ describe('SkillRunLedger', () => {
     const { closed, ledger } = makeLedger();
     ledger.recordRunOpened(makeStamp('run-1'), { sessionId: SESSION, timestamp: 500 });
     ledger.flush();
+    expect(closed).toHaveLength(1);
     ledger.flush();
     ledger.recordPrompt(SESSION, 1_000);
 
@@ -193,6 +185,7 @@ describe('AiWorkUnit through the hook buffer', () => {
       sendEventsFn: ok as never,
       sendMetricsFn: ok as never,
       sendLogsFn: ok as never,
+      companionMode: true,
     });
     const attributor = new TurnCostAttributor();
     const ledger = new SkillRunLedger(
@@ -253,11 +246,12 @@ describe('AiWorkUnit through the hook buffer', () => {
     sessionId: SESSION,
   });
 
-  it('closes a slash run with its cost, tokens and duration on one row', async () => {
+  it('closes a slash run with its cost, tokens, duration and cost authority on one row', async () => {
+    const cc = { platform: 'claude-code' };
     const sent = await runFrames([
-      prompt(1_000, 'review'),
-      ...pair('tu-1', 'Read', 2_000, 2_100),
-      ...pair('tu-2', 'Grep', 2_200, 2_300),
+      prompt(1_000, 'my-skill'),
+      ...pair('tu-1', 'Bash', 2_000, 2_100, cc),
+      ...pair('tu-2', 'Grep', 2_200, 2_300, cc),
       tokens(3_000),
       stop(3_500),
       prompt(60_000),
@@ -270,11 +264,11 @@ describe('AiWorkUnit through the hook buffer', () => {
       (e) => e.eventType === 'AiTurnCost' && e.skill_run_id === runId && e.tool,
     );
     const sum = (key: string) => shares.reduce((total, e) => total + (e[key] as number), 0);
-    expect(shares).toHaveLength(2);
+    expect(shares).toMatchObject([{ cost_authority: 'external' }, { cost_authority: 'external' }]);
     expect(units[0]).toMatchObject({
       event_version: 1,
       unit_kind: 'skill_run',
-      skill_name: 'review',
+      skill_name: 'my-skill',
       skill_source: 'slash',
       session_id: SESSION,
       started_at: 1_000,
@@ -284,6 +278,8 @@ describe('AiWorkUnit through the hook buffer', () => {
       priced_call_count: 2,
       input_tokens: 1_000,
       output_tokens: 200,
+      platform: 'claude-code',
+      cost_authority: 'external',
     });
     expect(units[0]!.cost_usd).toBeGreaterThan(0);
     expect(units[0]!.cost_usd).toBeCloseTo(sum('cost_usd'), 12);

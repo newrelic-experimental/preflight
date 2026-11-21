@@ -36,8 +36,10 @@ type Totals = {
 };
 
 interface Run {
-  readonly base: Omit<ClosedSkillRun, keyof Totals>;
+  readonly base: Omit<ClosedSkillRun, keyof Totals | 'platform'>;
   readonly totals: Totals;
+  /** The opener's platform, else its first priced turn's, as on its `AiTurnCost` rows. */
+  platform: string | undefined;
   closedAt: number | null;
   /** Stamped calls still waiting in a turn for their token report. */
   unpriced: number;
@@ -72,7 +74,6 @@ export class SkillRunLedger {
         stamp,
         sessionId: ctx.sessionId,
         ...(ctx.agentId !== undefined && { agentId: ctx.agentId }),
-        ...(ctx.platform !== undefined && { platform: ctx.platform }),
         startedAt: at,
       },
       totals: {
@@ -85,6 +86,7 @@ export class SkillRunLedger {
         cacheReadTokens: 0,
         cacheCreationTokens: 0,
       },
+      platform: ctx.platform,
       closedAt: null,
       unpriced: 0,
     });
@@ -122,6 +124,7 @@ export class SkillRunLedger {
       const run = call.skill && this.runs.get(call.skill.runId);
       if (!run) continue;
       run.unpriced--;
+      run.platform ??= turn.platform;
       run.totals.pricedCallCount++;
       run.totals.costUsd += attribution.costPerToolCall;
       run.totals.inputTokens += attribution.inputTokens / calls.length;
@@ -159,6 +162,6 @@ export class SkillRunLedger {
 
   private emit(run: Run): void {
     this.runs.delete(run.base.stamp.runId);
-    this.onClosed({ ...run.base, ...run.totals });
+    this.onClosed({ ...run.base, platform: run.platform, ...run.totals });
   }
 }

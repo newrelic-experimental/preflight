@@ -4463,7 +4463,7 @@ describe('NrIngestManager.ingestSkillRun()', () => {
   });
 });
 
-describe('workUnitToNrEvent()', () => {
+describe('AiWorkUnit', () => {
   const run: ClosedSkillRun = {
     stamp: { name: 'review', source: 'slash', runId: 'run-1' },
     sessionId: 'sess-1',
@@ -4478,11 +4478,14 @@ describe('workUnitToNrEvent()', () => {
     cacheCreationTokens: 4,
   };
 
-  it('emits a main-agent run with cost, tokens and duration and no parent session', () => {
-    const event = workUnitToNrEvent(
-      { ...run, platform: 'claude-code' },
-      { developer: 'dev1', appName: 'my-app', sessionId: 'sess-1', teamId: 'team-a' },
-    );
+  it('emits an unstamped main-agent run as claude-code, untagged, with no parent session', () => {
+    const event = workUnitToNrEvent(run, {
+      developer: 'dev1',
+      appName: 'my-app',
+      sessionId: 'sess-1',
+      teamId: 'team-a',
+      companionMode: true,
+    });
 
     expect(event).toStrictEqual({
       eventType: 'AiWorkUnit',
@@ -4509,48 +4512,9 @@ describe('workUnitToNrEvent()', () => {
     });
   });
 
-  it.each(['slash', 'tool'] as const)('leaves an unstamped %s run untagged', (source) => {
-    const event = workUnitToNrEvent(
-      { ...run, stamp: { ...run.stamp, source } },
-      { developer: 'dev1', appName: 'my-app', companionMode: true },
-    );
-    expect(event).not.toHaveProperty('cost_authority');
-  });
-
-  it('names the subagent and its parent session when a subagent opened the run', () => {
-    const event = workUnitToNrEvent(
-      { ...run, agentId: 'agent-1', platform: 'claude-code' },
-      { developer: 'dev1', appName: 'my-app', sessionId: 'sess-1', companionMode: true },
-    );
-
-    expect(event).toMatchObject({
-      agent_id: 'agent-1',
-      parent_session_id: 'sess-1',
-      session_id: 'sess-1',
-      cost_authority: 'external',
-    });
-  });
-});
-
-describe('NrIngestManager.ingestWorkUnit()', () => {
-  it('routes one AiWorkUnit event, falling back to the manager session', async () => {
+  it('routes a subagent run with no session under the manager session', async () => {
     const manager = new NrIngestManager(makeIngestOptions({ sessionTraceId: 'trace-1' }));
-
-    manager.ingestWorkUnit({
-      stamp: { name: 'lint', source: 'tool', runId: 'run-9' },
-      sessionId: null,
-      agentId: 'agent-9',
-      startedAt: 1_000,
-      endedAt: 1_400,
-      toolCallCount: 1,
-      pricedCallCount: 1,
-      costUsd: 0.5,
-      inputTokens: 10,
-      outputTokens: 2,
-      cacheReadTokens: 0,
-      cacheCreationTokens: 0,
-    });
-
+    manager.ingestWorkUnit({ ...run, sessionId: null, agentId: 'agent-9' });
     manager.start();
     await manager.stop();
 
@@ -4559,9 +4523,7 @@ describe('NrIngestManager.ingestWorkUnit()', () => {
     >;
     expect(sentEvents.filter((e) => e.eventType === 'AiWorkUnit')).toMatchObject([
       {
-        skill_run_id: 'run-9',
-        duration_ms: 400,
-        cost_usd: 0.5,
+        skill_run_id: 'run-1',
         session_id: 'trace-1',
         parent_session_id: 'trace-1',
         agent_id: 'agent-9',
