@@ -272,6 +272,43 @@ describe('api-handler GET /api/sessions', () => {
       await makeHandler()(req, res);
       expect(JSON.parse(body())).toEqual([]);
     });
+
+    const makeLiveHandler = () =>
+      createApiHandler({
+        sessionStore: {
+          loadTodaySessions: () => [],
+          listSessions: () => [{ sessionId: 'sess-0', toolCallCount: 1 }],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+        sessionTracker: {
+          getMetrics: () => ({
+            sessionId: 'live-session',
+            sessionName: null,
+            sessionStartTime: 1000,
+            sessionDurationMs: 500,
+            toolCallCount: 3,
+          }),
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+      });
+
+    it('leaves out the live session when its id is not requested', async () => {
+      const req = { method: 'GET', url: '/api/sessions?ids=sess-0' } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeLiveHandler()(req, res);
+      const result = JSON.parse(body()) as Array<{ sessionId: string }>;
+      expect(result.map((s) => s.sessionId)).toEqual(['sess-0']);
+    });
+
+    it('includes the live session when its id is requested', async () => {
+      const req = {
+        method: 'GET',
+        url: '/api/sessions?ids=sess-0,live-session',
+      } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeLiveHandler()(req, res);
+      const result = JSON.parse(body()) as Array<{ sessionId: string }>;
+      expect(result.map((s) => s.sessionId)).toEqual(['sess-0', 'live-session']);
+    });
   });
 
   it('uses default limit of 50 when not specified', async () => {
