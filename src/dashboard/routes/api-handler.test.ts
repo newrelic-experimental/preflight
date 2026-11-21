@@ -2967,9 +2967,8 @@ describe('api-handler GET /api/usage-insights', () => {
     const { res, status, body } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(200);
-    expect(receivedSince).toBeInstanceOf(Date);
-    const sinceAgeMs = Date.now() - (receivedSince as Date).getTime();
-    expect(sinceAgeMs).toBeGreaterThanOrEqual(2 * 86_400_000 - 1000);
+    // The fetch reaches back past local midnight, so no file dated today is skipped.
+    expect((receivedSince as Date).getTime()).toBeLessThan(todayStart);
     const result = JSON.parse(body());
     expect(result.windowDays).toBe(1);
     expect(result.sessionCount).toBe(1);

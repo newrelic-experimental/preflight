@@ -147,6 +147,20 @@ describe('windowed dashboard views and resumed sessions', () => {
         timeline: calls(started, 1),
       }),
     );
+    // Resumed once, half a day before the window opened.
+    const justBefore = Date.now() - 7.5 * DAY_MS;
+    store.saveSession(
+      makeSummary({
+        sessionId: 'just-before',
+        startTime: started,
+        endTime: justBefore + HOUR_MS,
+        durationMs: justBefore + HOUR_MS - started,
+        toolCallCount: 2,
+        estimatedCostUsd: 6,
+        costByDayUsd: { [localDateKey(started)]: 1, [localDateKey(justBefore)]: 5 },
+        timeline: [...calls(started, 1), ...calls(justBefore, 1)],
+      }),
+    );
     const fresh = noonDaysAgo(1);
     store.saveSession(
       makeSummary({
@@ -178,8 +192,10 @@ describe('windowed dashboard views and resumed sessions', () => {
     const result = await get(store, '/api/cost-per-tool?days=7');
     expect(result.totalSessionCount).toBe(2);
     expect(result.attributedSessionCount).toBe(1);
-    const read = (result.costByToolType as Record<string, { totalCost: number }>).Read;
+    const read = (result.costByToolType as Record<string, Record<string, number>>).Read;
     expect(read.totalCost).toBeCloseTo(0.5, 10);
+    expect(read.callCount).toBe(1);
+    expect(read.tokens).toBe(100);
     expect(result.attributionRate).toBeCloseTo(0.5 / 3, 10);
   });
 });

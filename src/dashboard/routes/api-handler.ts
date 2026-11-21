@@ -86,13 +86,18 @@ import type {
   SkillCostEntry,
   ToolTypeCostEntry,
 } from '../../metrics/turn-cost-attributor.js';
-import { computeUsageInsights } from '../../metrics/usage-insights.js';
+import {
+  computeUsageInsights,
+  usageInsightsWindow,
+  type UsageInsightsOptions,
+} from '../../metrics/usage-insights.js';
 import type { AuditRecord } from '../../security/audit-trail.js';
 import type {
   FullSessionSummary,
   PersistedAntiPattern,
   SessionFileInfo,
 } from '../../storage/session-store.js';
+import { loadSessionsActiveIn, type WindowedSession } from '../../storage/session-window.js';
 import {
   hasRecordedUsage,
   toPersistedAntiPatterns,
@@ -733,26 +738,59 @@ function mergeSkillCostEntry(
   };
 }
 
+// A bucket keeps no day split, so a window's share of it scales every number.
+function scaleBucket(bucket: AttributionBucket, weight: number): AttributionBucket {
+  if (weight === 1) return bucket;
+  const round = (n: number): number => Math.round(n * weight);
+  const b = bucket.breakdown;
+  const usd = bucket.breakdownUsd;
+  return {
+    costUsd: bucket.costUsd * weight,
+    tokens: round(bucket.tokens),
+    count: round(bucket.count),
+    durationMs: round(bucket.durationMs),
+    ...(b && {
+      breakdown: {
+        inputTokens: round(b.inputTokens),
+        outputTokens: round(b.outputTokens),
+        cacheReadTokens: round(b.cacheReadTokens),
+        cacheCreationTokens: round(b.cacheCreationTokens),
+      },
+    }),
+    ...(usd && {
+      breakdownUsd: {
+        inputUsd: usd.inputUsd * weight,
+        outputUsd: usd.outputUsd * weight,
+        cacheReadUsd: usd.cacheReadUsd * weight,
+        cacheCreationUsd: usd.cacheCreationUsd * weight,
+      },
+    }),
+  };
+}
+
 /**
  * Folds one session's persisted tool/skill attribution buckets into the
  * given accumulators (mutated in place) — shared by both GET
  * /api/cost-per-tool paths that merge persisted sessions: the unwindowed
  * (today, live-tracker-merged) path and the windowed (persisted-only,
  * multi-day) path. Returns the cost attributed to this session's tool
- * buckets, for callers tracking a running total.
+ * buckets, for callers tracking a running total. `weight` is the window's
+ * share of the session.
  */
 function foldSessionAttributionBuckets(
   costByToolType: Record<string, ToolTypeCostEntry>,
   costBySkill: Record<string, SkillCostEntry>,
   session: FullSessionSummary,
+  weight = 1,
 ): number {
   let attributedCost = 0;
-  for (const [tool, bucket] of Object.entries(session.attribution?.buckets.tool ?? {})) {
+  for (const [tool, raw] of Object.entries(session.attribution?.buckets.tool ?? {})) {
+    const bucket = scaleBucket(raw, weight);
     costByToolType[tool] = mergeToolTypeCostEntry(costByToolType[tool], bucket);
     attributedCost += bucket.costUsd;
   }
-  for (const [skill, bucket] of Object.entries(session.attribution?.buckets.skill ?? {})) {
-    costBySkill[skill] = mergeSkillCostEntry(costBySkill[skill], bucket);
+  for (const [skill, raw] of Object.entries(session.attribution?.buckets.skill ?? {})) {
+    costBySkill[skill] = mergeSkillCostEntry(costBySkill[skill], scaleBucket(raw, weight));
   }
   return attributedCost;
 }
@@ -777,18 +815,23 @@ interface WindowedCostPerToolResponse {
  * the window reaches back further than the attribution data does.
  */
 function buildWindowedCostPerTool(
-  sessions: readonly FullSessionSummary[],
+  sessions: readonly WindowedSession[],
 ): WindowedCostPerToolResponse {
   const costByToolType: Record<string, ToolTypeCostEntry> = {};
   const costBySkill: Record<string, SkillCostEntry> = {};
   let totalAttributedCost = 0;
   let totalCost = 0;
   let attributedSessionCount = 0;
-  for (const session of sessions) {
-    totalCost += session.estimatedCostUsd ?? 0;
+  for (const { session, share } of sessions) {
+    totalCost += share.costUsd;
     if (!session.attribution) continue;
     attributedSessionCount++;
-    totalAttributedCost += foldSessionAttributionBuckets(costByToolType, costBySkill, session);
+    totalAttributedCost += foldSessionAttributionBuckets(
+      costByToolType,
+      costBySkill,
+      session,
+      share.weight,
+    );
   }
   return {
     turns: [],
@@ -2630,26 +2673,20 @@ export function createApiHandler(
       return;
     }
 
-    // ?days= scopes to a multi-day historical window instead of today —
-    // same widen-the-fetch-by-one-day pattern as GET /api/usage-insights
-    // below (loadAllSessions() filters by the session file's date prefix,
-    // coarse day granularity, not the session's real startTime, so a
-    // boundary-day session could otherwise be excluded before the exact
-    // cutoff filter below applies). Takes precedence over the unwindowed
-    // merge path below, which stays exactly as it was for callers that omit
-    // `days` (Today.tsx's unscoped call).
+    // ?days= scopes to the last N days instead of today, counting each
+    // session active in them by its in-window share. Takes precedence over the
+    // unwindowed merge path below, which stays exactly as it was for callers
+    // that omit `days` (Today.tsx's unscoped call).
     const daysParam = url.searchParams.get('days');
     if (daysParam !== null) {
-      if (!deps.sessionStore?.loadAllSessions)
-        return unavailable(res, 'sessionStore.loadAllSessions');
-      const nowMs = Date.now();
+      const store = deps.sessionStore;
+      if (!store?.loadAllSessions) return unavailable(res, 'sessionStore.loadAllSessions');
       const parsedDays = parseInt(daysParam, 10);
       const windowDays = Number.isNaN(parsedDays) ? 7 : Math.min(Math.max(parsedDays, 1), 90);
-      const cutoffMs = nowMs - windowDays * 86_400_000;
-      const since = new Date(nowMs - (windowDays + 1) * 86_400_000);
-      const sessions = deps.sessionStore
-        .loadAllSessions({ since })
-        .filter((s) => s.startTime >= cutoffMs);
+      const sessions = loadSessionsActiveIn((o) => store.loadAllSessions?.(o) ?? [], {
+        startMs: Date.now() - windowDays * 86_400_000,
+        endMs: Infinity,
+      });
       jsonOk(res, buildWindowedCostPerTool(sessions));
       return;
     }
@@ -2698,31 +2735,20 @@ export function createApiHandler(
       return unavailable(res, 'sessionStore.loadAllSessions');
     const url = new URL(req.url ?? '/', 'http://localhost');
     const nowMs = Date.now();
-    if (url.searchParams.get('window') === 'today') {
-      // loadAllSessions() filters by the session file's date prefix (coarse,
-      // day granularity), not the session's real startTime, so go back two
-      // days to guarantee a session that started just before local midnight
-      // isn't excluded before computeUsageInsights weights it by today's share.
-      // includeModifiedSince additionally keeps resumed sessions whose file
-      // carries an older start date but was written since midnight.
-      const since = new Date(nowMs - 2 * 86_400_000);
-      const sessions = deps.sessionStore.loadAllSessions({
-        since,
-        includeModifiedSince: new Date(localStartOfDay(nowMs)),
-      });
-      jsonOk(res, computeUsageInsights(sessions, { selection: 'today', nowMs }));
-      return;
-    }
     const parsedDays = parseInt(url.searchParams.get('days') ?? '', 10);
-    const windowDays = Number.isNaN(parsedDays) ? 7 : Math.min(Math.max(parsedDays, 1), 90);
-    // Widen the fetch by one extra day past the precise window — same
-    // reasoning as GET /api/cost-per-outcome above: loadAllSessions() filters
-    // by the session file's date prefix (coarse, day granularity), not the
-    // session's real startTime, so a boundary-day session could otherwise be
-    // excluded before computeUsageInsights applies the exact cutoff itself.
-    const since = new Date(nowMs - (windowDays + 1) * 86_400_000);
-    const sessions = deps.sessionStore.loadAllSessions({ since });
-    jsonOk(res, computeUsageInsights(sessions, { nowMs, windowDays }));
+    const options: UsageInsightsOptions =
+      url.searchParams.get('window') === 'today'
+        ? { selection: 'today', nowMs }
+        : {
+            nowMs,
+            windowDays: Number.isNaN(parsedDays) ? 7 : Math.min(Math.max(parsedDays, 1), 90),
+          };
+    const store = deps.sessionStore;
+    const sessions = loadSessionsActiveIn(
+      (o) => store.loadAllSessions?.(o) ?? [],
+      usageInsightsWindow(options),
+    ).map((w) => w.session);
+    jsonOk(res, computeUsageInsights(sessions, options));
   });
 
   routes.set('GET /api/cost-per-outcome', (req, res) => {
