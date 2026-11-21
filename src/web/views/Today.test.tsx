@@ -95,6 +95,24 @@ describe('Today view', () => {
     expect(within(tile).queryByText('est.')).toBeNull();
   });
 
+  it('shows one costs-are-estimates note for the whole page', async () => {
+    renderToday();
+    expect(await screen.findAllByText('Costs are estimates.')).toHaveLength(1);
+  });
+
+  it('hides the costs-are-estimates note while the page is still loading', () => {
+    globalThis.fetch = vi.fn(() => new Promise<Response>(() => {})) as typeof fetch;
+    renderToday();
+    expect(screen.queryByText('Costs are estimates.')).toBeNull();
+  });
+
+  it('hides the costs-are-estimates note when there is no activity yet', async () => {
+    useLiveStore.setState({ cost: null, antiPatterns: [] });
+    renderToday();
+    expect(await screen.findByText('No activity yet today')).toBeInTheDocument();
+    expect(screen.queryByText('Costs are estimates.')).toBeNull();
+  });
+
   it('renders the efficiency score KPI', () => {
     renderToday();
     expect(screen.getByText('efficiency')).toBeInTheDocument();
