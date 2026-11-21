@@ -1,4 +1,4 @@
-import { localDateKey, localStartOfDay } from '../lib/date.js';
+import { localDateKey, localEndOfDay, localStartOfDay } from '../lib/date.js';
 import type { FullSessionSummary } from './session-store.js';
 import { windowShare, windowedSessions, type ActivityWindow } from './session-window.js';
 import type { ReplayTimelineEntry } from './types.js';
@@ -83,10 +83,24 @@ describe('windowShare', () => {
     expect(share).toEqual({ weight: 1, costUsd: 8, costByDayUsd: {}, toolCalls: 7 });
   });
 
+  it('keeps cost booked to a day the session’s recorded span does not reach', () => {
+    const nextDay = localEndOfDay(DAY);
+    const s = source({
+      endTime: nextDay,
+      estimatedCostUsd: 10,
+      costByDayUsd: { [localDateKey(DAY)]: 8, [localDateKey(nextDay)]: 2 },
+    });
+    expect(windowShare(s, fromNoon).costUsd).toBe(8);
+    expect(windowShare(s, { startMs: nextDay, endMs: Infinity }).costUsd).toBe(2);
+    expect(windowShare(s, { startMs: DAY, endMs: nextDay }).costUsd).toBe(8);
+  });
+
   it('counts nothing for a session that ended before the window or started after it', () => {
     const none = { weight: 0, costUsd: 0, costByDayUsd: {}, toolCalls: 0 };
     expect(windowShare(source({}), { startMs: at(17), endMs: Infinity })).toEqual(none);
     expect(windowShare(source({}), { startMs: at(0), endMs: at(8) })).toEqual(none);
+    const instant = source({ endTime: at(8), durationMs: 0 });
+    expect(windowShare(instant, fromNoon)).toEqual(none);
   });
 });
 
