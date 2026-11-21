@@ -225,13 +225,19 @@ var nameValue = (text, match, quote, spans) => {
   pushValue(spans, start, floor, end);
   return i;
 };
-var MYSQL = /\b(?:mysql(?:dump|admin)?|mariadb)\b/g;
+var MYSQL = /(?:mysql(?:dump|admin)?|mariadb)\b/g;
 var ESCAPED_P = new RegExp(String.raw`(?<=${AFTER_ESCAPE})-p`, "y");
 var PORT_MAPPING = /[\d.]+:\d/y;
 var REDIRECT = /&>>?|[<>][<>&|]*/y;
 var ONLY_CONTINUATION = new RegExp(String.raw`^${CONTINUATION}$`);
+var WORD_START = new RegExp(String.raw`(?<!\w)|(?<=${AFTER_ESCAPE})`, "y");
+function startsWord(text, index) {
+  WORD_START.lastIndex = index;
+  return WORD_START.test(text);
+}
 function commandWords(text, match, quote, visit) {
   let i = match.index + match[0].length;
+  if (!startsWord(text, match.index)) return i;
   for (; ; ) {
     while (isSpace(unitAt(text, i, quote)) && text.charCodeAt(i) !== LF) {
       i += unitLength(text, i, quote);
@@ -261,10 +267,11 @@ function passwordFlag(text, from, end) {
   }
   return -1;
 }
-var CURL = /\bcurl\b/g;
+var CURL = /curl\b/g;
 var CURL_LONG_CREDENTIAL = /--(?:proxy-)?user(?:=|$)/y;
 var CURL_TAKES_VALUE = charTable("AbcCdDeEFHKmoPQrtTuUwxXyYz");
 var CURL_CREDENTIAL = charTable("tuU");
+var ONLY_QUOTES = /^["']*$/;
 var curlCredentials = (text, match, quote, spans) => {
   let pending;
   return commandWords(text, match, quote, (from, end) => {
@@ -286,7 +293,7 @@ var curlCredentials = (text, match, quote, spans) => {
       if (c >= 128 || CURL_TAKES_VALUE[c] !== 1) continue;
       const start = k === 1 ? from : from + k;
       const credential = CURL_CREDENTIAL[c] === 1;
-      if (k + 1 < word.length) {
+      if (!ONLY_QUOTES.test(word.slice(k + 1))) {
         if (credential) spans.push(start, end);
       } else pending = { start, credential };
       return;

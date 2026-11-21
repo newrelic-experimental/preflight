@@ -285,14 +285,22 @@ const nameValue: Redact = (text, match, quote, spans) => {
   return i;
 };
 
-const MYSQL = /\b(?:mysql(?:dump|admin)?|mariadb)\b/g;
+const MYSQL = /(?:mysql(?:dump|admin)?|mariadb)\b/g;
 const ESCAPED_P = new RegExp(String.raw`(?<=${AFTER_ESCAPE})-p`, 'y');
 const PORT_MAPPING = /[\d.]+:\d/y;
 const REDIRECT = /&>>?|[<>][<>&|]*/y;
 const ONLY_CONTINUATION = new RegExp(String.raw`^${CONTINUATION}$`);
 
-// Visits each word after the match up to the end of its command, and returns that end. A
-// redirection such as 2>&1 does not end the command, and a JSON-escaped line break only separates
+// A command name starts a word, possibly right after an escape that ends in a letter (\ncurl).
+const WORD_START = new RegExp(String.raw`(?<!\w)|(?<=${AFTER_ESCAPE})`, 'y');
+
+function startsWord(text: string, index: number): boolean {
+  WORD_START.lastIndex = index;
+  return WORD_START.test(text);
+}
+
+// When the match starts a word, visits each word after it up to the end of its command, and returns
+// that end. A redirection such as 2>&1 does not end the command, and a JSON-escaped line break only separates
 // words.
 function commandWords(
   text: string,
@@ -301,6 +309,7 @@ function commandWords(
   visit: (from: number, end: number) => void,
 ): number {
   let i = match.index + match[0].length;
+  if (!startsWord(text, match.index)) return i;
   for (;;) {
     while (isSpace(unitAt(text, i, quote)) && text.charCodeAt(i) !== LF) {
       i += unitLength(text, i, quote);
@@ -336,11 +345,13 @@ function passwordFlag(text: string, from: number, end: number): number {
   return -1;
 }
 
-const CURL = /\bcurl\b/g;
+const CURL = /curl\b/g;
 const CURL_LONG_CREDENTIAL = /--(?:proxy-)?user(?:=|$)/y;
 // curl's short options that take a value. The value is the rest of the word, or the next word.
 const CURL_TAKES_VALUE = charTable('AbcCdDeEFHKmoPQrtTuUwxXyYz');
 const CURL_CREDENTIAL = charTable('tuU');
+// A word such as -"u" ends in a closing quote, so its value is the next word.
+const ONLY_QUOTES = /^["']*$/;
 
 // -u and -U hold user:password and -t holds a secret, with the value in the same word (-uuser:pw,
 // -sSu user:pw, --user=user:pw) or the next. Another option's value, as in -o -t.txt, is skipped.
@@ -365,7 +376,7 @@ const curlCredentials: Redact = (text, match, quote, spans) => {
       if (c >= 128 || CURL_TAKES_VALUE[c] !== 1) continue;
       const start = k === 1 ? from : from + k;
       const credential = CURL_CREDENTIAL[c] === 1;
-      if (k + 1 < word.length) {
+      if (!ONLY_QUOTES.test(word.slice(k + 1))) {
         if (credential) spans.push(start, end);
       } else pending = { start, credential };
       return;

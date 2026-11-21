@@ -86,7 +86,7 @@ Apply the same pattern to any user-supplied string that becomes a NR event field
 
 ### `redactSecrets()` — `src/redaction-patterns.ts`
 
-One redaction pass, called by `redactSensitive()` and `redactIdentifier()` in `src/config.ts` and by `redact()` in `collector-script.ts`. It runs `REDACTION_PATTERNS`, token patterns that each redact their whole match, and four argument rules: `NAME=value`, secret flags, mysql `-p` and API-key headers. An argument rule's regex only finds where the secret starts. A scanner reads the value as one bash word, so quotes, escapes and line continuations stay in it, and an unquoted space, tab, line break, one of `; | & ( ) < >` or the backtick ends it. The scanner starts in the quote the text is in at the match, so a value inside a quoted string never reads past its closing quote. A `#` comment reads like a quote that the line break closes. The pass covers:
+One redaction pass, called by `redactSensitive()` and `redactIdentifier()` in `src/config.ts` and by `redact()` in `collector-script.ts`. It runs `REDACTION_PATTERNS`, token patterns that each redact their whole match, and five argument rules: `NAME=value`, secret flags, mysql `-p`, curl credentials and API-key headers. An argument rule's regex only finds where the secret starts. The mysql and curl rules start at the command name, which counts when it starts a word, including right after a JSON escape or ANSI colour code (`\ncurl`, `\x1b[32mmysql`). A scanner reads the value as one bash word, so quotes, escapes and line continuations stay in it, and an unquoted space, tab, line break, one of `; | & ( ) < >` or the backtick ends it. The scanner starts in the quote the text is in at the match, so a value inside a quoted string never reads past its closing quote. A `#` comment reads like a quote that the line break closes. The pass covers:
 
 | Pattern                                                                         | What it catches                           |
 | ------------------------------------------------------------------------------- | ----------------------------------------- |
@@ -108,10 +108,13 @@ One redaction pass, called by `redactSensitive()` and `redactIdentifier()` in `s
 | `?sig=`, `?se=`, `?sp=`, `?sv=`, …                                              | Azure SAS token parameters                |
 | `--token`, `--password`, `--secret`, `--api-key` and the flags listed below     | Secret values passed as flags             |
 | Each `-p<password>` after `mysql`, `mysqldump`, `mysqladmin` or `mariadb`       | MySQL client passwords                    |
+| The value of `-u`, `-U`, `--user`, `--proxy-user` and `-t` after `curl`         | curl credentials                          |
 | `-H`/`--header` with `X-Api-Key`, `Api-Key`, `X-Auth-Token`, `X-Access-Token`   | API-key headers                           |
 | `aws_secret_access_key` followed by 40 characters, bare or quoted               | AWS secret access keys                    |
 
 The secret flags are `--token`, `--password`, `--passwd`, `--secret`, `--api-key`, `--access-key`, `--secret-key` and `--private-key`, in single-dash, underscore and `=` forms, and the same flags with more words joined in front by `-` or `_`, such as `--db-password`. Flags that name a file or stdin, such as `--token-file` and `--password-stdin`, are left alone.
+
+A quoted flag or command name is not recognised, so `curl "-u" user:pass`, `"curl" -u user:pass` and `--"token" value` are stored as is. A quote inside a curl flag word is read, so `curl -"u" user:pass` is redacted. Both rules err toward hiding: a word after the command name that only looks like an option, as in `rg curl -t ts`, is redacted too.
 
 **Where applied:**
 

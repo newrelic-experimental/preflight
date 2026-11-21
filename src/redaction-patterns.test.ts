@@ -129,6 +129,17 @@ const REDACTS: Row[] = [
   ['curl -s https://example.com\nsort -t , -k2 data.csv'],
   ['docker run -u 1000 node'],
   ['tmux attach -t main'],
+  [JSON.stringify('cd /tmp\ncurl -u user:pass x'), '-u user:pass'],
+  [JSON.stringify('set -e\n\tcurl -sSu me:hunter2 x'), 'u me:hunter2'],
+  ['\x1b[32mcurl -u me:hunter2 x', '-u me:hunter2'],
+  [JSON.stringify('cd /tmp\nmysql -phunter2'), '-phunter2'],
+  [JSON.stringify('set -e\n\tmysql -phunter2 db'), '-phunter2'],
+  ['\x1b[32mmysql -phunter2 db', '-phunter2'],
+  ['libcurl -u user:pass x'],
+  ['pymysql -psecret'],
+  ['curl -"u" me:hunter2 x', 'u" me:hunter2'],
+  ["curl -s'u' me:hunter2 x", "u' me:hunter2"],
+  ['curl -o"" -t.txt https://example.com'],
 ];
 
 const cases = (rows: Row[]): [string, Row][] =>
@@ -154,13 +165,14 @@ describe('secret arguments', () => {
       process.env = { ...env };
     });
 
-    function store(command: string): Record<string, unknown> {
+    function save(command: string): { toolInput: Record<string, unknown>; inputContent?: string } {
       const hook = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } };
       processHook(JSON.stringify({ ...hook, session_id: 'sess-1', cwd: '/projects/test' }));
       const lines = readFileSync(join(dir, 'buffer.jsonl'), 'utf8').trim().split('\n');
-      return (JSON.parse(lines[lines.length - 1]) as { toolInput: Record<string, unknown> })
-        .toolInput;
+      return JSON.parse(lines[lines.length - 1]) as ReturnType<typeof save>;
     }
+
+    const store = (command: string): Record<string, unknown> => save(command).toolInput;
 
     it.each(cases(KEEPS_COMMAND))('stores %s and keeps it destructive', (_title, row) => {
       const toolInput = store(row[0]);
@@ -170,6 +182,14 @@ describe('secret arguments', () => {
 
     it.each(cases(REDACTS))('stores %s', (_title, row) => {
       expect(store(row[0]).command).toBe(stored(row));
+    });
+
+    it.each([
+      ['cd /tmp\ncurl -u me:hunter2 x', '{"command":"cd /tmp\\ncurl [REDACTED] x"}'],
+      ['cd /tmp\nmysql -phunter2', '{"command":"cd /tmp\\nmysql [REDACTED]"}'],
+    ])('records the content of %j with its password redacted', (command, content) => {
+      process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+      expect(save(command).inputContent).toBe(content);
     });
 
     const SPLIT = `echo ${'x'.repeat(1_048_554)} `;
