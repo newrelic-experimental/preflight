@@ -1700,22 +1700,20 @@ describe('stdio integration', () => {
       const env: NodeJS.ProcessEnv = { ...process.env, MCP_CLIENT: 'claude-code' };
       delete env.CLAUDE_JOB_DIR;
       const client = new Client({ name: 'test-client', version: '1.0.0' });
-      await connectToConfiguredEngine(
-        client,
-        new StdioClientTransport({
-          command: 'node',
-          args: [resolve(__dirname, '..', 'dist', 'index.js'), '--stdio'],
-          ...(cwd !== undefined && { cwd }),
-          env: {
-            ...env,
-            NR_AI_DASHBOARD_PORT: '0',
-            NR_AI_MODE: 'local',
-            NEW_RELIC_AI_MCP_STORAGE_PATH: storage,
-            ...envOverrides,
-          },
-        }),
-      );
-      return client;
+      const transport = new StdioClientTransport({
+        command: 'node',
+        args: [resolve(__dirname, '..', 'dist', 'index.js'), '--stdio'],
+        ...(cwd !== undefined && { cwd }),
+        env: {
+          ...env,
+          NR_AI_DASHBOARD_PORT: '0',
+          NR_AI_MODE: 'local',
+          NEW_RELIC_AI_MCP_STORAGE_PATH: storage,
+          ...envOverrides,
+        },
+      });
+      await connectToConfiguredEngine(client, transport);
+      return Object.assign(client, { pid: transport.pid as number });
     };
     let drainedCalls = 0;
     const drainCalls = async (storage: string, sessionId: string, count: number) => {
@@ -2157,16 +2155,14 @@ describe('stdio integration', () => {
         const first = await startEngine(storage);
         await drainCalls(storage, id, 1);
         const checkpointing = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
-        let next = 1;
-        for (; next <= 20 && savedCalls(storage, id) === null; next++) {
-          // Both engines poll every 100 ms, so a fixed phase could hand every call to one of them.
-          await sleep((next * 37) % 100);
+        // Paused, the first engine cannot win the race to drain the next call.
+        process.kill(first.pid, 'SIGSTOP');
+        try {
           await drainCalls(storage, id, 1);
-          for (let i = 0; i < 6 && savedCalls(storage, id) === null; i++) {
-            await sleep(100);
-          }
+          await waitFor(() => savedCalls(storage, id) !== null);
+        } finally {
+          process.kill(first.pid, 'SIGCONT');
         }
-        expect(savedCalls(storage, id)).not.toBeNull();
         return { first, checkpointing };
       };
 
