@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import {
   artifactViewUrl,
   fetchArtifacts,
+  fetchSettings,
   qk,
   UnavailableError,
   type ArtifactEntry,
@@ -98,6 +99,11 @@ export function Artifacts(): JSX.Element {
     retry: (failureCount, err) => !(err instanceof UnavailableError) && failureCount < 2,
   });
 
+  const { data: settings } = useQuery({
+    queryKey: qk.settings,
+    queryFn: ({ signal }) => fetchSettings(signal),
+  });
+
   const needle = filter.trim().toLowerCase();
   const groups = visibleGroups(data?.groups ?? [], needle);
   const disabled = error instanceof UnavailableError;
@@ -130,7 +136,9 @@ export function Artifacts(): JSX.Element {
           icon="code"
           title="Artifacts are turned off"
           subtitle={
-            'Set "experimentalArtifacts": true in ~/.newrelic-preflight/config.json, or set NEW_RELIC_AI_EXPERIMENTAL_ARTIFACTS=true, then restart Preflight.'
+            settings?.highSecurity
+              ? 'highSecurity is on, and it keeps the artifact index off.'
+              : 'Set "experimentalArtifacts": true in ~/.newrelic-preflight/config.json, or set NEW_RELIC_AI_EXPERIMENTAL_ARTIFACTS=true, then restart Preflight.'
           }
         />
       )}

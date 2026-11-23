@@ -4,15 +4,17 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Artifacts } from './Artifacts';
 
-function renderArtifacts(status: number, data: unknown) {
+function renderArtifacts(status: number, data: unknown, settings: unknown = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-  globalThis.fetch = (() =>
-    Promise.resolve(
-      new Response(JSON.stringify(data), {
-        status,
+  globalThis.fetch = ((input: RequestInfo | URL) => {
+    const isSettings = String(input).includes('/api/settings');
+    return Promise.resolve(
+      new Response(JSON.stringify(isSettings ? settings : data), {
+        status: isSettings ? 200 : status,
         headers: { 'content-type': 'application/json' },
       }),
-    )) as typeof globalThis.fetch;
+    );
+  }) as typeof globalThis.fetch;
   return render(
     <QueryClientProvider client={qc}>
       <Artifacts />
@@ -96,6 +98,16 @@ describe('Artifacts view', () => {
     await waitFor(() => expect(screen.getByText('Artifacts are turned off')).toBeInTheDocument());
     expect(screen.getByText(/experimentalArtifacts": true/)).toBeInTheDocument();
     expect(screen.getByText(/NEW_RELIC_AI_EXPERIMENTAL_ARTIFACTS=true/)).toBeInTheDocument();
+  });
+
+  it('says highSecurity keeps the feature off instead of how to enable it', async () => {
+    renderArtifacts(
+      503,
+      { error: 'unavailable', what: 'artifactIndex' },
+      { highSecurity: true, experimentalArtifacts: false },
+    );
+    await waitFor(() => expect(screen.getByText(/highSecurity is on/)).toBeInTheDocument());
+    expect(screen.queryByText(/NEW_RELIC_AI_EXPERIMENTAL_ARTIFACTS=true/)).not.toBeInTheDocument();
   });
 
   it('shows the empty state when no artifacts have been written', async () => {
