@@ -3117,7 +3117,14 @@ describe('stdio integration', () => {
     };
     const drained = (storage: string, conversationId: string) => {
       const bufferPath = resolve(storage, `buffer-${conversationId}.jsonl`);
-      const pending = () => (existsSync(bufferPath) ? readFileSync(bufferPath, 'utf-8') : '');
+      const pending = () => {
+        try {
+          return readFileSync(bufferPath, 'utf-8');
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'ENOENT') return '';
+          throw err;
+        }
+      };
       return until(pending, (v) => v === '');
     };
 
