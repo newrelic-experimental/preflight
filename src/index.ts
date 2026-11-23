@@ -1882,9 +1882,10 @@ async function main(): Promise<void> {
         savedSessionId !== undefined && sessionTraceId.startsWith('pending-')
           ? sessionStoreForCostBaseline.loadSession(savedSessionId)
           : null;
-      if (ownTotalUsd === null && !followed) return;
-      if (savedSessionId === undefined) refreshPriorCostBaselineIfStale();
-      else refreshPriorCostBaseline();
+      if (savedSessionId === undefined) {
+        if (ownTotalUsd === null) return;
+        refreshPriorCostBaselineIfStale();
+      } else refreshPriorCostBaseline();
       const todayKey = localDateKey();
       const ownTodayUsd = costTracker.getCostForDay(todayKey);
       const todayTotalUsd = priorCostCache.priorDailyCostUsd + ownTodayUsd;

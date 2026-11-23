@@ -3354,6 +3354,42 @@ describe('stdio integration', () => {
       );
     }, 40000);
 
+    it('an adopted engine with no cost of its own counts a leftover claim of another conversation in the budget', async () => {
+      const port = await freePort();
+      const api = dashboardApi(port);
+      await withPendingEngine(
+        '600000',
+        async (env, adopt, _close, pid) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          await pollUntil(
+            () => api('/api/health'),
+            (v) => v !== null,
+          );
+          await adopt('conv-mine');
+          runHook(env, reportHook('conv-other', 'r-other-01'));
+          runHook(env, reportHook('conv-other', 'r-other-02'));
+          const buffer = 'buffer-conv-other.jsonl';
+          mkdirSync(resolve(storage, DRAINS_DIR), { recursive: true });
+          renameSync(
+            resolve(storage, buffer),
+            resolve(storage, DRAINS_DIR, formatClaimName(buffer, pid, Date.now())),
+          );
+          const after = spendOf(
+            await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).daily.spentUsd > 0,
+            ),
+          );
+          expect(savedSession(storage, 'conv-other')).toMatchObject({ selfReportCount: 2 });
+          expect(after.daily.spentUsd).toBeCloseTo(0.015, 9);
+          expect(after.session.spentUsd).toBe(0);
+        },
+        () => [],
+        'claude-code',
+        { NR_AI_DASHBOARD_PORT: port },
+      );
+    }, 40000);
+
     it('a resumed engine saves a report for its own conversation once, on top of the saved total', async () => {
       await withPendingEngine('600000', async (env, adopt, close) => {
         const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
