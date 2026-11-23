@@ -875,7 +875,7 @@ var NESTED_SCRIPT = new RegExp(
   String.raw`(${COMMAND_START})(?:(?:command|builtin)[ \t]+)*(?:(eval)|(?:[^\s;&|()]*/)?(?:ba|z|da)?sh[ \t]+-[a-zA-Z]*c[a-zA-Z]*)`,
   "g"
 );
-var BRACE_COMMAND = new RegExp(String.raw`(${COMMAND_START})\{([^\s{}]*,[^\s{}]*)\}`, "g");
+var BRACE_COMMAND = new RegExp(String.raw`(${COMMAND_START})\{([^\s{},]*,[^\s{}]*)\}`, "g");
 var MAX_NESTED_SCRIPTS = 3;
 function stateOpenedAt(command, i, atWordStart) {
   const ch = command[i];
@@ -1048,8 +1048,7 @@ function isDestructiveScript(command, depth) {
     const end = match.index + match[0].length;
     if (!isCommandWord(lexed.kept, match.index, match[1], end)) continue;
     if (depth >= MAX_NESTED_SCRIPTS) {
-      if (DESTRUCTIVE_PATTERNS.some((p) => p.test(command.slice(end)))) return true;
-      continue;
+      return DESTRUCTIVE_PATTERNS.some((p) => p.test(command.slice(end)));
     }
     const words = wordsFrom(lexed, end);
     const script = match[2] === void 0 ? words[0] : words.join(" ");

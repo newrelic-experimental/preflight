@@ -569,6 +569,19 @@ describe('classifyBash', () => {
       expect(classifyBash(deep).isDestructive).toBe(false);
     });
 
+    it('classifies long brace and nested-eval inputs in linear time', () => {
+      const quote = (script: string): string => `'${script.replaceAll("'", "'\\''")}'`;
+      const deepEvals = Array.from({ length: 3 }).reduce<string>(
+        (acc) => `bash -c ${quote(acc)}`,
+        'eval x;'.repeat(40_000),
+      );
+      for (const cmd of ['{' + ','.repeat(65_536), deepEvals]) {
+        const start = performance.now();
+        expect(classifyBash(cmd).isDestructive).toBe(false);
+        expect(performance.now() - start).toBeLessThan(500);
+      }
+    });
+
     it('fails closed on rm text past the depth bound but only on the wrapper tail', () => {
       const quote = (script: string): string => `'${script.replaceAll("'", "'\\''")}'`;
       const wrap = (script: string, levels: number): string =>
