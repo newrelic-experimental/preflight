@@ -72,7 +72,7 @@ export class SkillActivationTracker implements Resettable {
 
   recordToolCall(record: ToolCallRecord): SkillStamp | null {
     const runs = this.runsFor(record.sessionId);
-    this.closeMainRunAfterIdleGap(record.sessionId ?? NULL_SESSION_KEY, runs, record.timestamp);
+    this.closeMainRunAfterIdleGap(record.sessionId ?? NULL_SESSION_KEY, runs, record);
     const agentKey = record.agentId ?? MAIN_AGENT_KEY;
     if (agentKey !== MAIN_AGENT_KEY && !runs.has(agentKey)) {
       if (runs.size > MAX_AGENTS_PER_SESSION) {
@@ -114,19 +114,30 @@ export class SkillActivationTracker implements Resettable {
     return this.sessions.get(sessionId ?? NULL_SESSION_KEY)?.get(MAIN_AGENT_KEY) ?? null;
   }
 
+  /**
+   * Measures the gap from the end of the session's latest call. Only a
+   * main-agent call can end it, since a subagent's silence is the main agent
+   * waiting on that subagent.
+   */
   private closeMainRunAfterIdleGap(
     sessionKey: string,
     runs: Map<string, SkillStamp | null>,
-    timestamp: number,
+    record: ToolCallRecord,
   ): void {
     if (this.promptedSessions.has(sessionKey)) return;
     const last = this.lastActivity.get(sessionKey);
     const open = runs.get(MAIN_AGENT_KEY);
-    if (open && last !== undefined && timestamp - last > DEFAULT_IDLE_TIMEOUT_MS) {
+    if (
+      open &&
+      (record.agentId ?? MAIN_AGENT_KEY) === MAIN_AGENT_KEY &&
+      last !== undefined &&
+      record.timestamp - last > DEFAULT_IDLE_TIMEOUT_MS
+    ) {
       runs.set(MAIN_AGENT_KEY, null);
-      this.options.onRunIdleClosed?.(open, timestamp);
+      this.options.onRunIdleClosed?.(open, record.timestamp);
     }
-    if (last === undefined || timestamp > last) this.lastActivity.set(sessionKey, timestamp);
+    const end = record.timestamp + (record.durationMs ?? 0);
+    if (last === undefined || end > last) this.lastActivity.set(sessionKey, end);
   }
 
   /** Closes the main agent's run and returns the slash run it opens, if any. */
@@ -141,7 +152,6 @@ export class SkillActivationTracker implements Resettable {
     this.runsFor(sessionId).set(MAIN_AGENT_KEY, stamp);
     const sessionKey = sessionId ?? NULL_SESSION_KEY;
     this.promptedSessions.add(sessionKey);
-    this.lastActivity.delete(sessionKey);
     if (stamp) this.options.onRunOpened?.(stamp, { sessionId: sessionId ?? null, timestamp });
     return stamp;
   }

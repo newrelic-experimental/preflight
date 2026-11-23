@@ -110,7 +110,7 @@ describe('SkillActivationTracker', () => {
 
     t.recordToolCall(makeRecord({ sessionId: 's2', toolUseId: 'u4', timestamp: 20_000 }));
 
-    const later = 1000 + DEFAULT_IDLE_TIMEOUT_MS + 1;
+    const later = 1100 + DEFAULT_IDLE_TIMEOUT_MS + 1;
     expect(t.recordToolCall(makeRecord({ toolUseId: 'u2', timestamp: later }))).toBeNull();
     expect(
       t.recordToolCall(makeRecord({ sessionId: 's2', toolUseId: 'u3', timestamp: later }))?.name,
@@ -122,7 +122,7 @@ describe('SkillActivationTracker', () => {
     t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
 
     const stamp = t.recordToolCall(
-      makeRecord({ toolUseId: 'u2', timestamp: 1000 + DEFAULT_IDLE_TIMEOUT_MS }),
+      makeRecord({ toolUseId: 'u2', timestamp: 1100 + DEFAULT_IDLE_TIMEOUT_MS }),
     );
 
     expect(stamp?.name).toBe('eslint');
@@ -143,7 +143,7 @@ describe('SkillActivationTracker', () => {
     t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
     t.recordToolCall(makeRecord({ agentId: 'a1', toolUseId: 'u2', timestamp: 1500 }));
 
-    const later = 1500 + DEFAULT_IDLE_TIMEOUT_MS + 1;
+    const later = 1600 + DEFAULT_IDLE_TIMEOUT_MS + 1;
     expect(t.recordToolCall(makeRecord({ toolUseId: 'u3', timestamp: later }))).toBeNull();
     expect(
       t.recordToolCall(makeRecord({ agentId: 'a1', toolUseId: 'u4', timestamp: later }))?.name,
@@ -169,10 +169,33 @@ describe('SkillActivationTracker', () => {
     t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
 
     const stamp = t.recordToolCall(
-      makeRecord({ toolUseId: 'u2', timestamp: 1000 + DEFAULT_IDLE_TIMEOUT_MS + 1 }),
+      makeRecord({ toolUseId: 'u2', timestamp: 1100 + DEFAULT_IDLE_TIMEOUT_MS + 1 }),
     );
 
     expect(stamp).toBeNull();
+  });
+
+  it('measures the gap from the end of a long call, not its start', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
+    t.recordToolCall(
+      makeRecord({ toolName: 'Bash', toolUseId: 'u2', timestamp: 2000, durationMs: 120_000 }),
+    );
+
+    const stamp = t.recordToolCall(makeRecord({ toolUseId: 'u3', timestamp: 127_000 }));
+
+    expect(stamp?.name).toBe('eslint');
+  });
+
+  it('keeps the main run open when a subagent call ends the gap', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
+    t.recordToolCall(makeRecord({ agentId: 'a1', toolUseId: 'u2', timestamp: 1500 }));
+
+    const later = 1600 + DEFAULT_IDLE_TIMEOUT_MS + 1;
+    t.recordToolCall(makeRecord({ agentId: 'a1', toolUseId: 'u3', timestamp: later }));
+
+    expect(t.openRun('s1')?.name).toBe('eslint');
   });
 
   it('ignores a late record with an older timestamp when measuring the gap', () => {
@@ -193,7 +216,7 @@ describe('SkillActivationTracker', () => {
     t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
 
     const stamp = t.recordToolCall(
-      makeRecord({ toolUseId: 'u2', timestamp: 1000 + DEFAULT_IDLE_TIMEOUT_MS + 1 }),
+      makeRecord({ toolUseId: 'u2', timestamp: 1100 + DEFAULT_IDLE_TIMEOUT_MS + 1 }),
     );
 
     expect(stamp).toBeNull();
@@ -558,7 +581,7 @@ describe('SkillActivationTracker onRunOpened', () => {
     const first = tracker.recordToolCall(
       makeRecord({ toolName: 'Skill', skillName: 'lint', timestamp: 1000 }),
     );
-    const later = 1000 + DEFAULT_IDLE_TIMEOUT_MS + 1;
+    const later = 1100 + DEFAULT_IDLE_TIMEOUT_MS + 1;
     const second = tracker.recordToolCall(
       makeRecord({ toolName: 'Skill', skillName: 'lint', toolUseId: 'u2', timestamp: later }),
     );
@@ -574,7 +597,7 @@ describe('SkillActivationTracker onRunOpened', () => {
     const tracker = new SkillActivationTracker({ onRunIdleClosed: (stamp) => closed.push(stamp) });
     tracker.recordToolCall(makeRecord({ timestamp: 1000 }));
     tracker.recordToolCall(
-      makeRecord({ toolUseId: 'u2', timestamp: 1000 + DEFAULT_IDLE_TIMEOUT_MS + 1 }),
+      makeRecord({ toolUseId: 'u2', timestamp: 1100 + DEFAULT_IDLE_TIMEOUT_MS + 1 }),
     );
 
     expect(closed).toHaveLength(0);
