@@ -1098,10 +1098,10 @@ describe('stdio integration', () => {
         stats,
         sessionId,
         waitForSessionId,
-        reportTokens: () =>
+        reportTokens: (extra: Record<string, unknown> = {}) =>
           client.callTool({
             name: 'nr_observe_report_tokens',
-            arguments: { input_tokens: 100, output_tokens: 50, model: 'claude-sonnet-5' },
+            arguments: { input_tokens: 100, output_tokens: 50, model: 'claude-sonnet-5', ...extra },
           }),
         waitForCheckpoint: async (id: string): Promise<boolean> => {
           for (let i = 0; i < 20 && !store.loadSession(id); i++) {
@@ -1144,6 +1144,25 @@ describe('stdio integration', () => {
         expect(engine.stderr()).not.toContain('breadcrumb poll');
       } finally {
         await engine.close();
+      }
+    }, 30000);
+
+    it('hands an engine configured as MCP_CLIENT=Cursor, with no hook installed, the hook-recorded report tool', async () => {
+      const home = mkdtempSync(join(tmpdir(), 'nr-engine-cursor-home-'));
+      const engine = await startEngine({ MCP_CLIENT: 'Cursor', HOME: home, USERPROFILE: home });
+      try {
+        await engine.connect();
+        const result = await engine.reportTokens({ report_id: 'cursor-report-1' });
+        const content = result.content as Array<{ type: string; text: string }>;
+        expect(JSON.parse(content[0]?.text ?? '{}')).toMatchObject({
+          recorded_by: 'hook',
+          report_id: 'cursor-report-1',
+          hooks_detected: false,
+          message: expect.stringContaining("Preflight's hook was not detected"),
+        });
+      } finally {
+        await engine.close();
+        rmSync(home, { recursive: true, force: true });
       }
     }, 30000);
 
