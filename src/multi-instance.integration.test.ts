@@ -554,7 +554,7 @@ describe('AiCodingTask emission in cloud mode', () => {
   function seedToolCalls(
     sessionId: string,
     count: number,
-    tool: 'Bash' | 'Read' | 'AskUserQuestion' = 'Bash',
+    tool: 'Bash' | 'Read' | 'AskUserQuestion' | 'Skill' = 'Bash',
   ): void {
     const bufferPath = resolve(storage, `buffer-${sessionId}.jsonl`);
     const base = Date.now() - 1000;
@@ -567,7 +567,12 @@ describe('AiCodingTask emission in cloud mode', () => {
           mode: 'pre',
           timestamp: base + 2 * i,
           inputSize: 16,
-          toolInput: tool === 'Read' ? { file_path: '/fake/same.ts' } : { command: `echo ${i}` },
+          toolInput:
+            tool === 'Read'
+              ? { file_path: '/fake/same.ts' }
+              : tool === 'Skill'
+                ? { skill: 'lint' }
+                : { command: `echo ${i}` },
         }) + '\n',
       );
       appendToHookBuffer(
@@ -646,6 +651,24 @@ describe('AiCodingTask emission in cloud mode', () => {
     }
 
     expect(capturedTasks()).toHaveLength(1);
+  }, 60_000);
+
+  it('sends a skill run still open at shutdown as one AiWorkUnit', async () => {
+    const child = startCloudEngine(3_600_000, jobDir);
+    try {
+      await waitForBoot(child, BOOT_TIMEOUT_MS);
+      await initialize(child);
+      seedToolCalls(SESSION, 1, 'Skill');
+      seedToolCalls(SESSION, 1);
+      await waitForStats(child, 2, TOOLS_CALL_TIMEOUT_MS);
+    } finally {
+      child.proc.stdin.end();
+      await waitExit(child, 8000);
+    }
+
+    expect(capturedEvents('AiWorkUnit')).toMatchObject([
+      { skill_name: 'lint', tool_call_count: 2 },
+    ]);
   }, 60_000);
 
   it("sends only the adopted session's tasks that closed before the session resolved", async () => {
