@@ -309,7 +309,11 @@ test.describe('store with one session', () => {
         }),
       );
       await page.goto('/sessions');
-      await page.getByRole('button', { name: 'Why this is an estimate' }).hover();
+      await page
+        .getByText('Workflow spend', { exact: true })
+        .locator('..')
+        .getByRole('button', { name: 'Why this is an estimate' })
+        .hover();
       const box = await page.getByRole('tooltip').boundingBox();
       expect(box).not.toBeNull();
       expect(box!.x).toBeGreaterThanOrEqual(0);

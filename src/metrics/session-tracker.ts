@@ -203,6 +203,8 @@ export class SessionTracker implements Resettable {
   private readonly toolNameByCountedKey = new Map<string, string>();
   /** What getMetrics() shows until this engine adopts a session, which some engines never do. */
   private drainedWhilePending: SessionTracker | null;
+  /** Set by a pending or adopted id, whose engine also drains other sessions' calls. */
+  private countsOnlyOwnSession: boolean;
 
   constructor(sessionId: string, maxAmendable = 0) {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
@@ -213,15 +215,19 @@ export class SessionTracker implements Resettable {
     this.sessionId = sessionId;
     this.sessionStartTime = Date.now();
     this.maxAmendable = maxAmendable;
-    this.drainedWhilePending = sessionId.startsWith('pending-')
+    this.countsOnlyOwnSession = sessionId.startsWith('pending-');
+    this.drainedWhilePending = this.countsOnlyOwnSession
       ? new SessionTracker('drained-while-pending', maxAmendable)
       : null;
   }
 
   recordToolCall(record: ToolCallRecord): void {
     this.drainedWhilePending?.recordToolCall(record);
-    // A pending engine drains every session; adoptSessionId() replays its own.
-    if (record.sessionId && this.sessionId.startsWith('pending-')) return;
+    // A pending engine drains every session, and after adoption its scoped store still
+    // takes its own claims of other buffers; adoptSessionId() replays its own records.
+    if (record.sessionId && this.countsOnlyOwnSession && record.sessionId !== this.sessionId) {
+      return;
+    }
     if (record.toolUseId) {
       const key = countedKey(record.sessionId ?? this.sessionId, record.toolUseId);
       if (this.toolNameByCountedKey.has(key)) return;
@@ -493,6 +499,7 @@ export class SessionTracker implements Resettable {
     }
     if (replacingGuess) this.clearCounts();
     this.drainedWhilePending = null;
+    this.countsOnlyOwnSession = true;
     this.sessionId = sessionId;
     for (const record of records) this.recordToolCall(record);
   }
@@ -534,6 +541,7 @@ export class SessionTracker implements Resettable {
       throw new Error('SessionTracker.reset() requires a non-empty sessionId');
     }
     this.drainedWhilePending = null;
+    this.countsOnlyOwnSession = sessionId.startsWith('pending-');
     this.sessionId = sessionId;
     this.sessionName = null;
     this.sessionNameSource = null;
