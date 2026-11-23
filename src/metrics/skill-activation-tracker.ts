@@ -79,8 +79,14 @@ export class SkillActivationTracker implements Resettable {
   }
 
   /** Remembers the run open as a call starts, for its record to carry. */
-  recordToolStart(sessionId: string | null | undefined, toolUseId: string): void {
-    this.runAtStart.set(startKey(sessionId, toolUseId), this.openRun(sessionId));
+  recordToolStart(
+    sessionId: string | null | undefined,
+    toolUseId: string,
+    timestamp: number,
+  ): void {
+    const sessionKey = sessionId ?? NULL_SESSION_KEY;
+    const open = this.idleGapEnds(sessionKey, timestamp) ? null : this.openRun(sessionId);
+    this.runAtStart.set(startKey(sessionId, toolUseId), open);
   }
 
   recordToolCall(record: ToolCallRecord): SkillStamp | null {
@@ -142,19 +148,25 @@ export class SkillActivationTracker implements Resettable {
     record: ToolCallRecord,
   ): void {
     if (this.promptedSessions.has(sessionKey)) return;
-    const last = this.lastActivity.get(sessionKey);
     const open = runs.get(MAIN_AGENT_KEY);
     if (
       open &&
       (record.agentId ?? MAIN_AGENT_KEY) === MAIN_AGENT_KEY &&
-      last !== undefined &&
-      record.timestamp - last > DEFAULT_IDLE_TIMEOUT_MS
+      this.idleGapEnds(sessionKey, record.timestamp)
     ) {
       runs.set(MAIN_AGENT_KEY, null);
       this.options.onRunIdleClosed?.(open, record.timestamp);
     }
+    const last = this.lastActivity.get(sessionKey);
     const end = record.timestamp + (record.durationMs ?? 0);
     if (last === undefined || end > last) this.lastActivity.set(sessionKey, end);
+  }
+
+  /** Whether main-agent activity at `timestamp` ends an idle gap in a session that has sent no prompt. */
+  private idleGapEnds(sessionKey: string, timestamp: number): boolean {
+    if (this.promptedSessions.has(sessionKey)) return false;
+    const last = this.lastActivity.get(sessionKey);
+    return last !== undefined && timestamp - last > DEFAULT_IDLE_TIMEOUT_MS;
   }
 
   /** Closes the main agent's run and returns the slash run it opens, if any. */

@@ -2994,6 +2994,7 @@ describe('HookEventProcessor', () => {
           onRecord: (record) => {
             stamped.push({ tool: record.toolName, skill: tracker.recordToolCall(record)?.name });
           },
+          onPreToolUse: (e) => tracker.recordToolStart(e.sessionId, e.toolUseId!, e.timestamp),
           onUserPromptSubmit: (f) => tracker.recordPrompt(f.sessionId, f.slashCommand ?? null),
         });
         const prompt = (timestamp: number): UserPromptSubmitHookEvent =>
@@ -3063,7 +3064,7 @@ describe('HookEventProcessor', () => {
       const processor = new HookEventProcessor({
         store,
         onRecord: (record) => stamped.push(tracker.recordToolCall(record)?.name),
-        onPreToolUse: (e) => tracker.recordToolStart(e.sessionId, e.toolUseId!),
+        onPreToolUse: (e) => tracker.recordToolStart(e.sessionId, e.toolUseId!, e.timestamp),
         onUserPromptSubmit: (f) => tracker.recordPrompt(f.sessionId, f.slashCommand ?? null),
       });
 
