@@ -97,7 +97,7 @@ Each `MCP_CLIENT === '<name>'` or `NEW_RELIC_AI_PLATFORM === '<name>'` check bel
 
 ## Windsurf (`windsurf`)
 
-**Mechanism:** Windsurf's real Cascade Hooks system (`.windsurf/hooks.json`) — [docs.windsurf.com/windsurf/cascade/hooks](https://docs.windsurf.com/windsurf/cascade/hooks). Not a file watcher or extension API. Windsurf also supports MCP natively via `mcp_config.json`.
+**Mechanism:** Windsurf's real Cascade Hooks system (`.windsurf/hooks.json`) — [docs.windsurf.com/de/windsurf/cascade/hooks](https://docs.windsurf.com/de/windsurf/cascade/hooks). Not a file watcher or extension API. Windsurf also supports MCP natively via `mcp_config.json`.
 
 **Detection (`isSupported()`):** `WINDSURF_SESSION_ID` set, or `WINDSURF_CONTEXT_ID` set, or `MCP_CLIENT === 'windsurf'`.
 
@@ -114,7 +114,7 @@ Each `MCP_CLIENT === '<name>'` or `NEW_RELIC_AI_PLATFORM === '<name>'` check bel
 1. Windsurf Settings → MCP Servers → add server, command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, `NR_AI_MODE=cloud`
 2. MCP tool calls via Cascade are captured automatically through the MCP connection
 3. Built-in tool calls (file reads/writes, terminal commands) and self-reported tokens require Cascade Hooks — create `.windsurf/hooks.json` (or `~/.codeium/windsurf/hooks.json`) and register `pre_read_code`, `post_read_code`, `pre_write_code`, `post_write_code`, `pre_run_command`, `post_run_command`, `post_mcp_tool_use`, each running `preflight-collector`. Register the MCP server under a key that contains `preflight`.
-4. See [docs.windsurf.com/windsurf/cascade/hooks](https://docs.windsurf.com/windsurf/cascade/hooks) for the full schema
+4. See [docs.windsurf.com/de/windsurf/cascade/hooks](https://docs.windsurf.com/de/windsurf/cascade/hooks) for the full schema
 
 ---
 
@@ -602,6 +602,7 @@ Antigravity's hook payloads have **no field naming the event type at all**, and 
 - **`PostToolUse` carries no output content/exit-code field at all** (only `toolCall`/`stepIdx`/`error`) — `toolOutput` metadata (e.g. Bash exit codes) can never be populated for Antigravity, a platform limitation, not an implementation gap.
 - **The Antigravity SDK (Python, for building custom agents on Antigravity's own runtime) is out of scope** — it documents MCP support but no interactive hooks surface of its own.
 - **No confirmed ambient env var** — detection is explicit-opt-in only (`MCP_CLIENT=antigravity`).
+- **Self-reported cost is not recorded while the engine is pending.** Antigravity's docs do not say its hooks fire for MCP tools, and `tools/call` carries no documented conversation id, so a report cannot be routed to its own conversation. The adapter declares no `tokenReportHook`, and a pending engine does not list `nr_observe_report_tokens`.
 
 **Setup:**
 
