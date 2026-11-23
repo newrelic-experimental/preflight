@@ -1105,6 +1105,8 @@ describe('stdio integration', () => {
       };
       return {
         storagePath,
+        sanitizedCwd,
+        cwd: realpathSync(projectCwd),
         writeCrumb,
         stats,
         sessionId,
@@ -1174,6 +1176,48 @@ describe('stdio integration', () => {
       } finally {
         await engine.close();
         rmSync(home, { recursive: true, force: true });
+      }
+    }, 30000);
+
+    it('lets a Codex engine adopt its unstamped hook run inside a Claude Code shell, and keeps Claude Code off it', async () => {
+      const engine = await startEngine({ MCP_CLIENT: 'codex' });
+      try {
+        await engine.connect();
+        const hook = spawnSync(
+          'node',
+          [resolve(__dirname, '..', 'dist', 'hooks', 'collector-script.js'), 'pre-tool'],
+          {
+            input: JSON.stringify({
+              session_id: 'codex-session-id',
+              cwd: engine.cwd,
+              hook_event_name: 'PreToolUse',
+              tool_name: 'Bash',
+              tool_input: { command: 'ls' },
+              tool_use_id: 'toolu_codex',
+            }),
+            env: {
+              ...envWithoutTerminalPlatform({
+                CLAUDECODE: '1',
+                CLAUDE_CODE_SESSION_ID: 'claude-session-id',
+              }),
+              NEW_RELIC_AI_MCP_STORAGE_PATH: engine.storagePath,
+            },
+            timeout: 5000,
+          },
+        );
+        expect(hook.status).toBe(0);
+        expect(await engine.waitForSessionId('codex-session-id')).toBe('codex-session-id');
+        expect(
+          existsSync(
+            resolve(
+              breadcrumbRoot(engine.storagePath, 'claude-code'),
+              'session-by-cwd',
+              `${engine.sanitizedCwd}.txt`,
+            ),
+          ),
+        ).toBe(false);
+      } finally {
+        await engine.close();
       }
     }, 30000);
 
