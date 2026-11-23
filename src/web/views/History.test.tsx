@@ -1554,7 +1554,7 @@ describe('History — Tools table cost/token columns', () => {
 
     expect(
       screen.getByText(
-        'Cost/token breakdown only available for 3 of 4 sessions in this window — older sessions predate per-tool attribution.',
+        'Tool calls, cost and tokens only count 3 of 4 sessions in this window — older sessions predate per-tool attribution.',
       ),
     ).toBeInTheDocument();
   });
@@ -1583,14 +1583,15 @@ describe('History — Tools table cost/token columns', () => {
     expect(within(toolsTable).getAllByRole('row')).toHaveLength(3);
   });
 
-  it('keeps the calls-only rows when the windowed response has no attributed tools', async () => {
+  it('shows no Tools rows when the windowed response has no tools, rather than start-date calls', async () => {
     renderHistory({
       costPerTool: { ...SAMPLE_COST_PER_TOOL, costByToolType: {}, attributedSessionCount: 0 },
     });
-    const panel = findPanel("What's contributing to your spend");
     await waitFor(() =>
-      expect(within(findToolsTable(panel)).getByRole('cell', { name: 'Bash' })).toBeInTheDocument(),
+      expect(screen.getByText(/only count 0 of 4 sessions in this window/)).toBeInTheDocument(),
     );
+    const panel = findPanel("What's contributing to your spend");
+    expect(within(panel).queryByText('Tools', { selector: 'h4' })).toBeNull();
   });
 
   it('omits the coverage caveat when every session in the window has attribution data', async () => {

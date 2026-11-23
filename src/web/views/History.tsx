@@ -379,11 +379,10 @@ export function History(): JSX.Element {
   const modelPerf = aggregateModelPerformance(windowSessions);
   const modelPerfTotalCost = modelPerf.reduce((sum, m) => sum + m.totalCost, 0);
   const windowedToolCost = costPerTool.data?.costByToolType;
-  const toolTableRows =
-    windowedToolCost && Object.keys(windowedToolCost).length > 0
-      ? buildWindowedToolTableRows(windowedToolCost)
-      : buildToolTableRows(windowSessions, windowedToolCost);
-  const toolCostAvailable = costPerTool.data?.costByToolType !== undefined;
+  const toolTableRows = windowedToolCost
+    ? buildWindowedToolTableRows(windowedToolCost)
+    : buildToolTableRows(windowSessions);
+  const toolCostAvailable = windowedToolCost !== undefined;
   // attribution.buckets.tool is a recently-added persisted field — most
   // historical sessions in the window predate it and simply lack it, so the
   // Tools table's cost/token columns go sparse the further back the window
@@ -393,7 +392,7 @@ export function History(): JSX.Element {
     attributedSessionCount !== undefined &&
     totalSessionCount !== undefined &&
     attributedSessionCount < totalSessionCount
-      ? `Cost/token breakdown only available for ${attributedSessionCount} of ${totalSessionCount} sessions in this window — older sessions predate per-tool attribution.`
+      ? `Tool calls, cost and tokens only count ${attributedSessionCount} of ${totalSessionCount} sessions in this window — older sessions predate per-tool attribution.`
       : null;
   const kpis = computeHistoryKpis(windowSessions);
 

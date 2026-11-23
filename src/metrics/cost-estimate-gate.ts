@@ -16,10 +16,7 @@ export interface CostEstimateParams {
  * session's call (drained by `--local`, or by a provisional `--stdio` engine
  * before its session id resolves) would be persisted under the wrong session.
  *
- * Ownership is decided by identity against the live session id. A provisional
- * engine's own calls drained before adopt carry the real id while the process
- * id is still `pending-`, so they get no estimate and are never replayed; the
- * undercount is bounded to calls before the first token report.
+ * Ownership is decided by identity against the live session id.
  * See #877.
  */
 export function shouldApplyCostEstimate(params: CostEstimateParams): boolean {
@@ -39,17 +36,10 @@ export function isOwnSessionRecord(recordSessionId: string | null, ownSessionId:
   return recordSessionId === null || recordSessionId === ownSessionId;
 }
 
-/**
- * Whether a token event's cost belongs to this process's session rather than
- * only to that session's rollup. A `--stdio` engine persists its process-wide
- * `CostTracker` total as its own session's cost, and stamps its own session id
- * on every `AiTurnCost` it emits, so another session's token event must feed
- * neither. `--local` owns no single session and keeps everything.
- */
-export function isTokenEventForThisProcess(params: {
+export function isForThisProcess(params: {
   readonly stdio: boolean;
-  readonly eventSessionId: string | null;
+  readonly sessionId: string | null;
   readonly ownSessionId: string;
 }): boolean {
-  return !params.stdio || isOwnSessionRecord(params.eventSessionId, params.ownSessionId);
+  return !params.stdio || isOwnSessionRecord(params.sessionId, params.ownSessionId);
 }

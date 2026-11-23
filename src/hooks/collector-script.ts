@@ -200,9 +200,49 @@ function sizeOf(value: unknown): number {
   }
 }
 
+const TRUNCATED = '...[truncated]';
+
 function truncate(value: string, maxLen: number): string {
   if (value.length <= maxLen) return value;
-  return value.slice(0, maxLen) + '...[truncated]';
+  return value.slice(0, maxLen) + TRUNCATED;
+}
+
+// Redacts each string, keys included, before JSON encoding, so an escape the encoding adds
+// (\n, \u001b, \") cannot hide a secret from the pass, and before the cap, so the cut cannot shorten
+// a secret below its pattern. A string is stored as itself and any other value as its JSON. Strings
+// that start past the cap are replaced unread by the truncation marker; redaction can shorten what
+// comes before them, so the marker can land inside the cap. Each string costs at least its length
+// plus its two quotes. Values and keys each count toward their own cap, because serialization visits
+// each kind in order. Keys that redact to the same text are numbered so no entry is dropped.
+function recordedContent(value: unknown, maxLen: number): string {
+  const redactUpTo = (): ((text: string) => string) => {
+    let left = maxLen;
+    return (text) => {
+      const kept = left > 0 ? redact(text) : TRUNCATED;
+      left -= text.length + 2;
+      return kept;
+    };
+  };
+  const redactValue = redactUpTo();
+  const redactKey = redactUpTo();
+  const content =
+    typeof value === 'string'
+      ? redactValue(value)
+      : JSON.stringify(value, (_key, v: unknown) => {
+          if (typeof v === 'string') return redactValue(v);
+          if (v === null || typeof v !== 'object' || Array.isArray(v)) return v;
+          const keys = new Set<string>();
+          return Object.fromEntries(
+            Object.entries(v).map(([k, x]) => {
+              const base = redactKey(k);
+              let key = base;
+              for (let n = 2; keys.has(key); n++) key = `${base} (${n})`;
+              keys.add(key);
+              return [key, x];
+            }),
+          );
+        });
+  return truncate(content, maxLen);
 }
 
 function countLines(text: string): number {
@@ -353,6 +393,13 @@ function writePpidBreadcrumb(sessionId: string, root: string, legacyRoot?: strin
   }
 }
 
+function writeSessionIdBreadcrumb(sessionId: string, root: string): void {
+  if (!SESSION_ID_RE.test(sessionId)) return;
+  try {
+    writeOrTouch(resolve(root, 'session-by-id'), `${sessionId}.txt`, sessionId);
+  } catch {}
+}
+
 function writeCwdBreadcrumb(
   sessionId: string,
   cwd: string | undefined,
@@ -494,7 +541,7 @@ interface HookInput {
   file_path?: string;
   content?: string;
   edits?: { old_string?: string; new_string?: string }[];
-  // Windsurf (https://docs.windsurf.com/windsurf/cascade/hooks) sends a
+  // Windsurf (https://docs.windsurf.com/de/windsurf/cascade/hooks) sends a
   // completely different envelope from every other platform: the event name
   // itself is `agent_action_name`, not `hook_event_name`, and all
   // event-specific data lives nested under `tool_info` rather than flat
@@ -816,7 +863,7 @@ function extractOutputMeta(
 
 /**
  * Windsurf nests all event-specific data under `tool_info` instead of flat
- * top-level fields (https://docs.windsurf.com/windsurf/cascade/hooks).
+ * top-level fields (https://docs.windsurf.com/de/windsurf/cascade/hooks).
  * Returns an empty object when tool_info is missing or malformed so callers
  * can destructure without null checks.
  */
@@ -847,7 +894,7 @@ function processHook(raw: string, cliEvent?: string): void {
   // conversation_id is its closest analog (one per chat, like a Claude Code
   // session). Claude Code and Kiro always send session_id, so this only
   // takes effect for Cursor events.
-  // Windsurf (https://docs.windsurf.com/windsurf/cascade/hooks) never sends
+  // Windsurf (https://docs.windsurf.com/de/windsurf/cascade/hooks) never sends
   // session_id either — trajectory_id is its closest analog, the same role
   // conversation_id plays for Cursor.
   // Antigravity (https://antigravity.google/docs/hooks) never sends
@@ -880,6 +927,7 @@ function processHook(raw: string, cliEvent?: string): void {
       }
     }
     const tagged = breadcrumbRoot(storageDir, writer);
+    writeSessionIdBreadcrumb(data.session_id, tagged);
     writePpidBreadcrumb(data.session_id, tagged, storageDir);
     writeCwdBreadcrumb(data.session_id, data.cwd, tagged, storageDir);
   }
@@ -890,7 +938,7 @@ function processHook(raw: string, cliEvent?: string): void {
   // spellings here (this file intentionally has no platform-adapter import —
   // see the file's own "no heavy imports" design constraint).
   // Windsurf sends the event name as agent_action_name, not hook_event_name
-  // (https://docs.windsurf.com/windsurf/cascade/hooks) — already lowercase
+  // (https://docs.windsurf.com/de/windsurf/cascade/hooks) — already lowercase
   // with underscores (e.g. "pre_read_code"), but .toLowerCase() is harmless
   // and keeps this line uniform with every other platform's derivation.
   const eventName = (data.hook_event_name ?? data.agent_action_name)?.toLowerCase();
@@ -935,7 +983,12 @@ function processHook(raw: string, cliEvent?: string): void {
   // Both Antigravity branches spread this, so a pre and its post agree on
   // whether they carry a toolUseId: HookEventProcessor pairs a post by its
   // toolUseId whenever it has one, and a pre without one is keyed by a UUID.
-  const agyToolUseId = typeof data.stepIdx === 'number' ? { toolUseId: String(data.stepIdx) } : {};
+  // stepIdx counts within one conversation, so the id leads with the
+  // conversation to stay unique for an engine that drains several.
+  const agyToolUseId =
+    typeof data.stepIdx === 'number'
+      ? { toolUseId: sessionId ? `${sessionId}:${data.stepIdx}` : String(data.stepIdx) }
+      : {};
 
   let event: Record<string, unknown>;
   let selfReportCall: HookReportCall | undefined;
@@ -954,9 +1007,7 @@ function processHook(raw: string, cliEvent?: string): void {
     if (inputMeta !== undefined) event.toolInput = inputMeta;
 
     if (recordContent && data.tool_input !== undefined) {
-      const content =
-        typeof data.tool_input === 'string' ? data.tool_input : JSON.stringify(data.tool_input);
-      event.inputContent = redact(truncate(content, maxContentLen));
+      event.inputContent = recordedContent(data.tool_input, maxContentLen);
     }
   } else if (eventName === 'posttooluse') {
     // Claude Code generally signals tool failure via a separate
@@ -1021,9 +1072,7 @@ function processHook(raw: string, cliEvent?: string): void {
     if (outputMeta !== undefined) event.toolOutput = outputMeta;
 
     if (recordContent && toolResponse !== undefined) {
-      const content =
-        typeof toolResponse === 'string' ? toolResponse : JSON.stringify(toolResponse);
-      event.outputContent = redact(truncate(content, maxContentLen));
+      event.outputContent = recordedContent(toolResponse, maxContentLen);
     }
   } else if (eventName === 'posttoolusefailure') {
     event = {
@@ -1078,9 +1127,7 @@ function processHook(raw: string, cliEvent?: string): void {
     if (inputMeta !== undefined) event.toolInput = inputMeta;
 
     if (recordContent && data.tool_input !== undefined) {
-      const content =
-        typeof data.tool_input === 'string' ? data.tool_input : JSON.stringify(data.tool_input);
-      event.inputContent = redact(truncate(content, maxContentLen));
+      event.inputContent = recordedContent(data.tool_input, maxContentLen);
     }
   } else if (eventName === 'aftertool') {
     // Gemini CLI has no tool_response.success boolean (unlike Kiro/Amazon Q) —
@@ -1109,11 +1156,7 @@ function processHook(raw: string, cliEvent?: string): void {
     if (outputMeta !== undefined) event.toolOutput = outputMeta;
 
     if (recordContent && data.tool_response !== undefined) {
-      const content =
-        typeof data.tool_response === 'string'
-          ? data.tool_response
-          : JSON.stringify(data.tool_response);
-      event.outputContent = redact(truncate(content, maxContentLen));
+      event.outputContent = recordedContent(data.tool_response, maxContentLen);
     }
   } else if (eventName === 'beforeshellexecution') {
     // Cursor's shell hooks carry no tool_name field — the event name itself
@@ -1188,7 +1231,7 @@ function processHook(raw: string, cliEvent?: string): void {
     // buffer unless recordContent is enabled, same as Claude Code's existing
     // tool_response/tool_input content handling.
     if (recordContent && data.content !== undefined) {
-      event.outputContent = redact(truncate(data.content, maxContentLen));
+      event.outputContent = recordedContent(data.content, maxContentLen);
     }
   } else if (eventName === 'afterfileedit') {
     // Cursor has no "beforeFileEdit" event — afterFileEdit is post-only,
@@ -1202,7 +1245,7 @@ function processHook(raw: string, cliEvent?: string): void {
       ...(data.file_path !== undefined && { toolInput: { file_path: data.file_path } }),
     };
   } else if (eventName === 'pre_read_code') {
-    // Confirmed payload: https://docs.windsurf.com/windsurf/cascade/hooks#pre_read_code
+    // Confirmed payload: https://docs.windsurf.com/de/windsurf/cascade/hooks#pre_read_code
     const filePath = getWindsurfToolInfo(data).file_path;
     event = {
       mode: 'pre' as const,
@@ -1246,7 +1289,7 @@ function processHook(raw: string, cliEvent?: string): void {
       ...(typeof filePath === 'string' && { toolInput: { file_path: filePath } }),
     };
   } else if (eventName === 'pre_run_command') {
-    // Confirmed payload: https://docs.windsurf.com/windsurf/cascade/hooks#pre_run_command
+    // Confirmed payload: https://docs.windsurf.com/de/windsurf/cascade/hooks#pre_run_command
     const commandLineRaw = getWindsurfToolInfo(data).command_line;
     const commandLine = typeof commandLineRaw === 'string' ? commandLineRaw : '';
     event = {
@@ -1316,7 +1359,7 @@ function processHook(raw: string, cliEvent?: string): void {
     if (inputMeta !== undefined) event.toolInput = inputMeta;
 
     if (recordContent && data.toolCall?.args !== undefined) {
-      event.inputContent = redact(truncate(JSON.stringify(data.toolCall.args), maxContentLen));
+      event.inputContent = recordedContent(data.toolCall.args, maxContentLen);
     }
   } else if (isAntigravityPost) {
     // Antigravity PostToolUse — carries the same `toolCall` as PreToolUse
@@ -1353,14 +1396,10 @@ function processHook(raw: string, cliEvent?: string): void {
     // (a safe closed enum), so both are gated behind recordContent.
     if (recordContent) {
       if (data.error_details !== undefined) {
-        const details =
-          typeof data.error_details === 'string'
-            ? data.error_details
-            : JSON.stringify(data.error_details);
-        event.errorDetails = redact(truncate(details, maxContentLen));
+        event.errorDetails = recordedContent(data.error_details, maxContentLen);
       }
       if (typeof data.last_assistant_message === 'string') {
-        event.lastAssistantMessage = redact(truncate(data.last_assistant_message, maxContentLen));
+        event.lastAssistantMessage = recordedContent(data.last_assistant_message, maxContentLen);
       }
     }
   } else if (eventName === 'sessionstart') {

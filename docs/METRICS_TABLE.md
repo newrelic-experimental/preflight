@@ -356,7 +356,7 @@ Emitted when a configured budget threshold is crossed (50%, 80%, 100%).
 - `80%` — first time spend reaches 80% of budget
 - `100%` — first time spend reaches or exceeds 100% of budget
 
-Each threshold fires only once per period; subsequent additions to spend do not re-fire. A `daily` period's thresholds reset at UTC midnight, although the daily spend itself is summed by local calendar day, a `weekly` period is an ISO week, and a `session` period never rolls over by itself. One cost update that jumps past several thresholds fires all of them together. When a session resumes after a restart, the session thresholds it had already crossed do not fire again. A restarted process starts its daily and weekly spend at the totals already saved, so the daily and weekly thresholds that spend crossed do not fire again either. A budget that is unset or `0` never fires.
+Each threshold fires only once per period; subsequent additions to spend do not re-fire. A `daily` period's thresholds reset at local midnight, the same local calendar day the daily spend is summed by. A `weekly` threshold re-arms once the rolling 7-day spend falls 10 percentage points below it, and a `session` period never rolls over by itself. One cost update that jumps past several thresholds fires all of them together. When a session resumes after a restart, the session thresholds it had already crossed do not fire again. A restarted process starts its daily and weekly spend at the totals already saved, so the daily and weekly thresholds that spend crossed do not fire again either. A budget that is unset or `0` never fires.
 
 Source: `src/transport/nr-ingest.ts`, `src/metrics/budget-tracker.ts`
 
@@ -435,6 +435,8 @@ Source: `src/transport/nr-ingest.ts` — `subagentTurnToNrEvent()`
 **What it is:** A summary of one subagent run (an `Agent` tool call) or one script-driven workflow run: its status, duration and how many agents it started. Script-driven runs also carry total tokens and cost; runs started through the Agent tool do not, so use `AiSubagentTurn` for their cost. Use it to compare workflows and to find ones that are slow or failing.
 
 Emitted for each `Agent`-tool run (`run_source: "agent_tool"`) when the call ends. An `Agent` call that outlives its 30-minute timeout can produce an `errored` row and later a `completed` row with the same `workflow_run_id`. For a script-driven run tracked by the on-disk `wf_*.json` watcher (`run_source: "script"`) it is emitted every time that file changes, including while the run is still in progress. Either way one run can produce several rows, so use the latest row per `workflow_run_id`.
+
+A background `Agent` call returns at launch, so its `tool_call_count` and `child_agent_count` count only the subagent calls that finished before then, usually none. Calls that finish later still appear on their own `AiToolCall` and `AiTurnCost` rows.
 
 | Field             | Type   | Description                                                                                                                                               |
 | ----------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -523,9 +525,9 @@ Source: `src/transport/nr-ingest.ts` — `observabilityHealthToNrEvent()`
 
 #### `AiRetryAlert`
 
-**What it is:** A warning that your assistant seems stuck, either repeating nearly identical calls to the same tool or failing repeatedly with it across its last few calls, with an estimate of the tokens wasted. Use it to catch thrashing loops early.
+**What it is:** A warning that your assistant seems stuck, either repeating a failed call to the same tool exactly or failing repeatedly with it across its last few calls, with an estimate of the tokens wasted. Use it to catch thrashing loops early.
 
-Emitted when `RetryDetector` flags a thrashing pattern in a tool's recent calls: they are highly similar (default similarity 0.8 or more), or every one of them failed. The defaults are at least 3 occurrences within a window of 5 calls.
+Emitted when `RetryDetector` flags a tool's recent calls as retries. It takes the first failed call and the calls after it, and flags them when every one failed or every one repeats the failed call's input exactly. Calls before the first failure never count. The defaults are at least 3 such calls within a window of 5 calls.
 
 | Field           | Type   | Description                                                                                                                                                                        |
 | --------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -98,8 +98,7 @@ export interface UsageInsightsReport {
 /**
  * Both windows keep every session with activity inside them and count only
  * its in-window share of cost and tokens. `rolling` (the default) is the last
- * `windowDays` local calendar days, today included; `today` is the local
- * calendar day of `nowMs`.
+ * `windowDays` local calendar days; `today` is the local calendar day of `nowMs`.
  */
 export type UsageInsightsOptions =
   | { readonly selection?: 'rolling'; readonly nowMs: number; readonly windowDays: number }
@@ -315,7 +314,7 @@ export function usageInsightsWindow(opts: UsageInsightsOptions): ActivityWindow 
     const startMs = localStartOfDay(opts.nowMs);
     return { startMs, endMs: localEndOfDay(startMs) };
   }
-  return lastDaysWindow(opts.windowDays, opts.nowMs);
+  return lastDaysWindow(opts.nowMs, opts.windowDays);
 }
 
 // Scales a session's in-window day costs to sum to `costUsd`. A session with

@@ -153,7 +153,7 @@ describe('computeUsageInsights', () => {
   });
 
   it("rows carry each session's in-window share, with its cost on the days it was spent", () => {
-    const windowStart = lastDaysWindow(7, NOW).startMs;
+    const windowStart = lastDaysWindow(NOW, 7).startMs;
     const resumed = NOW - 2 * DAY_MS;
     const report = computeUsageInsights(
       [
@@ -204,7 +204,7 @@ describe('computeUsageInsights', () => {
   });
 
   it('rows sum on in-window days to the total for a session with cost booked before the window', () => {
-    const windowStart = lastDaysWindow(7, NOW).startMs;
+    const windowStart = lastDaysWindow(NOW, 7).startMs;
     const firstDay = localDateKey(windowStart);
     const report = computeUsageInsights(
       [
@@ -314,6 +314,13 @@ describe('computeUsageInsights', () => {
       expect(report.sessionCount).toBe(1);
       expect(report.totalCostUsd).toBeCloseTo(2, 9);
       expect(report.totalTokens).toBe(100);
+    });
+
+    it('without costByDayUsd or any calls, subagent cost or timeline, counts none of its cost today', () => {
+      const unattributable = { toolCallCount: 0, timeline: [], estimatedCostUsd: 4 };
+      const report = today([makeSummary({ ...unattributable, startTime: TODAY_START - 1000 })]);
+      expect(report.totalCostUsd).toBe(0);
+      expect(report.totalTokens).toBe(0);
     });
 
     it.each([0, null])(

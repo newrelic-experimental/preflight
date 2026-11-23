@@ -2702,6 +2702,7 @@ describe('api-handler GET /api/cost-per-tool', () => {
       sessionId: 'attributed',
       startTime: Date.now() - 2 * 86_400_000,
       estimatedCostUsd: 1,
+      toolCallCount: 5,
       attribution: {
         buckets: {
           tool: { Read: { costUsd: 0.5, tokens: 200, count: 4, durationMs: 100 } },
@@ -2716,8 +2717,8 @@ describe('api-handler GET /api/cost-per-tool', () => {
       sessionId: 'unattributed',
       startTime: Date.now() - 3 * 86_400_000,
       estimatedCostUsd: 2,
+      toolCallCount: 1,
     };
-    let receivedSince: Date | undefined;
     const handler = createApiHandler({
       turnCostAttributor: {
         getMetrics: () => {
@@ -2730,8 +2731,7 @@ describe('api-handler GET /api/cost-per-tool', () => {
         },
         listSessions: () => [],
         loadSession: () => null,
-        loadAllSessions: (opts?: { since?: Date }) => {
-          receivedSince = opts?.since;
+        loadAllSessions: () => {
           return [attributedSession, unattributedSession];
         },
       } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
@@ -2740,9 +2740,6 @@ describe('api-handler GET /api/cost-per-tool', () => {
     const { res, status, body } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(200);
-    expect(receivedSince).toBeInstanceOf(Date);
-    // Reaches back a day before the window's first local midnight.
-    expect((receivedSince as Date).getTime()).toBeLessThan(localStartOfDay() - 6 * 86_400_000);
     const result = JSON.parse(body());
     expect(result.turns).toEqual([]);
     expect(result.costByToolType.Read).toEqual({
@@ -2766,7 +2763,6 @@ describe('api-handler GET /api/cost-per-tool', () => {
   });
 
   it('clamps ?days= to [1,90], same as GET /api/usage-insights', async () => {
-    let receivedSince: Date | undefined;
     const handler = createApiHandler({
       turnCostAttributor: {
         getMetrics: () => ({
@@ -2781,8 +2777,7 @@ describe('api-handler GET /api/cost-per-tool', () => {
         loadTodaySessions: () => [],
         listSessions: () => [],
         loadSession: () => null,
-        loadAllSessions: (opts?: { since?: Date }) => {
-          receivedSince = opts?.since;
+        loadAllSessions: () => {
           return [];
         },
       } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
@@ -2790,9 +2785,6 @@ describe('api-handler GET /api/cost-per-tool', () => {
     const req = { method: 'GET', url: '/api/cost-per-tool?days=9999' } as IncomingMessage;
     const { res, body } = fakeRes();
     await handler(req, res);
-    expect(receivedSince).toBeInstanceOf(Date);
-    const ageMs = Date.now() - (receivedSince as Date).getTime();
-    expect(ageMs).toBeGreaterThanOrEqual(90 * 86_400_000);
     const result = JSON.parse(body());
     expect(result.totalSessionCount).toBe(0);
     expect(result.attributedSessionCount).toBe(0);
@@ -2861,6 +2853,7 @@ describe('api-handler GET /api/usage-insights', () => {
             sessionId: 's1',
             startTime: Date.now() - 86_400_000,
             estimatedCostUsd: 2,
+            toolCallCount: 1,
             durationMs: 0,
             subagentCostUsd: 0,
             tokensInput: 0,
@@ -2884,14 +2877,12 @@ describe('api-handler GET /api/usage-insights', () => {
   });
 
   it('clamps the days parameter to [1,90]', async () => {
-    let receivedSince: Date | undefined;
     const handler = createApiHandler({
       sessionStore: {
         loadTodaySessions: () => [],
         listSessions: () => [],
         loadSession: () => null,
-        loadAllSessions: (opts?: { since?: Date }) => {
-          receivedSince = opts?.since;
+        loadAllSessions: () => {
           return [];
         },
       } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
@@ -2901,9 +2892,6 @@ describe('api-handler GET /api/usage-insights', () => {
     await handler(req, res);
     const result = JSON.parse(body());
     expect(result.windowDays).toBe(90);
-    expect(receivedSince).toBeInstanceOf(Date);
-    const ageMs = Date.now() - (receivedSince as Date).getTime();
-    expect(ageMs).toBeGreaterThanOrEqual(90 * 86_400_000);
   });
 
   it('clamps a sub-1 or non-numeric days parameter up to 1', async () => {
@@ -2976,6 +2964,33 @@ describe('api-handler GET /api/usage-insights', () => {
     expect(result.sessionCount).toBe(1);
     expect(result.totalCostUsd).toBe(2);
   });
+
+  it.each([
+    ['/api/usage-insights?window=today', 1],
+    ['/api/usage-insights?days=7', 7],
+    ['/api/cost-per-tool?days=7', 7],
+    ['/api/usage-insights?days=9999', 90],
+    ['/api/cost-per-tool?days=9999', 90],
+  ])(
+    '%s loads files written since its first local midnight, or dated a day before',
+    async (url, days) => {
+      jest.useFakeTimers({ now: new Date(2026, 5, 10, 15).getTime(), doNotFake: ['nextTick'] });
+      const loadAllSessions = jest.fn(() => []);
+      const handler = createApiHandler({
+        turnCostAttributor: {} as Parameters<typeof createApiHandler>[0]['turnCostAttributor'],
+        sessionStore: { loadAllSessions } as unknown as Parameters<
+          typeof createApiHandler
+        >[0]['sessionStore'],
+      });
+      await handler({ method: 'GET', url } as IncomingMessage, fakeRes().res);
+      jest.useRealTimers();
+      const startMs = new Date(2026, 5, 10 - (days - 1)).getTime();
+      expect(loadAllSessions).toHaveBeenCalledWith({
+        since: new Date(startMs - 86_400_000),
+        includeModifiedSince: new Date(startMs),
+      });
+    },
+  );
 
   it('window=today also loads older-dated session files modified since local midnight', async () => {
     let receivedOpts: { since?: Date; includeModifiedSince?: Date } | undefined;

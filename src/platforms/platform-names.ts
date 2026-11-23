@@ -33,10 +33,3 @@ const PLATFORM_BY_ALIAS = new Map<string, PlatformName>(
 export function canonicalPlatformName(name: string | undefined): PlatformName | undefined {
   return name ? PLATFORM_BY_ALIAS.get(aliasKey(name)) : undefined;
 }
-
-export function normalizeEngineEnv(env: NodeJS.ProcessEnv): void {
-  for (const key of ENGINE_ENV_KEYS) {
-    const name = canonicalPlatformName(env[key]);
-    if (name !== undefined) env[key] = name;
-  }
-}

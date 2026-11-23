@@ -1546,6 +1546,147 @@ describe('collector-script', () => {
       expect(event.outputContent).not.toContain('eyJhbGciOiJIUzI1NiJ9');
     });
 
+    describe('redacts each string before it is JSON-encoded', () => {
+      const SECRET = /hunter2|sekret/;
+
+      it.each([
+        '\x1b[32mcurl -u me:hunter2 x',
+        '\x1b[1mmysql -psekret db',
+        '\fcurl -u me:hunter2 x',
+        'curl -"u" me:hunter2 x',
+        'curl -u"" me:hunter2 x',
+        'curl -s"u" me:hunter2 x',
+        'curl -"t" hunter2 x',
+      ])('stores %j in content as its redacted command', (command) => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+        processHook(makePreToolUse({ tool_name: 'Bash', tool_input: { command } }));
+        processHook(
+          makePostToolUse({
+            tool_name: 'Bash',
+            tool_input: { command: 'make' },
+            tool_response: { stdout: command, stderr: '' },
+          }),
+        );
+
+        const [pre, post] = readBufferEvents();
+        const stored = (pre!.toolInput as { command: string }).command;
+        expect(stored).not.toMatch(SECRET);
+        expect(JSON.parse(pre!.inputContent as string)).toEqual({ command: stored });
+        expect(JSON.parse(post!.outputContent as string)).toEqual({ stdout: stored, stderr: '' });
+      });
+
+      const nested = {
+        steps: [{ run: '\x1b[32mcurl -u me:hunter2 x' }, 'curl -"u" me:hunter2 y'],
+        'mysql -psekret': 1,
+        env: 'export API_TOKEN="a b"',
+      };
+      const redacted = {
+        steps: [{ run: '\x1b[32mcurl [REDACTED] x' }, 'curl -"[REDACTED] y'],
+        'mysql [REDACTED]': 1,
+        env: 'export API_[REDACTED]',
+      };
+
+      it.each([
+        ['PreToolUse', makePreToolUse({ tool_input: nested }), 'inputContent'],
+        ['PostToolUse', makePostToolUse({ tool_response: nested }), 'outputContent'],
+        ['BeforeTool', makeGeminiBeforeTool({ tool_input: nested }), 'inputContent'],
+        ['AfterTool', makeGeminiAfterTool({ tool_response: nested }), 'outputContent'],
+        [
+          'Antigravity PreToolUse',
+          makeAntigravityPreToolUse({ toolCall: { name: 'run_command', args: nested } }),
+          'inputContent',
+        ],
+        ['StopFailure', makeStopFailure({ error_details: nested }), 'errorDetails'],
+      ])('in arrays, objects and keys of a %s payload', (_, payload, field) => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+        processHook(payload);
+
+        const content = readBufferEvents()[0]![field] as string;
+        expect(JSON.parse(content)).toEqual(redacted);
+      });
+
+      const capped = 'x'.repeat(240) + ' sk-' + 'a'.repeat(40);
+      const cursorRead = JSON.stringify({
+        hook_event_name: 'beforeReadFile',
+        conversation_id: 'conv-1',
+        generation_id: 'gen-1',
+        content: capped,
+        file_path: 'notes.txt',
+      });
+
+      it.each([
+        ['PostToolUse', makePostToolUse({ tool_response: { data: capped } }), 'outputContent'],
+        ['Cursor beforeReadFile', cursorRead, 'outputContent'],
+        [
+          'StopFailure',
+          makeStopFailure({ last_assistant_message: capped }),
+          'lastAssistantMessage',
+        ],
+      ])('redacts a secret that the length cap would cut short in a %s', (name, payload, field) => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
+
+        processHook(payload);
+
+        const text = 'x'.repeat(240) + ' [REDACTED]';
+        expect(readBufferEvents()[0]![field]).toBe(
+          name === 'PostToolUse'
+            ? JSON.stringify({ data: text }).slice(0, 256) + '...[truncated]'
+            : text,
+        );
+      });
+
+      it('numbers keys that redact to the same text so no entry is lost', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+        processHook(
+          makePostToolUse({
+            tool_response: {
+              'curl -u a:b': 1,
+              'curl -u c:d': 2,
+              'curl [REDACTED] (2)': 3,
+              'curl -u e:f': 4,
+            },
+          }),
+        );
+
+        expect(JSON.parse(readBufferEvents()[0]!.outputContent as string)).toEqual({
+          'curl [REDACTED]': 1,
+          'curl [REDACTED] (2)': 2,
+          'curl [REDACTED] (2) (2)': 3,
+          'curl [REDACTED] (3)': 4,
+        });
+      });
+
+      it('keeps a value inside the cap when a later key is longer than the cap', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
+
+        processHook(makePostToolUse({ tool_response: { a: 'value', ['k'.repeat(300)]: 1 } }));
+
+        expect(readBufferEvents()[0]!.outputContent).toMatch(/^\{"a":"value","kkk/);
+      });
+
+      it('marks a string past the cap as truncated when redaction pulls it inside', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
+        const pem =
+          '-----BEGIN PRIVATE KEY-----\n' + 'A'.repeat(300) + '\n-----END PRIVATE KEY-----';
+
+        processHook(
+          makePostToolUse({ tool_response: { a: pem, b: 'curl -u me:hunter2 x', c: 'tail' } }),
+        );
+
+        expect(JSON.parse(readBufferEvents()[0]!.outputContent as string)).toEqual({
+          a: '[REDACTED]',
+          b: '...[truncated]',
+          c: '...[truncated]',
+        });
+      });
+    });
+
     it('truncates content exceeding max length', () => {
       process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
       process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
@@ -2890,6 +3031,15 @@ describe('collector-script', () => {
     it('files a Claude Code hook under claude-code and in the untagged layout older servers read', () => {
       process.env.CLAUDECODE = '1';
       processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      const sessionCrumb = resolve(
+        tmpDir,
+        'breadcrumbs',
+        'claude-code',
+        'session-by-id',
+        'sess-claude.txt',
+      );
+      expect(readFileSync(sessionCrumb, 'utf-8')).toBe('sess-claude');
+      expect(existsSync(resolve(tmpDir, 'session-by-id'))).toBe(false);
       expect(readFileSync(crumbs('claude-code').ppid, 'utf-8')).toBe('sess-claude');
       expect(readFileSync(crumbs('claude-code').cwd, 'utf-8')).toBe('sess-claude');
       const legacyPpid = resolve(tmpDir, 'session-by-ppid', `${process.ppid}.txt`);
@@ -2911,6 +3061,32 @@ describe('collector-script', () => {
         if (reads.length > 0 && writer !== 'copilot-sdk') expect(reads).toContain(writer);
       },
     );
+
+    it('keeps another engine off a session whose ppid breadcrumbs are gone and whose tagged cwd breadcrumb a newer session replaced', () => {
+      const kiroStartedAt = Date.now() - 60_000;
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse({ session_id: 'sess-cc1', cwd: '/projects/test' }));
+      rmSync(resolve(tmpDir, 'session-by-ppid'), { recursive: true });
+      rmSync(dirname(crumbs('claude-code').ppid), { recursive: true });
+      writeFileSync(crumbs('claude-code').cwd, 'sess-cc2');
+      const kiro = sessionBreadcrumbs(tmpDir, ['kiro', 'unattributed'], kiroStartedAt);
+      expect(kiro.cwd('/projects/test')).toBeNull();
+    });
+
+    it("refreshes a session's id crumb on every hook and never files a malformed id", () => {
+      process.env.CLAUDECODE = '1';
+      const idDir = resolve(tmpDir, 'breadcrumbs', 'claude-code', 'session-by-id');
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      const old = new Date(Date.now() - 60_000);
+      utimesSync(resolve(idDir, 'sess-claude.txt'), old, old);
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(statSync(resolve(idDir, 'sess-claude.txt')).mtimeMs).toBeGreaterThan(
+        Date.now() - 5_000,
+      );
+      processHook(makePreToolUse({ session_id: '../escape', cwd: '/projects/test' }));
+      expect(readdirSync(idDir)).toEqual(['sess-claude.txt']);
+      expect(existsSync(resolve(idDir, '..', 'escape.txt'))).toBe(false);
+    });
 
     it('files a hook under the engine its command names, over an inherited Claude Code env', () => {
       process.env.CLAUDECODE = '1';
@@ -3448,7 +3624,7 @@ describe('collector-script', () => {
       const event = events[0]!;
       expect(event.mode).toBe('pre');
       expect(event.tool).toBe('run_command');
-      expect(event.toolUseId).toBe('19');
+      expect(event.toolUseId).toBe('agy-conv-001:19');
       expect(event.sessionId).toBe('agy-conv-001');
     });
 
@@ -3467,7 +3643,7 @@ describe('collector-script', () => {
       const event = events[0]!;
       expect(event.mode).toBe('post');
       expect(event.tool).toBe('run_command');
-      expect(event.toolUseId).toBe('19');
+      expect(event.toolUseId).toBe('agy-conv-001:19');
       expect(event.success).toBe(true);
     });
 
@@ -3480,6 +3656,44 @@ describe('collector-script', () => {
       const event = events[0]!;
       expect(event.success).toBe(false);
       expect(event.error).toBe('exit status 1');
+    });
+
+    it('pairs each conversation’s step with its own pre when one engine drains two conversations at the same step', () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      const records: ToolCallRecord[] = [];
+      const store = new LocalStore(tmpDir);
+      const engine = new HookEventProcessor({
+        store,
+        drainAllSessions: true,
+        onRecord: (r) => records.push(r),
+      });
+      const call = (conversationId: string, name: string) => ({
+        conversationId,
+        stepIdx: 3,
+        toolCall: { name, args: {} },
+      });
+
+      processHook(makeAntigravityPreToolUse(call('agy-conv-a', 'view_file')), 'PreToolUse');
+      processHook(makeAntigravityPreToolUse(call('agy-conv-b', 'run_command')), 'PreToolUse');
+      engine.processEvents(store.drainAllBuffers());
+      processHook(makeAntigravityPostToolUse(call('agy-conv-a', 'view_file')), 'PostToolUse');
+      processHook(makeAntigravityPostToolUse(call('agy-conv-b', 'run_command')), 'PostToolUse');
+      engine.processEvents(store.drainAllBuffers());
+
+      expect(records.map((r) => [r.sessionId, r.toolName, r.success]).sort()).toEqual([
+        ['agy-conv-a', 'view_file', true],
+        ['agy-conv-b', 'run_command', true],
+      ]);
+      expect(engine.pendingCount).toBe(0);
+    });
+
+    it('uses the bare stepIdx as the toolUseId when the payload has no conversationId', () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      processHook(makeAntigravityPreToolUse({ conversationId: undefined }), 'PreToolUse');
+
+      expect(readBufferLines('unknown')[0]!.toolUseId).toBe('19');
     });
 
     it('gives both events one minted toolUseId when stepIdx is not a number', () => {

@@ -1,4 +1,4 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { jest, describe, it, expect, beforeAll, beforeEach, afterEach } from '@jest/globals';
 import type { ChildProcess } from 'node:child_process';
 import {
   appendFileSync,
@@ -46,6 +46,7 @@ import type { ProxyToolCallRecord, ProxyRequestRecord } from './proxy/index.js';
 import type { NrIngestManager } from './transport/nr-ingest.js';
 import { UNFORWARDED_SESSIONS_HINT } from './transport/unforwarded-session-monitor.js';
 import { breadcrumbRoot } from './hooks/session-breadcrumbs.js';
+import { DRAINS_DIR, formatClaimName } from './storage/drain-claims.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -705,6 +706,16 @@ describe('startRetentionSweep()', () => {
     clearInterval(handle as NodeJS.Timeout);
   });
 
+  it('removes week-old self-report claims on start', () => {
+    mkdirSync(resolve(storagePath, 'self-reports', 'conv-old'), { recursive: true });
+    const oldClaim = writeOldFile('self-reports/conv-old', 'report-old-1-0123456789abcdef');
+
+    const handle = startRetentionSweep({ storagePath, retainSessionsDays: 90 });
+
+    expect(existsSync(oldClaim)).toBe(false);
+    clearInterval(handle as NodeJS.Timeout);
+  });
+
   it('re-runs the sweep every 6 hours', () => {
     const handle = startRetentionSweep({ storagePath, retainSessionsDays: 90 });
 
@@ -1098,10 +1109,10 @@ describe('stdio integration', () => {
         stats,
         sessionId,
         waitForSessionId,
-        reportTokens: () =>
+        reportTokens: (extra: Record<string, unknown> = {}) =>
           client.callTool({
             name: 'nr_observe_report_tokens',
-            arguments: { input_tokens: 100, output_tokens: 50, model: 'claude-sonnet-5' },
+            arguments: { input_tokens: 100, output_tokens: 50, model: 'claude-sonnet-5', ...extra },
           }),
         waitForCheckpoint: async (id: string): Promise<boolean> => {
           for (let i = 0; i < 20 && !store.loadSession(id); i++) {
@@ -1144,6 +1155,25 @@ describe('stdio integration', () => {
         expect(engine.stderr()).not.toContain('breadcrumb poll');
       } finally {
         await engine.close();
+      }
+    }, 30000);
+
+    it('hands an engine configured as MCP_CLIENT=Cursor, with no hook installed, the hook-recorded report tool', async () => {
+      const home = mkdtempSync(join(tmpdir(), 'nr-engine-cursor-home-'));
+      const engine = await startEngine({ MCP_CLIENT: 'Cursor', HOME: home, USERPROFILE: home });
+      try {
+        await engine.connect();
+        const result = await engine.reportTokens({ report_id: 'cursor-report-1' });
+        const content = result.content as Array<{ type: string; text: string }>;
+        expect(JSON.parse(content[0]?.text ?? '{}')).toMatchObject({
+          recorded_by: 'hook',
+          report_id: 'cursor-report-1',
+          hooks_detected: false,
+          message: expect.stringContaining("Preflight's hook was not detected"),
+        });
+      } finally {
+        await engine.close();
+        rmSync(home, { recursive: true, force: true });
       }
     }, 30000);
 
@@ -1684,7 +1714,14 @@ describe('stdio integration', () => {
 
   describe('an engine that adopts its session after draining others', () => {
     const storages: string[] = [];
+    let pausedPid: number | undefined;
     afterEach(() => {
+      if (pausedPid !== undefined) {
+        try {
+          process.kill(pausedPid, 'SIGCONT');
+        } catch {}
+        pausedPid = undefined;
+      }
       for (const dir of storages.splice(0)) rmSync(dir, { recursive: true, force: true });
     });
     const CHECKPOINT_OFTEN = { NR_AI_SESSION_PERSIST_INTERVAL_MS: '200' };
@@ -1700,22 +1737,22 @@ describe('stdio integration', () => {
       const env: NodeJS.ProcessEnv = { ...process.env, MCP_CLIENT: 'claude-code' };
       delete env.CLAUDE_JOB_DIR;
       const client = new Client({ name: 'test-client', version: '1.0.0' });
-      await connectToConfiguredEngine(
-        client,
-        new StdioClientTransport({
-          command: 'node',
-          args: [resolve(__dirname, '..', 'dist', 'index.js'), '--stdio'],
-          ...(cwd !== undefined && { cwd }),
-          env: {
-            ...env,
-            NR_AI_DASHBOARD_PORT: '0',
-            NR_AI_MODE: 'local',
-            NEW_RELIC_AI_MCP_STORAGE_PATH: storage,
-            ...envOverrides,
-          },
-        }),
-      );
-      return client;
+      const transport = new StdioClientTransport({
+        command: 'node',
+        args: [resolve(__dirname, '..', 'dist', 'index.js'), '--stdio'],
+        ...(cwd !== undefined && { cwd }),
+        env: {
+          ...env,
+          NR_AI_DASHBOARD_PORT: '0',
+          NR_AI_MODE: 'local',
+          NEW_RELIC_AI_MCP_STORAGE_PATH: storage,
+          ...envOverrides,
+        },
+      });
+      await connectToConfiguredEngine(client, transport);
+      const pid = transport.pid;
+      if (pid === null) throw new Error('engine has no pid: spawn failed');
+      return Object.assign(client, { pid });
     };
     let drainedCalls = 0;
     const drainCalls = async (storage: string, sessionId: string, count: number) => {
@@ -1861,6 +1898,199 @@ describe('stdio integration', () => {
       await waitFor(() => !existsSync(heartbeat));
 
       expect(savedField(storage, 'own-real-session', 'estimatedCostUsd')).toBeGreaterThan(0);
+    }, 30000);
+
+    const writeCall = (
+      storage: string,
+      sessionId: string | null,
+      toolUseId: string,
+      call: object,
+    ) => {
+      const event = { timestamp: Date.now(), ...(sessionId && { sessionId }), toolUseId, ...call };
+      const buffer = resolve(storage, `buffer-${sessionId ?? 'unknown'}.jsonl`);
+      appendToHookBuffer(buffer, JSON.stringify({ mode: 'pre', ...event }) + '\n');
+      appendToHookBuffer(buffer, JSON.stringify({ mode: 'post', ...event }) + '\n');
+    };
+    const toolResult = async (client: Client, name: string) => {
+      const result = await client.callTool({ name, arguments: {} });
+      return JSON.parse((result.content as Array<{ text: string }>)[0]!.text) as Record<
+        string,
+        unknown
+      >;
+    };
+
+    describe('its trackers after it adopts, having drained another session', () => {
+      const failingTest = { tool: 'Bash', toolInput: { command: 'npm test' }, success: false };
+      const ownRead = {
+        tool: 'Read',
+        toolInput: { file_path: '/own/a.ts' },
+        success: true,
+        inputSize: 4000,
+        outputSize: 4000,
+      };
+      let report: Record<string, Record<string, unknown>>;
+
+      beforeAll(async () => {
+        const storage = makeStorage();
+        const client = await startEngine(storage);
+        for (let n = 0; n < 3; n++)
+          writeCall(storage, 'other-real-session', `toolu_o${n}`, failingTest);
+        writeCall(storage, 'own-real-session', 'toolu_own', ownRead);
+        writeCall(storage, null, 'toolu_none', { tool: 'Grep', success: true });
+        const noSession = resolve(storage, 'buffer-unknown.jsonl');
+        await waitFor(
+          () =>
+            !existsSync(resolve(storage, 'buffer-other-real-session.jsonl')) &&
+            !existsSync(resolve(storage, 'buffer-own-real-session.jsonl')),
+        );
+        const heartbeat = resolve(storage, 'active-own-real-session.pid');
+        writeFileSync(
+          resolve(storage, 'session-by-ppid', `${process.pid}.txt`),
+          'own-real-session',
+        );
+        await waitFor(() => existsSync(heartbeat) && !existsSync(noSession));
+        await toolResult(client, 'nr_observe_mark_task_boundary');
+        report = {
+          latency: await toolResult(client, 'nr_observe_get_latency_percentiles'),
+          quality: await toolResult(client, 'nr_observe_get_quality_proxy'),
+          retry: await toolResult(client, 'nr_observe_get_retry_alerts'),
+          turns: await toolResult(client, 'nr_observe_get_turn_analysis'),
+          task: await toolResult(client, 'nr_observe_get_workflow_trace'),
+          cost: await toolResult(client, 'nr_observe_get_cost_breakdown'),
+        };
+        await client.close();
+        await waitFor(() => !existsSync(heartbeat));
+      }, 30000);
+
+      it('times its own call and the one with no session id', () => {
+        expect(report.latency.overall).toMatchObject({ count: 2 });
+      });
+
+      it('takes no quality signal from the other session', () => {
+        expect(report.quality.totalSignals).toBe(0);
+      });
+
+      it("raises no retry alert for the other session's repeats", () => {
+        expect(report.retry.totalAlertsEmitted).toBe(0);
+      });
+
+      it('puts only those two calls in a turn', () => {
+        const turns = report.turns.recentTurns as Array<{ toolCount: number }>;
+        expect(turns.map((t) => t.toolCount)).toEqual([2]);
+      });
+
+      it('closes a task holding only those two calls', () => {
+        const calls = report.task.tool_calls as Array<{ tool: string }>;
+        expect(calls.map((c) => c.tool).sort()).toEqual(['Grep', 'Read']);
+      });
+
+      it('prices none of the calls it drained while pending from their sizes', () => {
+        expect(report.cost.total_usd).toBe(0);
+      });
+    });
+
+    describe('its turns and tasks when it adopts after its own calls, tokens and boundaries', () => {
+      const own = 'own-real-session';
+      const base = Date.now() - 120_000;
+      const line = (storage: string, frame: object) =>
+        appendToHookBuffer(
+          resolve(storage, `buffer-${own}.jsonl`),
+          JSON.stringify({ sessionId: own, ...frame }) + '\n',
+        );
+      const burst = (storage: string, tool: string, at: number, inputTokens: number) => {
+        writeCall(storage, own, `toolu_${tool}`, { tool, timestamp: at, success: true });
+        line(storage, {
+          mode: 'token',
+          timestamp: at + 1_000,
+          messageId: `msg_${tool}`,
+          inputTokens,
+          outputTokens: 0,
+          model: 'claude-sonnet-5',
+        });
+      };
+      let turns: Array<{ toolNames: string[]; inputTokens: number }>;
+      let completedTasks: unknown[];
+      let skills: string[];
+
+      beforeAll(async () => {
+        const storage = makeStorage();
+        const client = await startEngine(storage);
+        const ownBuffer = resolve(storage, `buffer-${own}.jsonl`);
+        line(storage, { mode: 'user_prompt_submit', timestamp: base, slashCommand: 'own-skill' });
+        appendToHookBuffer(
+          resolve(storage, 'buffer-other-real-session.jsonl'),
+          JSON.stringify({
+            mode: 'user_prompt_submit',
+            sessionId: 'other-real-session',
+            timestamp: base,
+            slashCommand: 'other-skill',
+          }) + '\n',
+        );
+        burst(storage, 'Read', base + 100, 1_000);
+        line(storage, { mode: 'stop', timestamp: base + 1_500 });
+        line(storage, { mode: 'user_prompt_submit', timestamp: base + 10_000 });
+        burst(storage, 'Bash', base + 10_100, 2_000);
+        line(storage, { mode: 'stop', timestamp: base + 11_500 });
+        await waitFor(
+          () =>
+            !existsSync(ownBuffer) &&
+            !existsSync(resolve(storage, 'buffer-other-real-session.jsonl')),
+        );
+        const heartbeat = resolve(storage, `active-${own}.pid`);
+        writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), own);
+        await waitFor(() => existsSync(heartbeat));
+        burst(storage, 'Grep', base + 20_100, 3_000);
+        burst(storage, 'Glob', base + 30_100, 4_000);
+        await waitFor(() => !existsSync(ownBuffer));
+        const costPerTool = await toolResult(client, 'nr_observe_get_cost_per_tool');
+        turns = costPerTool.turns as typeof turns;
+        skills = Object.keys(costPerTool.costBySkill as object);
+        completedTasks = (await toolResult(client, 'nr_observe_get_cost_breakdown'))
+          .by_task as unknown[];
+        await client.close();
+        await waitFor(() => !existsSync(heartbeat));
+      }, 30000);
+
+      it('prices each burst with its own token report', () => {
+        expect(turns.map((t) => [t.toolNames, t.inputTokens])).toEqual([
+          [['Read'], 1_000],
+          [['Bash'], 2_000],
+          [['Grep'], 3_000],
+          [['Glob'], 4_000],
+        ]);
+      });
+
+      it('closes a task at each of its own Stops from before adoption', () => {
+        expect(completedTasks).toHaveLength(2);
+      });
+
+      it("counts its own slash-command run and not the other session's", () => {
+        expect(skills).toEqual(['own-skill']);
+      });
+    });
+
+    it('times each of its own calls once when it adopts its session mid-stream', async () => {
+      const storage = makeStorage();
+      const client = await startEngine(storage);
+      const heartbeat = resolve(storage, 'active-own-real-session.pid');
+      let n = 0;
+      const writer = setInterval(() => {
+        writeCall(storage, 'own-real-session', `toolu_${n++}`, { tool: 'Read', success: true });
+      }, 2);
+      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), 'own-real-session');
+      try {
+        await waitFor(() => existsSync(heartbeat));
+      } finally {
+        clearInterval(writer);
+      }
+      await waitFor(() => !existsSync(resolve(storage, 'buffer-own-real-session.jsonl')));
+      const stats = await toolResult(client, 'nr_observe_get_session_stats');
+      const latency = await toolResult(client, 'nr_observe_get_latency_percentiles');
+      await client.close();
+      await waitFor(() => !existsSync(heartbeat));
+
+      expect(stats.tool_calls).toBe(n);
+      expect(latency.overall).toMatchObject({ count: n });
     }, 30000);
 
     it('saves no session but the guessed one when the ppid breadcrumb corrects the guess', async () => {
@@ -2157,41 +2387,49 @@ describe('stdio integration', () => {
         const first = await startEngine(storage);
         await drainCalls(storage, id, 1);
         const checkpointing = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
-        let next = 1;
-        for (; next <= 20 && savedCalls(storage, id) === null; next++) {
-          // Both engines poll every 100 ms, so a fixed phase could hand every call to one of them.
-          await sleep((next * 37) % 100);
+        // Paused, the first engine cannot win the race to drain the next call.
+        process.kill(first.pid, 'SIGSTOP');
+        pausedPid = first.pid;
+        try {
           await drainCalls(storage, id, 1);
-          for (let i = 0; i < 6 && savedCalls(storage, id) === null; i++) {
-            await sleep(100);
-          }
+          await waitFor(() => savedCalls(storage, id) !== null);
+        } finally {
+          process.kill(first.pid, 'SIGCONT');
+          pausedPid = undefined;
         }
-        expect(savedCalls(storage, id)).not.toBeNull();
         return { first, checkpointing };
       };
 
-      it('stays completed across its checkpoints after a pending engine with no live owner completes it', async () => {
-        const storage = makeStorage();
-        const { first, checkpointing } = await startWithSessionDrained(storage);
-        await first.close();
-        await waitFor(() => outcome(storage) === 'completed');
+      itOffWindows(
+        'stays completed across its checkpoints after a pending engine with no live owner completes it',
+        async () => {
+          const storage = makeStorage();
+          const { first, checkpointing } = await startWithSessionDrained(storage);
+          await first.close();
+          await waitFor(() => outcome(storage) === 'completed');
 
-        expect(await outcomesEvery100Ms(storage, 15)).toEqual(Array(15).fill('completed'));
-        await checkpointing.close();
-        expect(outcome(storage)).toBe('completed');
-      }, 60000);
+          expect(await outcomesEvery100Ms(storage, 15)).toEqual(Array(15).fill('completed'));
+          await checkpointing.close();
+          expect(outcome(storage)).toBe('completed');
+        },
+        60000,
+      );
 
-      it('goes back in progress after a pending engine completes it when the session makes a new call', async () => {
-        const storage = makeStorage();
-        const { first, checkpointing } = await startWithSessionDrained(storage);
-        await first.close();
-        await waitFor(() => outcome(storage) === 'completed');
+      itOffWindows(
+        'goes back in progress after a pending engine completes it when the session makes a new call',
+        async () => {
+          const storage = makeStorage();
+          const { first, checkpointing } = await startWithSessionDrained(storage);
+          await first.close();
+          await waitFor(() => outcome(storage) === 'completed');
 
-        await drainCalls(storage, id, 1);
-        await waitFor(() => outcome(storage) === 'in progress');
-        await checkpointing.close();
-        await waitFor(() => outcome(storage) === 'completed');
-      }, 60000);
+          await drainCalls(storage, id, 1);
+          await waitFor(() => outcome(storage) === 'in progress');
+          await checkpointing.close();
+          await waitFor(() => outcome(storage) === 'completed');
+        },
+        60000,
+      );
 
       it('stays completed across its checkpoints after its own engine completes it', async () => {
         const storage = makeStorage();
@@ -2629,6 +2867,74 @@ describe('stdio integration', () => {
     }, 30000);
   });
 
+  const freePort = async (): Promise<string> => {
+    const { createServer: createNetServer } = await import('node:net');
+    return new Promise((resolvePort, reject) => {
+      const srv = createNetServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close((err) => (err ? reject(err) : resolvePort(String(p))));
+      });
+      srv.on('error', reject);
+    });
+  };
+  const dashboardApi =
+    (port: string) =>
+    async (path: string): Promise<Record<string, unknown> | null> =>
+      fetch(`http://127.0.0.1:${port}${path}`)
+        .then((r) => r.json() as Promise<Record<string, unknown>>)
+        .catch(() => null);
+  const pollUntil = async <T>(read: () => Promise<T>, done: (v: T) => boolean): Promise<T> => {
+    let value = await read();
+    for (let i = 0; i < 40 && !done(value); i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      value = await read();
+    }
+    return value;
+  };
+  type Spend = {
+    daily: { spentUsd: number };
+    session: { spentUsd: number };
+    alerts: Array<{ period: string; thresholdPct: number; timestamp: number }>;
+  };
+  const spendOf = (budget: Record<string, unknown> | null): Spend =>
+    (budget ?? {
+      daily: { spentUsd: 0 },
+      session: { spentUsd: 0 },
+      alerts: [],
+    }) as unknown as Spend;
+  const sessionAlertsOf = (budget: Record<string, unknown> | null) =>
+    spendOf(budget).alerts.filter((a) => a.period === 'session');
+  const watchCostUpdates = async (port: string) => {
+    const controller = new AbortController();
+    const events: Array<{ sessionId: string; sessionTotalUsd: number; todayTotalUsd: number }> = [];
+    const response = await fetch(`http://127.0.0.1:${port}/sse`, { signal: controller.signal });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let pending = '';
+    const reading = (async () => {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        pending += decoder.decode(value, { stream: true });
+        const frames = pending.split('\n\n');
+        pending = frames.pop() ?? '';
+        for (const frame of frames) {
+          const data = frame.split('\n').find((line) => line.startsWith('data: '));
+          if (frame.startsWith('event: cost-update') && data)
+            events.push(JSON.parse(data.slice(6)));
+        }
+      }
+    })().catch(() => undefined);
+    return {
+      events,
+      stop: async () => {
+        controller.abort();
+        await reading;
+      },
+    };
+  };
+
   describe('self-report lines', () => {
     const distDir = resolve(__dirname, '..', 'dist');
     const report = {
@@ -2668,7 +2974,9 @@ describe('stdio integration', () => {
       });
     const savedSession = (storagePath: string, id: string): Record<string, unknown> | null => {
       const dir = resolve(storagePath, 'sessions');
-      const name = existsSync(dir) ? readdirSync(dir).find((f) => f.includes(id)) : undefined;
+      const name = existsSync(dir)
+        ? readdirSync(dir).find((f) => f.includes(id) && f.endsWith('.json'))
+        : undefined;
       return name ? JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) : null;
     };
     const until = async <T>(read: () => T | Promise<T>, done: (v: T) => boolean): Promise<T> => {
@@ -2722,6 +3030,7 @@ describe('stdio integration', () => {
         runHook(env, { hook_event_name: 'PostToolUse', ...read, ...response }, ['post-tool']);
         const estimated = await until(cost, (c) => (c.byteEstimates?.costUsd ?? 0) > 0);
         expect(estimated.byteEstimates?.costUsd).toBeGreaterThan(0);
+        const ownSpend = spendOf(await api('/api/budget'));
 
         runHook(env, reportHook('conv-local', 'r-local-0001'));
 
@@ -2735,6 +3044,17 @@ describe('stdio integration', () => {
         expect((await api('/api/context?sessionId=conv-local')).turnCount).toBe(0);
         expect(saved).toMatchObject({ tokensInput: 1000, tokensThinking: 100, platform: 'cursor' });
         expect(saved?.estimatedCostUsd).toBeGreaterThan(0);
+        const spend = spendOf(
+          await until(
+            () => api('/api/budget'),
+            (b) => spendOf(b).daily.spentUsd > ownSpend.daily.spentUsd,
+          ),
+        );
+        expect(spend.daily.spentUsd).toBeCloseTo(
+          ownSpend.daily.spentUsd + Number(saved?.estimatedCostUsd),
+          9,
+        );
+        expect(spend.session.spentUsd).toBe(ownSpend.session.spentUsd);
       } finally {
         child.kill('SIGKILL');
         rmSync(tmpStoragePath, { recursive: true, force: true });
@@ -2747,9 +3067,11 @@ describe('stdio integration', () => {
         env: Record<string, string>,
         adopt: (id: string) => Promise<void>,
         close: () => Promise<void>,
+        pid: number,
       ) => Promise<void>,
       nodeArgs: (env: Record<string, string>) => string[] = () => [],
       mcpClient = 'claude-code',
+      envOverrides: Record<string, string> = {},
     ): Promise<void> => {
       const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
       const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
@@ -2762,6 +3084,7 @@ describe('stdio integration', () => {
         NR_AI_MODE: 'local',
         NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
         NR_AI_SESSION_PERSIST_INTERVAL_MS: persistIntervalMs,
+        ...envOverrides,
       });
       const client = new Client({ name: 'test-client', version: '1.0.0' });
       const adopt = async (id: string) => {
@@ -2800,7 +3123,7 @@ describe('stdio integration', () => {
           ).toBe(false);
         };
         try {
-          await body(env, adopt, close);
+          await body(env, adopt, close, pid);
         } finally {
           if (!closed) await client.close().catch(() => undefined);
         }
@@ -2811,7 +3134,14 @@ describe('stdio integration', () => {
     };
     const drained = (storage: string, conversationId: string) => {
       const bufferPath = resolve(storage, `buffer-${conversationId}.jsonl`);
-      const pending = () => (existsSync(bufferPath) ? readFileSync(bufferPath, 'utf-8') : '');
+      const pending = () => {
+        try {
+          return readFileSync(bufferPath, 'utf-8');
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'ENOENT') return '';
+          throw err;
+        }
+      };
       return until(pending, (v) => v === '');
     };
 
@@ -3123,6 +3453,9 @@ describe('stdio integration', () => {
             expect(await drained(storage, 'conv-edits')).toBe('');
 
             await adopt('real-owner-session');
+            const ownEdit = { conversation_id: 'real-owner-session', file_path: '/repo/b.ts' };
+            runHook(env, { hook_event_name: 'afterFileEdit', ...ownEdit });
+            expect(await drained(storage, 'real-owner-session')).toBe('');
             await close();
 
             expect(savedSession(storage, 'real-owner-session')).not.toBeNull();
@@ -3132,6 +3465,178 @@ describe('stdio integration', () => {
       } finally {
         rmSync(preloadDir, { recursive: true, force: true });
       }
+    }, 40000);
+
+    it('a report saved while pending counts once after the engine adopts its conversation', async () => {
+      const port = await freePort();
+      const api = dashboardApi(port);
+      await withPendingEngine(
+        '600000',
+        async (env, adopt) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          await pollUntil(
+            () => api('/api/health'),
+            (v) => v !== null,
+          );
+          runHook(env, reportHook('conv-adopted', 'r-pending-01'));
+          expect(await drained(storage, 'conv-adopted')).toBe('');
+          const pending = spendOf(
+            await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).daily.spentUsd > 0,
+            ),
+          );
+          expect(pending.daily.spentUsd).toBeCloseTo(0.0075, 9);
+
+          await adopt('conv-adopted');
+          runHook(env, reportHook('conv-adopted', 'r-pending-01'));
+          runHook(env, reportHook('conv-adopted', 'r-adopted-02'));
+          expect(await drained(storage, 'conv-adopted')).toBe('');
+          const adopted = spendOf(
+            await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).session.spentUsd > 0.0075,
+            ),
+          );
+          expect(adopted.daily.spentUsd).toBeCloseTo(0.015, 9);
+          expect(adopted.session.spentUsd).toBeCloseTo(0.015, 9);
+          const usage = (await api('/api/model-usage')) as {
+            byModel: Record<string, { requestCount: number }>;
+          };
+          expect(usage.byModel[report.model]?.requestCount).toBe(2);
+        },
+        () => [],
+        'claude-code',
+        { NR_AI_DASHBOARD_PORT: port },
+      );
+    }, 40000);
+
+    it.each([
+      ['has no saved report', false, [50]],
+      ['already has a pending report', true, [80, 100]],
+    ])(
+      'session alerts start over at adoption when the adopted conversation %s',
+      async (_label, mineWhilePending, expected) => {
+        const port = await freePort();
+        const api = dashboardApi(port);
+        await withPendingEngine(
+          '600000',
+          async (env, adopt) => {
+            const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+            await pollUntil(
+              () => api('/api/health'),
+              (v) => v !== null,
+            );
+            runHook(env, reportHook('conv-other', 'r-other-01'));
+            if (mineWhilePending) runHook(env, reportHook('conv-mine', 'r-mine-01'));
+            const pending = await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).daily.spentUsd >= (mineWhilePending ? 0.015 : 0.0075) - 1e-9,
+            );
+            expect(sessionAlertsOf(pending).map((a) => a.thresholdPct)).toEqual([50]);
+
+            const adoptedAt = Date.now();
+            await adopt('conv-mine');
+            runHook(env, reportHook('conv-mine', 'r-mine-02'));
+            expect(await drained(storage, 'conv-mine')).toBe('');
+            const target = mineWhilePending ? 0.015 : 0.0075;
+            const adopted = await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).session.spentUsd >= target - 1e-9,
+            );
+            expect(spendOf(adopted).session.spentUsd).toBeCloseTo(target, 9);
+            const alerts = sessionAlertsOf(adopted);
+            expect(alerts.map((a) => a.thresholdPct)).toEqual(expected);
+            expect(alerts.every((a) => a.timestamp >= adoptedAt)).toBe(true);
+          },
+          () => [],
+          'claude-code',
+          { NR_AI_DASHBOARD_PORT: port, NEW_RELIC_AI_SESSION_BUDGET_USD: '0.01' },
+        );
+      },
+      40000,
+    );
+
+    it("an adopted engine's session spend stays its own when it drains a leftover claim of another conversation", async () => {
+      const port = await freePort();
+      const api = dashboardApi(port);
+      await withPendingEngine(
+        '600000',
+        async (env, adopt, _close, pid) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          await pollUntil(
+            () => api('/api/health'),
+            (v) => v !== null,
+          );
+          await adopt('conv-mine');
+          runHook(env, reportHook('conv-mine', 'r-mine-01'));
+          expect(await drained(storage, 'conv-mine')).toBe('');
+          const own = spendOf(
+            await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).session.spentUsd > 0,
+            ),
+          );
+          expect(own.session.spentUsd).toBeCloseTo(0.0075, 9);
+
+          runHook(env, reportHook('conv-other', 'r-other-01'));
+          runHook(env, reportHook('conv-other', 'r-other-02'));
+          const buffer = 'buffer-conv-other.jsonl';
+          mkdirSync(resolve(storage, DRAINS_DIR), { recursive: true });
+          renameSync(
+            resolve(storage, buffer),
+            resolve(storage, DRAINS_DIR, formatClaimName(buffer, pid, Date.now())),
+          );
+          const after = spendOf(
+            await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).daily.spentUsd > 0.0075 + 1e-9,
+            ),
+          );
+          expect(savedSession(storage, 'conv-other')).toMatchObject({ selfReportCount: 2 });
+          expect(after.daily.spentUsd).toBeCloseTo(0.0225, 9);
+          expect(after.session.spentUsd).toBeCloseTo(0.0075, 9);
+        },
+        () => [],
+        'claude-code',
+        { NR_AI_DASHBOARD_PORT: port },
+      );
+    }, 40000);
+
+    it('an adopted engine with no cost of its own counts a leftover claim of another conversation in the budget', async () => {
+      const port = await freePort();
+      const api = dashboardApi(port);
+      await withPendingEngine(
+        '600000',
+        async (env, adopt, _close, pid) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          await pollUntil(
+            () => api('/api/health'),
+            (v) => v !== null,
+          );
+          await adopt('conv-mine');
+          runHook(env, reportHook('conv-other', 'r-other-01'));
+          runHook(env, reportHook('conv-other', 'r-other-02'));
+          const buffer = 'buffer-conv-other.jsonl';
+          mkdirSync(resolve(storage, DRAINS_DIR), { recursive: true });
+          renameSync(
+            resolve(storage, buffer),
+            resolve(storage, DRAINS_DIR, formatClaimName(buffer, pid, Date.now())),
+          );
+          const after = spendOf(
+            await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).daily.spentUsd > 0,
+            ),
+          );
+          expect(savedSession(storage, 'conv-other')).toMatchObject({ selfReportCount: 2 });
+          expect(after.daily.spentUsd).toBeCloseTo(0.015, 9);
+          expect(after.session.spentUsd).toBe(0);
+        },
+        () => [],
+        'claude-code',
+        { NR_AI_DASHBOARD_PORT: port },
+      );
     }, 40000);
 
     it('a resumed engine saves a report for its own conversation once, on top of the saved total', async () => {
@@ -3224,7 +3729,7 @@ describe('stdio integration', () => {
         const dir = resolve(tmpStoragePath, 'sessions');
         for (let i = 0; i < 40; i++) {
           const name = existsSync(dir)
-            ? readdirSync(dir).find((f) => f.includes(conversationId))
+            ? readdirSync(dir).find((f) => f.includes(conversationId) && f.endsWith('.json'))
             : undefined;
           const saved = name ? JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) : null;
           if (saved?.estimatedCostUsd || saved?.toolCallCount) return saved;
@@ -3243,9 +3748,9 @@ describe('stdio integration', () => {
             env: {
               ...env,
               HOME: tmpHome,
-              ...engineEnv,
               NR_AI_DASHBOARD_PORT: '0',
               NR_AI_MODE: 'local',
+              ...engineEnv,
               NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
               NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
             } as Record<string, string>,
@@ -3258,6 +3763,71 @@ describe('stdio integration', () => {
         rmSync(tmpHome, { recursive: true, force: true });
       }
     }
+
+    it.each(['local', 'both'])(
+      'in %s mode, a hook-recorded report reaches the budget, Model Usage and the live cost tile',
+      async (mode) => {
+        const port = await freePort();
+        const api = dashboardApi(port);
+        await withPendingEngine(
+          'cursor',
+          async (client, hook, sessionFile) => {
+            await pollUntil(
+              () => api('/api/health'),
+              (v) => v !== null,
+            );
+            const costs = await watchCostUpdates(port);
+            try {
+              const result = await client.callTool({
+                name: 'nr_observe_report_tokens',
+                arguments: report,
+              });
+              hook({
+                hook_event_name: 'afterMCPExecution',
+                conversation_id: 'conv-reported',
+                mcp_server_name: 'newrelic-preflight',
+                tool_name: 'nr_observe_report_tokens',
+                tool_input: JSON.stringify(report),
+                result_json: JSON.stringify(result),
+              });
+              const costUsd = Number((await sessionFile('conv-reported'))?.estimatedCostUsd);
+              expect(costUsd).toBeGreaterThan(0);
+
+              const budget = spendOf(
+                await pollUntil(
+                  () => api('/api/budget'),
+                  (b) => spendOf(b).daily.spentUsd > 0,
+                ),
+              );
+              expect(budget.daily.spentUsd).toBeCloseTo(costUsd, 9);
+              expect(budget.session.spentUsd).toBeCloseTo(costUsd, 9);
+              const usage = (await api('/api/model-usage')) as {
+                byModel: Record<string, { requestCount: number }>;
+              };
+              expect(usage.byModel[report.model]?.requestCount).toBe(1);
+              await pollUntil(
+                async () => costs.events.length,
+                (n) => n > 0,
+              );
+              expect(costs.events).toContainEqual(
+                expect.objectContaining({ sessionId: 'conv-reported', sessionTotalUsd: costUsd }),
+              );
+            } finally {
+              await costs.stop();
+            }
+          },
+          {
+            MCP_CLIENT: 'cursor',
+            NR_AI_MODE: mode,
+            NR_AI_DASHBOARD_PORT: port,
+            NEW_RELIC_LICENSE_KEY: mode === 'both' ? `${'0'.repeat(36)}NRAL` : '',
+            NEW_RELIC_ACCOUNT_ID: mode === 'both' ? '1' : '',
+            NEW_RELIC_HOST: '127.0.0.1:9',
+          },
+        );
+      },
+      40000,
+    );
 
     it('saves a Cursor report once, to the conversation whose hook carried it', async () => {
       await withPendingEngine('cursor', async (client, hook, sessionFile) => {
@@ -6049,6 +6619,73 @@ describe('--local persisting the sessions it drains', () => {
     } finally {
       child.kill('SIGKILL');
       rmSync(storage, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('feeds its trackers every session it drains, since it owns none', async () => {
+    const { spawn } = await import('node:child_process');
+    const { createServer: createNetServer } = await import('node:net');
+    const storage = mkdtempSync(join(tmpdir(), 'nr-local-trackers-'));
+    const home = mkdtempSync(join(tmpdir(), 'nr-local-trackers-home-'));
+    const buffer = resolve(storage, 'buffer-drained-session.jsonl');
+    for (let n = 0; n < 3; n++) {
+      const call = {
+        tool: 'Bash',
+        timestamp: Date.now() + n,
+        sessionId: 'drained-session',
+        toolUseId: `toolu_${n}`,
+        toolInput: { command: 'npm test' },
+        outputSize: 2000,
+      };
+      appendToHookBuffer(buffer, JSON.stringify({ mode: 'pre', ...call }) + '\n');
+      appendToHookBuffer(buffer, JSON.stringify({ mode: 'post', ...call, success: false }) + '\n');
+    }
+    const port = await new Promise<number>((resolvePort, reject) => {
+      const srv = createNetServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close((err) => (err ? reject(err) : resolvePort(p)));
+      });
+      srv.on('error', reject);
+    });
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      NEW_RELIC_AI_MCP_STORAGE_PATH: storage,
+      NR_AI_DASHBOARD_PORT: String(port),
+      NR_AI_MODE: 'local',
+      NR_AI_ALERTS_ENABLED: 'false',
+      NEW_RELIC_LICENSE_KEY: '',
+      NEW_RELIC_ACCOUNT_ID: '',
+    };
+    for (const key of Object.keys(env)) if (key.startsWith('CLAUDE')) delete env[key];
+    const child = spawn(
+      process.execPath,
+      [resolve(__dirname, '..', 'dist', 'index.js'), '--local'],
+      {
+        env,
+        stdio: 'ignore',
+      },
+    );
+    const getJson = async (path: string) =>
+      (await (await fetch(`http://127.0.0.1:${port}${path}`)).json()) as Record<string, unknown>;
+    try {
+      let retry: Record<string, unknown> = {};
+      for (let i = 0; i < 100 && retry.totalAlertsEmitted !== 1; i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        retry = await getJson('/api/retry-alerts').catch(() => ({}));
+      }
+      const context = await getJson('/api/context?sessionId=drained-session');
+
+      expect(retry.totalAlertsEmitted).toBe(1);
+      expect(context.toolContributions).toEqual([
+        expect.objectContaining({ tool: 'Bash', totalBytes: 6000 }),
+      ]);
+    } finally {
+      child.kill('SIGKILL');
+      rmSync(storage, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
     }
   }, 30000);
 });

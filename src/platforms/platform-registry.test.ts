@@ -276,6 +276,14 @@ describe('PlatformRegistry', () => {
       expect(createDefaultRegistry().detect()?.platformName).toBe(platformName);
     });
 
+    it('leaves the engine env as the user spelled it', () => {
+      process.env.MCP_CLIENT = 'Gemini_CLI';
+      process.env.NEW_RELIC_AI_PLATFORM = 'COPILOT_SDK';
+      createDefaultRegistry().detect();
+      expect(process.env.MCP_CLIENT).toBe('Gemini_CLI');
+      expect(process.env.NEW_RELIC_AI_PLATFORM).toBe('COPILOT_SDK');
+    });
+
     const spellings = (name: string): string[] => [
       name.toUpperCase().replace(/-/g, '_'),
       name.replace(
