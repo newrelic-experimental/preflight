@@ -2,6 +2,7 @@
   "jest": [
     "src/alerts/local-alert-engine.test.ts",
     "src/dashboard/routes/api-handler.test.ts",
+    "src/dashboard/routes/api-handler.windowed-activity.test.ts",
     "src/hooks/cost-double-count.test.ts",
     "src/hooks/forked-session-cost.test.ts",
     "src/hooks/subagent-watcher.test.ts",
@@ -27,6 +28,7 @@
     "src/metrics/usage-insights.test.ts",
     "src/storage/historical-costs.test.ts",
     "src/storage/session-store.test.ts",
+    "src/storage/session-window.test.ts",
     "src/storage/weekly-summary.test.ts",
     "src/tools/cost-tools.test.ts",
     "src/tools/cross-session-tools.test.ts",

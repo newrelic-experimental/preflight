@@ -108,7 +108,11 @@ describe('computeUsageInsights', () => {
       tokensCacheRead: 10,
       tokensCacheCreation: 5,
     });
-    const outOfWindow = makeSummary({ startTime: NOW - 10 * DAY_MS, estimatedCostUsd: 100 });
+    const outOfWindow = makeSummary({
+      startTime: NOW - 10 * DAY_MS,
+      endTime: NOW - 10 * DAY_MS + 60_000,
+      estimatedCostUsd: 100,
+    });
 
     const report = computeUsageInsights([inWindow, outOfWindow], { nowMs: NOW, windowDays: 7 });
 
@@ -132,17 +136,18 @@ describe('computeUsageInsights', () => {
     expect(report.totalTokens).toBe(205);
   });
 
-  it('keeps a rolling window on startTime, so a session started before it and active now is excluded', () => {
+  it('counts the in-window share of a session started before the window and active now', () => {
     const startedNineDaysAgo = makeSummary({
       startTime: NOW - 9 * DAY_MS,
       endTime: NOW,
-      estimatedCostUsd: 100,
+      estimatedCostUsd: 90,
+      costByDayUsd: { [localDateKey(NOW - 9 * DAY_MS)]: 60, [localDateKey(NOW)]: 30 },
     });
 
     const report = computeUsageInsights([startedNineDaysAgo], { nowMs: NOW, windowDays: 7 });
 
-    expect(report.sessionCount).toBe(0);
-    expect(report.totalCostUsd).toBe(0);
+    expect(report.sessionCount).toBe(1);
+    expect(report.totalCostUsd).toBeCloseTo(30, 9);
   });
 
   describe("selection: 'today'", () => {
@@ -234,6 +239,13 @@ describe('computeUsageInsights', () => {
       expect(report.sessionCount).toBe(1);
       expect(report.totalCostUsd).toBeCloseTo(2, 9);
       expect(report.totalTokens).toBe(100);
+    });
+
+    it('without costByDayUsd or any calls, subagent cost or timeline, counts none of its cost today', () => {
+      const unattributable = { toolCallCount: 0, timeline: [], estimatedCostUsd: 4 };
+      const report = today([makeSummary({ ...unattributable, startTime: TODAY_START - 1000 })]);
+      expect(report.totalCostUsd).toBe(0);
+      expect(report.totalTokens).toBe(0);
     });
 
     it.each([0, null])(
