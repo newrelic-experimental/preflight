@@ -191,7 +191,7 @@ function pushValue(spans, spanStart, from, end) {
   return end;
 }
 var HEADER = new RegExp(
-  String.raw`((?:-H|--header)(?:[\s=]|${CONTINUATION}){1,8}(\\"|"|')?)(?:x-)?(?:api-?key|auth-token|access-token)(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})`,
+  String.raw`((?:-H|--header)(?:[\s=]|${CONTINUATION}){1,8}(\\"|"|')?)(?:(?:x-)?(?:api-?key|auth-token|access-token)(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|authorization[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
   "gi"
 );
 var headerValue = (text, match, quote, spans) => {
@@ -300,13 +300,36 @@ var curlCredentials = (text, match, quote, spans) => {
     }
   });
 };
+var passwordValue = ({ flags, joined, wrapperOptions }) => (text, match, quote, spans) => {
+  let pending = -1;
+  let skipNext = false;
+  let wrapped = false;
+  return commandWords(text, match, quote, (from, end) => {
+    const word = text.slice(from, end);
+    if (pending >= 0 && word[0] !== "-") spans.push(pending, end);
+    else if (wrapped || skipNext) skipNext = false;
+    else if (flags.includes(word)) pending = from;
+    else if (joined && flags.some((flag) => word.startsWith(flag))) spans.push(from, end);
+    else if (wrapperOptions !== void 0) {
+      wrapped = word[0] !== "-";
+      skipNext = wrapperOptions.includes(word);
+    }
+    if (pending !== from) pending = -1;
+  });
+};
 var RULES = [
   { start: HEADER, redact: headerValue },
   { start: NAME, redact: nameValue },
   ...REDACTION_PATTERNS,
   { start: FLAG, redact: wordValue },
   { start: MYSQL, redact: mysqlPasswords },
-  { start: CURL, redact: curlCredentials }
+  { start: CURL, redact: curlCredentials },
+  { start: /docker[ \t]+login\b/g, redact: passwordValue({ flags: ["-p"], joined: true }) },
+  {
+    start: /sshpass\b/g,
+    redact: passwordValue({ flags: ["-p"], joined: true, wrapperOptions: ["-f", "-d", "-P"] })
+  },
+  { start: /redis-cli\b/g, redact: passwordValue({ flags: ["-a", "--pass"], joined: false }) }
 ];
 function redactSecrets(text, counts) {
   let result = text;
