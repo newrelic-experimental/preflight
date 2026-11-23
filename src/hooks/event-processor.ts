@@ -77,6 +77,8 @@ export interface HookEventProcessorOptions {
   drainAllSessions?: boolean;
   admitRecord?: (record: ToolCallRecord) => ToolCallRecord | null;
   onRecord: (record: ToolCallRecord) => void;
+  /** Fires for every pre event as it is processed, before its record exists; errors swallowed. */
+  onPreToolUse?: (event: PreHookEvent) => void;
   onRecordAmend?: (record: ToolCallRecord) => void;
   onTokenEvent?: (event: TokenEvent) => void;
   onSelfReport?: (event: SelfReportHookEvent) => void;
@@ -411,6 +413,7 @@ export class HookEventProcessor {
   private drainAllSessions: boolean;
   private readonly admitRecord: (record: ToolCallRecord) => ToolCallRecord | null;
   private readonly onRecord: (record: ToolCallRecord) => void;
+  private readonly onPreToolUse: ((event: PreHookEvent) => void) | null;
   private readonly onRecordAmend: ((record: ToolCallRecord) => void) | null;
   private readonly onTokenEvent: ((event: TokenEvent) => void) | null;
   private readonly onSelfReport: ((event: SelfReportHookEvent) => void) | null;
@@ -491,6 +494,7 @@ export class HookEventProcessor {
     this.maxPendingEvents = options.maxPendingEvents ?? DEFAULT_MAX_PENDING;
     this.admitRecord = options.admitRecord ?? ((record) => record);
     this.onRecord = options.onRecord;
+    this.onPreToolUse = options.onPreToolUse ?? null;
     this.onRecordAmend = options.onRecordAmend ?? null;
     this.onTokenEvent = options.onTokenEvent ?? null;
     this.onSelfReport = options.onSelfReport ?? null;
@@ -776,6 +780,14 @@ export class HookEventProcessor {
       }
     }
     this.pending.set(this.pairingKey(event), { event, phase: 'awaiting_post' });
+    try {
+      this.onPreToolUse?.(event);
+    } catch (err) {
+      logger.warn('onPreToolUse callback failed', {
+        tool: event.tool,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   private handlePermissionRequestEvent(event: PermissionRequestHookEvent): void {

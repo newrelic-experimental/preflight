@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import { BoundedMap } from '../lib/bounded-map.js';
 import type { SkillStamp, ToolCallRecord } from '../storage/types.js';
 import type { Resettable } from './tracker-contracts.js';
 
@@ -7,6 +8,7 @@ const NULL_SESSION_KEY = '__no_session__';
 const MAIN_AGENT_KEY = '';
 const DEFAULT_MAX_SESSIONS = 50;
 const MAX_AGENTS_PER_SESSION = 100;
+const MAX_STARTED_CALLS = 2000;
 
 export interface SkillActivationMetrics {
   /** Every open run, main agent and subagents, across the sessions in view. */
@@ -37,11 +39,17 @@ export interface SkillActivationTrackerOptions {
  * returning, so the new run records the one it replaced as its parent
  * instead). A subagent keeps whatever run the main agent had open when the
  * subagent first appeared, since that skill is what spawned it; later prompts
- * and skills on the main agent don't move it.
+ * and skills on the main agent don't move it. A main-agent call whose start
+ * was seen keeps the run open at its start, since its record can arrive after
+ * a later prompt.
  */
 export class SkillActivationTracker implements Resettable {
   /** Per session, per agent; `null` pins a subagent that appeared outside any run. */
   private readonly sessions = new Map<string, Map<string, SkillStamp | null>>();
+  /** The main agent's open run when each call started, by session and toolUseId. */
+  private readonly runAtStart = new BoundedMap<string, SkillStamp | null>({
+    maxEntries: MAX_STARTED_CALLS,
+  });
 
   constructor(private readonly options: SkillActivationTrackerOptions = {}) {}
 
@@ -61,6 +69,11 @@ export class SkillActivationTracker implements Resettable {
     return runs;
   }
 
+  /** Remembers the run open as a call starts, for its record to carry. */
+  recordToolStart(sessionId: string | null | undefined, toolUseId: string): void {
+    this.runAtStart.set(startKey(sessionId, toolUseId), this.openRun(sessionId));
+  }
+
   recordToolCall(record: ToolCallRecord): SkillStamp | null {
     const runs = this.runsFor(record.sessionId);
     const agentKey = record.agentId ?? MAIN_AGENT_KEY;
@@ -74,7 +87,11 @@ export class SkillActivationTracker implements Resettable {
       }
       runs.set(agentKey, runs.get(MAIN_AGENT_KEY) ?? null);
     }
-    const open = runs.get(agentKey) ?? null;
+    const atStart =
+      agentKey === MAIN_AGENT_KEY
+        ? this.runAtStart.get(startKey(record.sessionId, record.toolUseId))
+        : undefined;
+    const open = atStart !== undefined ? atStart : (runs.get(agentKey) ?? null);
     // An interrupted or failed Skill call never loaded the skill, and the
     // orphan sweep can emit it after later prompts; neither should open a run.
     if (record.toolName === 'Skill' && record.skillName && record.success) {
@@ -132,4 +149,8 @@ export class SkillActivationTracker implements Resettable {
   reset(_sessionId?: string): void {
     this.sessions.clear();
   }
+}
+
+function startKey(sessionId: string | null | undefined, toolUseId: string): string {
+  return `${sessionId ?? NULL_SESSION_KEY}\0${toolUseId}`;
 }

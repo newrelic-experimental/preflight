@@ -2981,6 +2981,38 @@ describe('HookEventProcessor', () => {
       ]);
     });
 
+    it('reports each pre as it is processed, so a call keeps the run open when it started', () => {
+      const tracker = new SkillActivationTracker();
+      const stamped: Array<string | undefined> = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: (record) => stamped.push(tracker.recordToolCall(record)?.name),
+        onPreToolUse: (e) => tracker.recordToolStart(e.sessionId, e.toolUseId!),
+        onUserPromptSubmit: (f) => tracker.recordPrompt(f.sessionId, f.slashCommand ?? null),
+      });
+
+      processor.processEvents([
+        {
+          mode: 'user_prompt_submit',
+          tool: 'user_prompt_submit',
+          timestamp: 1,
+          sessionId: 's1',
+          slashCommand: 'review',
+        } as UserPromptSubmitHookEvent,
+        makePreEvent({ tool: 'Bash', toolUseId: 'b1', sessionId: 's1' }),
+        {
+          mode: 'user_prompt_submit',
+          tool: 'user_prompt_submit',
+          timestamp: 2,
+          sessionId: 's1',
+          slashCommand: 'simplify',
+        } as UserPromptSubmitHookEvent,
+        makePostEvent({ tool: 'Bash', toolUseId: 'b1', sessionId: 's1' }),
+      ]);
+
+      expect(stamped).toEqual(['review']);
+    });
+
     it('omits slashCommand from onUserPromptSubmit frame when absent', () => {
       const frames: import('./event-processor.js').BoundaryFrame[] = [];
       const processor = new HookEventProcessor({
