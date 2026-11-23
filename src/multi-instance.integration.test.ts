@@ -692,6 +692,38 @@ describe('AiCodingTask emission in cloud mode', () => {
     ]);
   }, 60_000);
 
+  it('stamps a call recorded after a later prompt with the skill run open when it started', async () => {
+    const bufferPath = resolve(storage, `buffer-${SESSION}.jsonl`);
+    const at = Date.now() - 1000;
+    const bash = { tool: 'Bash', sessionId: SESSION, toolUseId: 'toolu_late_bash' };
+    const child = startCloudEngine(3_600_000, jobDir);
+    try {
+      await waitForBoot(child, BOOT_TIMEOUT_MS);
+      await initialize(child);
+      seedToolCalls(SESSION, 1, 'Skill');
+      for (const frame of [
+        { ...bash, mode: 'pre', timestamp: at, toolInput: { command: 'sleep 9' } },
+        {
+          mode: 'user_prompt_submit',
+          sessionId: SESSION,
+          timestamp: at + 1,
+          slashCommand: 'simplify',
+        },
+        { ...bash, mode: 'post', timestamp: at + 2, success: true },
+      ]) {
+        appendToHookBuffer(bufferPath, JSON.stringify(frame) + '\n');
+      }
+      await waitForStats(child, 2, TOOLS_CALL_TIMEOUT_MS);
+    } finally {
+      child.proc.stdin.end();
+      await waitExit(child, 8000);
+    }
+
+    expect(capturedEvents('AiToolCall')).toContainEqual(
+      expect.objectContaining({ tool: 'Bash', skill_name: 'lint' }),
+    );
+  }, 60_000);
+
   it("sends only the adopted session's tasks that closed before the session resolved", async () => {
     const OTHER = 'task-emit-other';
     const child = startCloudEngine(200, undefined);

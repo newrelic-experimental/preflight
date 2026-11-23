@@ -56,7 +56,9 @@ const MAX_RUNS = 256;
  * skill, or when the tracker closes it on an idle gap. It is handed over when
  * every call it made has been priced, or after `STALE_UNPRICED_MS`, or on
  * `flush()`. Cost and tokens are the run's even shares of each turn, the same
- * values its `AiTurnCost` tool rows carry.
+ * values its `AiTurnCost` tool rows carry, for the calls recorded before it was
+ * handed over. A call stamped with the run after that, such as one that started
+ * in it and ended after the next prompt, is on `AiTurnCost` only.
  */
 export class SkillRunLedger {
   private readonly runs = new Map<string, Run>();

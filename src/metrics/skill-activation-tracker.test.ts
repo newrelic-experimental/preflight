@@ -570,6 +570,50 @@ describe('SkillActivationTracker.openRun', () => {
   });
 });
 
+describe('SkillActivationTracker.recordToolStart', () => {
+  it('stamps a call recorded after a later prompt with the run open when it started', () => {
+    const t = new SkillActivationTracker();
+    const review = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'review' }));
+    t.recordToolStart('s1', 'bash-1');
+    t.recordPrompt('s1', 'simplify');
+
+    expect(t.recordToolCall(makeRecord({ toolName: 'Bash', toolUseId: 'bash-1' }))).toEqual(review);
+    expect(t.recordToolCall(makeRecord({ toolName: 'Bash', toolUseId: 'bash-2' }))?.name).toBe(
+      'simplify',
+    );
+  });
+
+  it('leaves a call that started outside any run unattributed', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolStart('s1', 'bash-1');
+    t.recordPrompt('s1', 'simplify');
+
+    expect(t.recordToolCall(makeRecord({ toolName: 'Bash', toolUseId: 'bash-1' }))).toBeNull();
+  });
+
+  it("does not lend one session's start to another session's call", () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', 'review');
+    t.recordToolStart('s1', 'bash-1');
+    const simplify = t.recordPrompt('s2', 'simplify');
+
+    expect(
+      t.recordToolCall(makeRecord({ sessionId: 's2', toolName: 'Bash', toolUseId: 'bash-1' })),
+    ).toEqual(simplify);
+  });
+
+  it('keeps a subagent call on the run the subagent opened', () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', 'review');
+    const lint = t.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'lint', agentId: 'agent-1' }),
+    );
+    t.recordToolStart('s1', 'read-1');
+
+    expect(t.recordToolCall(makeRecord({ toolUseId: 'read-1', agentId: 'agent-1' }))).toEqual(lint);
+  });
+});
+
 describe('SkillActivationTracker onRunOpened', () => {
   it('fires again for a run reopened after an idle gap closed the last one', () => {
     const opened: SkillStamp[] = [];
