@@ -19,10 +19,7 @@ import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { cutAtWord, redactSecrets } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
-import {
-  CLAUDE_CODE_ENV_SIGNALS,
-  CLAUDE_CODE_PLATFORM_NAME,
-} from '../platforms/claude-code-adapter.js';
+import { CLAUDE_CODE_PLATFORM_NAME } from '../platforms/claude-code-adapter.js';
 import { hookEventFromArg } from '../hook-subcommands.js';
 import { canonicalPlatformName, ENGINE_ENV_KEYS } from '../platforms/platform-names.js';
 import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
@@ -33,7 +30,7 @@ import {
   SESSION_ID_RE,
   type HookReportCall,
 } from './self-report.js';
-import { breadcrumbRoot, breadcrumbWriter } from './session-breadcrumbs.js';
+import { breadcrumbRoot, breadcrumbWriter, isClaudeCodeHook } from './session-breadcrumbs.js';
 import { appendToHookBuffer, LineWrittenError } from '../storage/hook-buffer.js';
 import { mcpPrToolAction } from '../metrics/mcp-pr-tools.js';
 import { classifyBash } from './bash-classifier.js';
@@ -141,14 +138,12 @@ const HOOK_EVENT_PLATFORM: Readonly<Record<string, string>> = {
  * whose hook-process env signal is verified; other platforms stamp via
  * explicit MCP_CLIENT in their generated hook commands.
  */
-function detectStampPlatform(): string | undefined {
+function detectStampPlatform(sessionId: unknown): string | undefined {
   for (const key of ENGINE_ENV_KEYS) {
     const name = canonicalPlatformName(process.env[key]);
     if (name !== undefined) return name;
   }
-  if (CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined)) {
-    return CLAUDE_CODE_PLATFORM_NAME;
-  }
+  if (isClaudeCodeHook(process.env, sessionId)) return CLAUDE_CODE_PLATFORM_NAME;
   return (process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM) || undefined;
 }
 
@@ -912,7 +907,7 @@ function processHook(raw: string, cliEvent?: string): void {
   // ancestry-based session-resolution model, so extending this to
   // conversation_id would be a guess, not a fix.
   if (typeof data.session_id === 'string' && data.session_id.length > 0) {
-    const writer = breadcrumbWriter(process.env);
+    const writer = breadcrumbWriter(process.env, data.session_id);
     const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
     if (writer === UNATTRIBUTED_BREADCRUMB_WRITER) {
       const unknownNames = ENGINE_ENV_KEYS.filter(
@@ -1504,7 +1499,7 @@ function processHook(raw: string, cliEvent?: string): void {
   // only the light claude-code-adapter const, not the full registry) instead
   // of going through PlatformRegistry — registry-based detection adds
   // measurable overhead on this hot, pre+post-per-tool-call path.
-  const stampedPlatform = HOOK_EVENT_PLATFORM[eventName ?? ''] ?? detectStampPlatform();
+  const stampedPlatform = HOOK_EVENT_PLATFORM[eventName ?? ''] ?? detectStampPlatform(sessionId);
   if (stampedPlatform) event.platform = stampedPlatform;
   const selfReport =
     selfReportCall &&
