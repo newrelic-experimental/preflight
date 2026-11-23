@@ -2974,7 +2974,9 @@ describe('stdio integration', () => {
       });
     const savedSession = (storagePath: string, id: string): Record<string, unknown> | null => {
       const dir = resolve(storagePath, 'sessions');
-      const name = existsSync(dir) ? readdirSync(dir).find((f) => f.includes(id)) : undefined;
+      const name = existsSync(dir)
+        ? readdirSync(dir).find((f) => f.includes(id) && f.endsWith('.json'))
+        : undefined;
       return name ? JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) : null;
     };
     const until = async <T>(read: () => T | Promise<T>, done: (v: T) => boolean): Promise<T> => {
@@ -3727,7 +3729,7 @@ describe('stdio integration', () => {
         const dir = resolve(tmpStoragePath, 'sessions');
         for (let i = 0; i < 40; i++) {
           const name = existsSync(dir)
-            ? readdirSync(dir).find((f) => f.includes(conversationId))
+            ? readdirSync(dir).find((f) => f.includes(conversationId) && f.endsWith('.json'))
             : undefined;
           const saved = name ? JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) : null;
           if (saved?.estimatedCostUsd || saved?.toolCallCount) return saved;
