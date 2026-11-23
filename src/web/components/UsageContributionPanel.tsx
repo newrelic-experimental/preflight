@@ -93,6 +93,37 @@ export function buildToolTableRows(
   });
 }
 
+/**
+ * History's Tools rows when the windowed `/api/cost-per-tool` has attributed
+ * tools. Every number comes from that one response, so calls, cost and share
+ * describe the same in-window activity.
+ */
+export function buildWindowedToolTableRows(
+  costByToolType: Record<
+    string,
+    { readonly totalCost: number; readonly callCount: number; readonly tokens?: number }
+  >,
+): ToolTableRow[] {
+  const entries = Object.entries(costByToolType);
+  const totalCost = entries.reduce((sum, [, e]) => sum + e.totalCost, 0);
+  const totalCalls = entries.reduce((sum, [, e]) => sum + e.callCount, 0);
+  return entries
+    .sort(([, a], [, b]) => b.totalCost - a.totalCost || b.callCount - a.callCount)
+    .slice(0, 8)
+    .map(([tool, e]) => ({
+      tool: shortToolName(tool),
+      count: e.callCount,
+      sharePct:
+        totalCost > 0
+          ? (e.totalCost / totalCost) * 100
+          : totalCalls > 0
+            ? (e.callCount / totalCalls) * 100
+            : 0,
+      costUsd: e.totalCost,
+      tokens: e.tokens,
+    }));
+}
+
 // A row with real spend can carry a sharePct that's already floored to 0 by
 // the backend — nudge it above 0 so formatPct renders "<1%" rather than
 // "0%", which reads as no spend at all. costUsd is optional so this also
@@ -104,7 +135,7 @@ function formatSharePct(row: { readonly costUsd?: number; readonly sharePct: num
 }
 
 function breakdownTitle(row: UsageShareRow): string | undefined {
-  return row.breakdown ? formatTokenBreakdown(row.breakdown) : undefined;
+  return row.breakdown ? formatTokenBreakdown(row.breakdown, row.breakdownUsd) : undefined;
 }
 
 export function UsageContributionPanel({

@@ -4,6 +4,7 @@ import type {
   PlatformSessionMetadata,
   NormalizedToolCall,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 /**
  * Maps Amazon Q Developer CLI's real built-in tool names
@@ -140,7 +141,7 @@ export class AmazonQAdapter implements PlatformAdapter {
     return (
       process.env.AMAZON_Q_SESSION_ID !== undefined ||
       process.env.Q_DEVELOPER_SESSION !== undefined ||
-      process.env.MCP_CLIENT === 'amazon-q' ||
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'amazon-q' ||
       process.env.AWS_CODEWHISPERER_SESSION !== undefined
     );
   }

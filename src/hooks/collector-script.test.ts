@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { execFileSync, spawn } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -16,6 +18,7 @@ import {
   _stdinFs,
   getBufferPath,
   getLinuxAncestorPids,
+  getMaxContentLength,
   getRecordContent,
   hashInput,
   processHook,
@@ -27,7 +30,15 @@ import {
   writePpidBreadcrumb,
 } from './collector-script.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
+import { createDefaultRegistry } from '../platforms/platform-registry.js';
+import { PLATFORM_NAMES } from '../platforms/platform-names.js';
+import { sessionBreadcrumbWriters } from '../platforms/types.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
+import { DRAIN_SEAL } from '../storage/hook-buffer.js';
+import { sessionBreadcrumbs } from './session-resolver.js';
+import { HookEventProcessor } from './event-processor.js';
+import { LocalStore } from '../storage/local-store.js';
+import type { ToolCallRecord } from '../storage/types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let stdoutSpy: ReturnType<typeof jest.spyOn>;
@@ -233,7 +244,10 @@ function readBufferEvents(): Record<string, unknown>[] {
   if (!existsSync(bufferPath)) return [];
   const raw = readFileSync(bufferPath, 'utf-8').trim();
   if (!raw) return [];
-  return raw.split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+  return raw
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
 /**
@@ -249,14 +263,23 @@ function readBufferLines(sessionId?: string): Record<string, unknown>[] {
   if (!existsSync(path)) return [];
   const raw = readFileSync(path, 'utf-8').trim();
   if (!raw) return [];
-  return raw.split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+  return raw
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
 describe('collector-script', () => {
   describe('processHook() — PreToolUse', () => {
     it('lands its session breadcrumbs in the test temp dir, not the default storage dir', () => {
       processHook(makePreToolUse());
-      expect(existsSync(resolve(tmpDir, 'session-by-cwd', '-projects-test.txt'))).toBe(true);
+      const writers = readdirSync(resolve(tmpDir, 'breadcrumbs'));
+      expect(writers).toHaveLength(1);
+      expect(
+        existsSync(
+          resolve(tmpDir, 'breadcrumbs', writers[0]!, 'session-by-cwd', '-projects-test.txt'),
+        ),
+      ).toBe(true);
       expect(existsSync(resolve(homedir(), '.newrelic-preflight'))).toBe(false);
     });
 
@@ -297,10 +320,25 @@ describe('collector-script', () => {
       expect(readBufferEvents()[0]!.platform).toBe('cursor');
     });
 
+    it('stamps the registered spelling of an engine named in another case', () => {
+      process.env.MCP_CLIENT = 'Kiro';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBe('kiro');
+    });
+
     it('stamps event.platform "claude-code" when only CLAUDECODE is set', () => {
       // jest itself runs under Claude Code, so CLAUDECODE is already set in
       // this process env — set it explicitly for clarity and to survive a
       // future test environment that doesn't carry it ambiently.
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse());
+
+      expect(readBufferEvents()[0]!.platform).toBe('claude-code');
+    });
+
+    it('stamps the engine the breadcrumb is filed under when MCP_CLIENT names no known engine', () => {
+      process.env.MCP_CLIENT = 'vscode';
       process.env.CLAUDECODE = '1';
       processHook(makePreToolUse());
 
@@ -370,6 +408,117 @@ describe('collector-script', () => {
     });
   });
 
+  describe('processHook() — secrets passed as Bash arguments', () => {
+    const token = `ghp_${'A'.repeat(36)}`;
+    const straddling = `echo ${'x'.repeat(10_240 - 16 - 'echo '.length - 1)} ${token}`;
+    it.each([
+      ['Bash', makePreToolUse({ tool_name: 'Bash', tool_input: { command: straddling } })],
+      [
+        'run_in_terminal',
+        makePreToolUse({ tool_name: 'run_in_terminal', tool_input: { command: straddling } }),
+      ],
+      ['beforeShellExecution', makeCursorBeforeShellExecution({ command: straddling })],
+      [
+        'pre_run_command',
+        JSON.stringify({
+          agent_action_name: 'pre_run_command',
+          tool_info: { command_line: straddling, cwd: '/x' },
+        }),
+      ],
+    ])('redacts a whole token that straddles the content limit in a %s command', (_name, raw) => {
+      processHook(raw);
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.command).not.toMatch(/ghp_|AAAA/);
+      expect(toolInput.command).toMatch(/\[REDACTED\]$/);
+    });
+
+    it('keeps a destructive command past the content limit classifiable', () => {
+      const command = `echo ${'x'.repeat(10_300)} && rm -rf /tmp/x`;
+      processHook(makePreToolUse({ tool_name: 'Bash', tool_input: { command } }));
+
+      const event = readBufferEvents()[0]!;
+      const fields = parseToolSpecificFields('Bash', event.toolInput, undefined);
+      expect(fields.bashDestructive).toBe(true);
+    });
+  });
+
+  describe('processHook() — classification survives redaction', () => {
+    const eaten = (target: string) => `mysql -u root --password=\nrm -rf ${target}`;
+    const entryPoints = (command: string): Array<[string, string]> => [
+      ['Bash', makePreToolUse({ tool_name: 'Bash', tool_input: { command } })],
+      [
+        'run_in_terminal',
+        makePreToolUse({ tool_name: 'run_in_terminal', tool_input: { command } }),
+      ],
+      ['beforeShellExecution', makeCursorBeforeShellExecution({ command })],
+      [
+        'pre_run_command',
+        JSON.stringify({
+          agent_action_name: 'pre_run_command',
+          tool_info: { command_line: command, cwd: '/x' },
+        }),
+      ],
+    ];
+
+    it.each(entryPoints(eaten(`${'/sandbox'}/x`)))(
+      'keeps a destructive %s command destructive when redaction eats its rm',
+      (_name, raw) => {
+        processHook(raw);
+
+        const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+        expect(toolInput.command).not.toMatch(/\brm\b/);
+        expect(parseToolSpecificFields('Bash', toolInput, undefined).bashDestructive).toBe(true);
+      },
+    );
+
+    it.each(entryPoints('TOKEN=\ncurl https://example.test/x'))(
+      'keeps a network %s command network when redaction eats its leading command',
+      (_name, raw) => {
+        processHook(raw);
+
+        const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+        expect(parseToolSpecificFields('Bash', toolInput, undefined).bashNetwork).toBe(true);
+      },
+    );
+
+    it.each(entryPoints('echo hello --password=\nls'))(
+      'leaves a safe %s command safe after redaction',
+      (_name, raw) => {
+        processHook(raw);
+
+        const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+        const fields = parseToolSpecificFields('Bash', toolInput, undefined);
+        expect(fields.bashDestructive).toBe(false);
+        expect(fields.bashNetwork).toBe(false);
+      },
+    );
+
+    it('carries no flags for a command too long to classify cheaply, so the stored text decides', () => {
+      processHook(
+        makePreToolUse({
+          tool_name: 'Bash',
+          tool_input: { command: `echo ${'x'.repeat(20_000)} && rm -rf /sandbox/x` },
+        }),
+      );
+
+      const toolInput = readBufferEvents()[0]!.toolInput as Record<string, unknown>;
+      expect(toolInput.bashDestructive).toBeUndefined();
+      expect(parseToolSpecificFields('Bash', toolInput, undefined).bashDestructive).toBe(true);
+    });
+
+    it('never stores the raw command', () => {
+      processHook(
+        makePreToolUse({
+          tool_name: 'Bash',
+          tool_input: { command: `mysql -u root --password=S3CRET9 && ${'rm'} -rf /sandbox/x` },
+        }),
+      );
+
+      expect(readFileSync(bufferPath, 'utf8')).not.toContain('S3CRET9');
+    });
+  });
+
   describe('processHook() — PowerShell (native Windows tool, no Git Bash)', () => {
     // PowerShell is a real, first-party Claude Code tool (see
     // code.claude.com/docs/en/tools-reference) — extractInputMeta() had no
@@ -387,6 +536,8 @@ describe('collector-script', () => {
       const event = readBufferEvents()[0]!;
       expect(event.toolInput).toEqual({
         command: 'Get-Process',
+        bashDestructive: false,
+        bashNetwork: false,
         description: 'List processes',
         timeout: 30000,
         run_in_background: false,
@@ -414,7 +565,7 @@ describe('collector-script', () => {
       expect(event.toolOutput).toEqual({ exitCode: 0 });
     });
 
-    it('keeps only the PR number from a gh pr create URL, never the output text', () => {
+    it('keeps only the PR number and repo from a gh pr create URL, never the output text', () => {
       const response = {
         stdout: 'Creating pull request for fix into main\n\nhttps://github.com/acme/app/pull/42\n',
         stderr: '',
@@ -428,7 +579,22 @@ describe('collector-script', () => {
       );
 
       const event = readBufferEvents()[0]!;
-      expect(event.toolOutput).toEqual({ createdPrNumber: '42' });
+      expect(event.toolOutput).toEqual({ createdPrNumber: '42', createdPrRepo: 'acme/app' });
+    });
+
+    it('lowercases the repo a gh pr create URL names', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'Bash',
+          tool_input: { command: 'gh pr create --fill' },
+          tool_response: { stdout: 'https://github.example.com/Acme/My.App/pull/7\n' },
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolOutput).toEqual({
+        createdPrNumber: '7',
+        createdPrRepo: 'acme/my.app',
+      });
     });
 
     it.each([
@@ -436,6 +602,11 @@ describe('collector-script', () => {
         'two creates',
         'gh pr create --base main --fill && gh pr create --base part-1 --fill',
         'https://github.com/acme/app/pull/41\nhttps://github.com/acme/app/pull/42\n',
+      ],
+      [
+        'the same number in two repos',
+        'gh pr create --fill && gh pr create -R acme/other --fill',
+        'https://github.com/acme/app/pull/41\nhttps://github.com/acme/other/pull/41\n',
       ],
       [
         'a comment on another PR',
@@ -469,7 +640,10 @@ describe('collector-script', () => {
         }),
       );
 
-      expect(readBufferEvents()[0]!.toolOutput).toEqual({ createdPrNumber: '41' });
+      expect(readBufferEvents()[0]!.toolOutput).toEqual({
+        createdPrNumber: '41',
+        createdPrRepo: 'acme/app',
+      });
     });
 
     it('ignores a PR URL in the output of a command that is not gh pr create', () => {
@@ -498,7 +672,10 @@ describe('collector-script', () => {
         }),
       );
 
-      expect(readBufferEvents()[0]!.toolOutput).toEqual({ createdPrNumber: '57' });
+      expect(readBufferEvents()[0]!.toolOutput).toEqual({
+        createdPrNumber: '57',
+        createdPrRepo: 'acme/app',
+      });
     });
 
     it('keeps the repo and PR number an MCP merge_pull_request call names', () => {
@@ -1369,9 +1546,150 @@ describe('collector-script', () => {
       expect(event.outputContent).not.toContain('eyJhbGciOiJIUzI1NiJ9');
     });
 
+    describe('redacts each string before it is JSON-encoded', () => {
+      const SECRET = /hunter2|sekret/;
+
+      it.each([
+        '\x1b[32mcurl -u me:hunter2 x',
+        '\x1b[1mmysql -psekret db',
+        '\fcurl -u me:hunter2 x',
+        'curl -"u" me:hunter2 x',
+        'curl -u"" me:hunter2 x',
+        'curl -s"u" me:hunter2 x',
+        'curl -"t" hunter2 x',
+      ])('stores %j in content as its redacted command', (command) => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+        processHook(makePreToolUse({ tool_name: 'Bash', tool_input: { command } }));
+        processHook(
+          makePostToolUse({
+            tool_name: 'Bash',
+            tool_input: { command: 'make' },
+            tool_response: { stdout: command, stderr: '' },
+          }),
+        );
+
+        const [pre, post] = readBufferEvents();
+        const stored = (pre!.toolInput as { command: string }).command;
+        expect(stored).not.toMatch(SECRET);
+        expect(JSON.parse(pre!.inputContent as string)).toEqual({ command: stored });
+        expect(JSON.parse(post!.outputContent as string)).toEqual({ stdout: stored, stderr: '' });
+      });
+
+      const nested = {
+        steps: [{ run: '\x1b[32mcurl -u me:hunter2 x' }, 'curl -"u" me:hunter2 y'],
+        'mysql -psekret': 1,
+        env: 'export API_TOKEN="a b"',
+      };
+      const redacted = {
+        steps: [{ run: '\x1b[32mcurl [REDACTED] x' }, 'curl -"[REDACTED] y'],
+        'mysql [REDACTED]': 1,
+        env: 'export API_[REDACTED]',
+      };
+
+      it.each([
+        ['PreToolUse', makePreToolUse({ tool_input: nested }), 'inputContent'],
+        ['PostToolUse', makePostToolUse({ tool_response: nested }), 'outputContent'],
+        ['BeforeTool', makeGeminiBeforeTool({ tool_input: nested }), 'inputContent'],
+        ['AfterTool', makeGeminiAfterTool({ tool_response: nested }), 'outputContent'],
+        [
+          'Antigravity PreToolUse',
+          makeAntigravityPreToolUse({ toolCall: { name: 'run_command', args: nested } }),
+          'inputContent',
+        ],
+        ['StopFailure', makeStopFailure({ error_details: nested }), 'errorDetails'],
+      ])('in arrays, objects and keys of a %s payload', (_, payload, field) => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+        processHook(payload);
+
+        const content = readBufferEvents()[0]![field] as string;
+        expect(JSON.parse(content)).toEqual(redacted);
+      });
+
+      const capped = 'x'.repeat(240) + ' sk-' + 'a'.repeat(40);
+      const cursorRead = JSON.stringify({
+        hook_event_name: 'beforeReadFile',
+        conversation_id: 'conv-1',
+        generation_id: 'gen-1',
+        content: capped,
+        file_path: 'notes.txt',
+      });
+
+      it.each([
+        ['PostToolUse', makePostToolUse({ tool_response: { data: capped } }), 'outputContent'],
+        ['Cursor beforeReadFile', cursorRead, 'outputContent'],
+        [
+          'StopFailure',
+          makeStopFailure({ last_assistant_message: capped }),
+          'lastAssistantMessage',
+        ],
+      ])('redacts a secret that the length cap would cut short in a %s', (name, payload, field) => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
+
+        processHook(payload);
+
+        const text = 'x'.repeat(240) + ' [REDACTED]';
+        expect(readBufferEvents()[0]![field]).toBe(
+          name === 'PostToolUse'
+            ? JSON.stringify({ data: text }).slice(0, 256) + '...[truncated]'
+            : text,
+        );
+      });
+
+      it('numbers keys that redact to the same text so no entry is lost', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+        processHook(
+          makePostToolUse({
+            tool_response: {
+              'curl -u a:b': 1,
+              'curl -u c:d': 2,
+              'curl [REDACTED] (2)': 3,
+              'curl -u e:f': 4,
+            },
+          }),
+        );
+
+        expect(JSON.parse(readBufferEvents()[0]!.outputContent as string)).toEqual({
+          'curl [REDACTED]': 1,
+          'curl [REDACTED] (2)': 2,
+          'curl [REDACTED] (2) (2)': 3,
+          'curl [REDACTED] (3)': 4,
+        });
+      });
+
+      it('keeps a value inside the cap when a later key is longer than the cap', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
+
+        processHook(makePostToolUse({ tool_response: { a: 'value', ['k'.repeat(300)]: 1 } }));
+
+        expect(readBufferEvents()[0]!.outputContent).toMatch(/^\{"a":"value","kkk/);
+      });
+
+      it('marks a string past the cap as truncated when redaction pulls it inside', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
+        const pem =
+          '-----BEGIN PRIVATE KEY-----\n' + 'A'.repeat(300) + '\n-----END PRIVATE KEY-----';
+
+        processHook(
+          makePostToolUse({ tool_response: { a: pem, b: 'curl -u me:hunter2 x', c: 'tail' } }),
+        );
+
+        expect(JSON.parse(readBufferEvents()[0]!.outputContent as string)).toEqual({
+          a: '[REDACTED]',
+          b: '...[truncated]',
+          c: '...[truncated]',
+        });
+      });
+    });
+
     it('truncates content exceeding max length', () => {
       process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
-      process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '50';
+      process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
 
       const longContent = 'x'.repeat(100_000);
       processHook(
@@ -1382,8 +1700,72 @@ describe('collector-script', () => {
 
       const event = readBufferEvents()[0]!;
       const content = event.outputContent as string;
-      expect(content.length).toBeLessThan(100);
+      expect(content.length).toBeLessThan(300);
       expect(content).toContain('...[truncated]');
+    });
+
+    describe('NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH bounds', () => {
+      const captured = (): string => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        processHook(makePostToolUse({ tool_response: { data: 'x'.repeat(1_000) } }));
+        return readBufferEvents()[0]!.outputContent as string;
+      };
+      const serialized = JSON.stringify({ data: 'x'.repeat(1_000) });
+
+      it.each(['0', '-5', '255', '256'])('clamps %s up to the 256 floor', (raw) => {
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = raw;
+        expect(captured()).toBe(serialized.slice(0, 256) + '...[truncated]');
+      });
+
+      it.each(['abc', ''])('falls back to 10,240 for %j', (raw) => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = raw;
+        processHook(makePostToolUse({ tool_response: { data: 'x'.repeat(20_000) } }));
+        const serializedLong = JSON.stringify({ data: 'x'.repeat(20_000) });
+        expect(readBufferEvents()[0]!.outputContent).toBe(
+          serializedLong.slice(0, 10_240) + '...[truncated]',
+        );
+      });
+
+      it('clamps a value above the upper bound to the ceiling instead of the default', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '2000000';
+        processHook(makePostToolUse({ tool_response: { data: 'x'.repeat(20_000) } }));
+        expect(readBufferEvents()[0]!.outputContent).toBe(
+          JSON.stringify({ data: 'x'.repeat(20_000) }),
+        );
+      });
+
+      it.each([
+        ['0', 256],
+        ['-5', 256],
+        ['255', 256],
+        ['256', 256],
+        ['1048576', 1_048_576],
+        ['1048577', 1_048_576],
+        ['2000000', 1_048_576],
+        ['abc', 10_240],
+        ['', 10_240],
+        [undefined, 10_240],
+      ])('getMaxContentLength with %j returns %i', (raw, expected) => {
+        if (raw === undefined) delete process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH;
+        else process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = raw;
+        expect(getMaxContentLength()).toBe(expected);
+      });
+
+      it('accepts the upper bound itself', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '1048576';
+        const serializedAtBound = JSON.stringify({ data: 'x'.repeat(1_048_576 - 11) });
+        expect(serializedAtBound).toHaveLength(1_048_576);
+        processHook(makePostToolUse({ tool_response: { data: 'x'.repeat(1_048_576 - 11) } }));
+        expect(readBufferEvents()[0]!.outputContent).toBe(serializedAtBound);
+      });
+
+      it('cuts at the configured length when the value is within bounds', () => {
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
+        expect(captured()).toBe(serialized.slice(0, 256) + '...[truncated]');
+      });
     });
   });
 
@@ -1964,6 +2346,283 @@ describe('collector-script', () => {
     });
   });
 
+  describe('self-reported token usage from post-MCP hooks', () => {
+    const report = {
+      report_id: 'r-7c1d9e42',
+      input_tokens: 1200,
+      output_tokens: 300,
+      thinking_tokens: 50,
+      cache_read_tokens: 4000,
+      model: 'claude-sonnet-4-6',
+    };
+    const hookReply = JSON.stringify({
+      accepted: true,
+      recorded_by: 'hook',
+      report_id: report.report_id,
+    });
+
+    beforeEach(() => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      process.env.MCP_CLIENT = 'cursor';
+    });
+
+    const expectedLine = (conversationId: string, platform: string) => ({
+      mode: 'self_report',
+      tool: 'nr_observe_report_tokens',
+      sessionId: conversationId,
+      reportId: report.report_id,
+      model: report.model,
+      inputTokens: report.input_tokens,
+      outputTokens: report.output_tokens,
+      thinkingTokens: report.thinking_tokens,
+      cacheReadTokens: report.cache_read_tokens,
+      cacheCreationTokens: 0,
+      platform,
+    });
+
+    const cursorReportHook = (conversationId: string, overrides: Record<string, unknown> = {}) =>
+      JSON.stringify({
+        hook_event_name: 'afterMCPExecution',
+        conversation_id: conversationId,
+        mcp_server_name: 'newrelic-preflight',
+        tool_name: 'nr_observe_report_tokens',
+        tool_input: JSON.stringify(report),
+        result_json: JSON.stringify({ content: [{ type: 'text', text: hookReply }] }),
+        ...overrides,
+      });
+    const windsurfReportHook = (trajectoryId: string) =>
+      JSON.stringify({
+        agent_action_name: 'post_mcp_tool_use',
+        trajectory_id: trajectoryId,
+        tool_info: {
+          mcp_server_name: 'preflight',
+          mcp_tool_name: 'nr_observe_report_tokens',
+          mcp_tool_arguments: report,
+          mcp_result: hookReply,
+        },
+      });
+
+    it.each([
+      ...['newrelic-preflight', 'preflight', 'nr-ai-observability'].map(
+        (server): [string, string, string] => [
+          `Cursor afterMCPExecution from the ${server} server`,
+          cursorReportHook('conv-reporting', { mcp_server_name: server }),
+          'cursor',
+        ],
+      ),
+      ['Windsurf post_mcp_tool_use', windsurfReportHook('conv-reporting'), 'windsurf'],
+    ])(
+      "%s adds a usage line to that conversation only, stamped with its platform under Claude Code's environment",
+      (_label, payload, platform) => {
+        process.env.MCP_CLIENT = 'claude-code';
+        process.env.CLAUDECODE = '1';
+        processHook(payload);
+
+        const events = readBufferLines('conv-reporting');
+        expect(events.map((e) => e.mode)).toEqual(['post', 'self_report']);
+        expect(events.map((e) => e.platform)).toEqual([platform, platform]);
+        expect(events[1]).toMatchObject(expectedLine('conv-reporting', platform));
+        expect(readBufferLines('conv-other')).toEqual([]);
+      },
+    );
+
+    const errorReply = (text: string) =>
+      JSON.stringify({ isError: true, content: [{ type: 'text', text }] });
+
+    it.each([
+      ['a reply that recorded the report itself', { result_json: '{"recorded":true}' }],
+      [
+        'a reply not marked as recorded by the hook',
+        { result_json: hookReply.replace('"recorded_by":"hook"', '"recorded_by":"engine"') },
+      ],
+      ['a rejected call', { result_json: '{"error":"invalid_token_report","message":"bad"}' }],
+      ['a reply for another report_id', { result_json: hookReply.replace('7c1d', '0000') }],
+      ['a lookalike tool name', { tool_name: 'xnr_observe_report_tokens' }],
+      ['a prefixed tool name', { tool_name: 'preflight-nr_observe_report_tokens' }],
+      ["another server's tool of the same name", { mcp_server_name: 'github' }],
+      ['no server name', { mcp_server_name: undefined }],
+      ['a lookalike of the older server key', { mcp_server_name: 'my-nr-ai-observability-proxy' }],
+      ['no result at all', { result_json: undefined }],
+      [
+        "a pending engine's reply for a tool it does not list",
+        { result_json: errorReply(JSON.stringify({ error: 'session_id not yet resolved' })) },
+      ],
+      ['an error result that quotes the reply', { result_json: errorReply(hookReply) }],
+      [
+        'an error message that quotes the reply',
+        {
+          result_json: JSON.stringify({
+            content: [{ type: 'text', text: JSON.stringify({ error: 'x', message: hookReply }) }],
+          }),
+        },
+      ],
+      ...['pending-1', 'local-x', 'proxy-7', 'unknown'].map(
+        (id): [string, Record<string, unknown>] => [
+          `the synthetic conversation id ${id}`,
+          { conversation_id: id },
+        ],
+      ),
+    ])('adds no usage line for %s', (_label, overrides) => {
+      processHook(cursorReportHook('conv-reporting', overrides));
+
+      const id = overrides.conversation_id ?? 'conv-reporting';
+      expect(readBufferLines(String(id)).map((e) => e.mode)).toEqual(['post']);
+    });
+
+    it('records a reused report_id with different counts, but an exact retry once', () => {
+      processHook(cursorReportHook('conv-reporting'));
+      processHook(cursorReportHook('conv-reporting'));
+      const changed = JSON.stringify({ ...report, input_tokens: 1201 });
+      processHook(cursorReportHook('conv-reporting', { tool_input: changed }));
+
+      const lines = readBufferLines('conv-reporting').filter((e) => e.mode === 'self_report');
+      expect(lines.map((e) => e.inputTokens)).toEqual([1200, 1201]);
+    });
+
+    const bufferFds = [
+      "import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';",
+      'const { openSync, closeSync, writeSync, statSync } = fs; const buffers = new Map(); const paths = new Map(); let opened = 0;',
+      "fs.openSync = (p, ...a) => { const fd = openSync(p, ...a); if (String(p).includes('buffer-')) buffers.set(fd, ++opened), paths.set(fd, String(p)); return fd; };",
+      'const reportLine = (fd) => buffers.get(fd) >= 2;',
+      "const enospc = () => Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });",
+    ];
+    const bufferPath = () => resolve(tmpDir, 'buffer-conv-reporting.jsonl');
+    const modesIn = (path: string): unknown[] =>
+      (existsSync(path) ? readFileSync(path, 'utf-8') : '').split(/\n|\0[^]*/).flatMap((text) => {
+        try {
+          return [(JSON.parse(text) as { mode: string }).mode];
+        } catch {
+          return [];
+        }
+      });
+    const runWithBufferFault = (failure: string): unknown[] => {
+      const preload = [...bufferFds, failure, 'syncBuiltinESMExports();'].join('\n');
+      const script = resolve(__dirname, '..', '..', 'dist', 'hooks', 'collector-script.js');
+      execFileSync(
+        'node',
+        ['--import', `data:text/javascript,${encodeURIComponent(preload)}`, script],
+        {
+          input: cursorReportHook('conv-reporting'),
+          env: { ...process.env, NEW_RELIC_AI_MCP_STORAGE_PATH: tmpDir, MCP_CLIENT: 'cursor' },
+        },
+      );
+      const drained = [...modesIn(`${bufferPath()}.drained`), ...modesIn(bufferPath())];
+      rmSync(bufferPath(), { force: true });
+      processHook(cursorReportHook('conv-reporting'));
+      return [...drained, ...modesIn(bufferPath())];
+    };
+
+    const failClose = (lineFd: string, drain = '') =>
+      `fs.closeSync = (fd) => { closeSync(fd); if (${lineFd}) { const p = paths.get(fd); ${drain} throw new Error('EIO'); } };`;
+    const drainThenRestart = "fs.renameSync(p, p + '.drained'); fs.writeFileSync(p, '');";
+    const shortWrite = (keep: string, tornEnd = 'throw enospc()') =>
+      `fs.writeSync = (fd, b, off = 0, ...a) => { if (!reportLine(fd)) return writeSync(fd, b, off, ...a); if (typeof b === 'string') ${tornEnd}; return writeSync(fd, b, off, ${keep}); };`;
+    const sealAndFailStat = (sealFirst: boolean): string => {
+      const seal = `fs.renameSync(p, p + '.drained'); const s = openSync(p + '.drained', 'a'); writeSync(s, ${JSON.stringify(DRAIN_SEAL)}); closeSync(s); fs.writeFileSync(p, '');`;
+      const write = 'const n = writeSync(fd, b, ...a);';
+      return [
+        "fs.writeSync = (fd, b, ...a) => { if (!reportLine(fd) || typeof b === 'string') return writeSync(fd, b, ...a); const p = paths.get(fd);",
+        ...(sealFirst ? [seal, write] : [write, seal]),
+        "fs.statSync = (q, ...o) => { if (q === p) throw new Error('EIO'); return statSync(q, ...o); }; syncBuiltinESMExports(); return n; };",
+      ].join(' ');
+    };
+    it.each([
+      [
+        'a drain renames and seals the buffer before the usage line lands and the stat after it fails',
+        sealAndFailStat(true),
+        ['post', 'post', 'self_report'],
+      ],
+      [
+        'a drain renames and seals the buffer after the usage line lands and the stat after it fails',
+        sealAndFailStat(false),
+        ['post', 'self_report', 'post'],
+      ],
+      [
+        'closing the buffer fails after a drain took the usage line and a new hook began a fresh buffer',
+        failClose('reportLine(fd)', drainThenRestart),
+        ['post', 'self_report', 'post'],
+      ],
+      [
+        'the disk fills one byte short of the usage line and its torn end fails too',
+        shortWrite('b.length - 1 - off'),
+        ['post', 'self_report', 'post'],
+      ],
+      [
+        'every write of the usage line ends one byte short and is marked torn',
+        shortWrite('b.length - 1 - off', 'return writeSync(fd, b)'),
+        ['post', 'post', 'self_report'],
+      ],
+      [
+        'the disk fills before the usage line is whole',
+        shortWrite('10'),
+        ['post', 'post', 'self_report'],
+      ],
+      [
+        'closing the buffer fails after the post, before the usage line',
+        failClose('buffers.get(fd) === 1'),
+        ['post', 'post', 'self_report'],
+      ],
+    ])('counts the usage line once when %s', (_label, failure, modes) => {
+      expect(runWithBufferFault(failure)).toEqual(modes);
+    });
+
+    it('writes a retried report_id once, even after the buffer was drained', () => {
+      processHook(cursorReportHook('conv-reporting'));
+      rmSync(resolve(tmpDir, 'buffer-conv-reporting.jsonl'));
+      processHook(cursorReportHook('conv-reporting'));
+
+      expect(readBufferLines('conv-reporting').map((e) => e.mode)).toEqual(['post']);
+      const conversationDir = resolve(tmpDir, 'self-reports', 'conv-reporting');
+      const claims = readdirSync(conversationDir);
+      expect(claims).toHaveLength(1);
+      expect(statSync(conversationDir).mode & 0o777).toBe(0o700);
+      expect(statSync(resolve(conversationDir, claims[0]!)).mode & 0o777).toBe(0o600);
+    });
+
+    it.each([
+      ['the self-reports path is a file', () => writeFileSync(resolve(tmpDir, 'self-reports'), '')],
+      [
+        "the conversation's claim path is a file",
+        () => {
+          mkdirSync(resolve(tmpDir, 'self-reports'));
+          writeFileSync(resolve(tmpDir, 'self-reports', 'conv-reporting'), '');
+        },
+      ],
+      [
+        'the self-reports directory is unreadable',
+        () => mkdirSync(resolve(tmpDir, 'self-reports'), { mode: 0o000 }),
+      ],
+    ])('still writes the post but no usage line when %s', (_label, breakClaims) => {
+      breakClaims();
+      try {
+        processHook(cursorReportHook('conv-reporting'));
+      } finally {
+        chmodSync(resolve(tmpDir, 'self-reports'), 0o700);
+      }
+
+      expect(readBufferLines('conv-reporting').map((e) => e.mode)).toEqual(['post']);
+    });
+
+    it.each([
+      ['beforeMCPExecution', 'cursor'],
+      ['beforeShellExecution', 'cursor'],
+      ['afterFileEdit', 'cursor'],
+      ['pre_mcp_tool_use', 'windsurf'],
+      ['post_run_command', 'windsurf'],
+    ])(
+      "stamps %s with the hook's platform %s under Claude Code's environment",
+      (name, platform) => {
+        process.env.MCP_CLIENT = 'claude-code';
+        process.env.CLAUDECODE = '1';
+
+        processHook(JSON.stringify({ hook_event_name: name, conversation_id: 'conv-event' }));
+
+        expect(readBufferLines('conv-event').map((e) => e.platform)).toEqual([platform]);
+      },
+    );
+  });
+
   describe('helper functions', () => {
     it('redact() replaces API keys', () => {
       expect(redact('API_KEY = my-secret-key')).toContain('[REDACTED]');
@@ -2216,8 +2875,8 @@ describe('collector-script', () => {
 
       const aPath = resolve(tmpDir, 'buffer-sess-A.jsonl');
       const bPath = resolve(tmpDir, 'buffer-sess-B.jsonl');
-      expect(readFileSync(aPath, 'utf-8').trim().split('\n')).toHaveLength(2);
-      expect(readFileSync(bPath, 'utf-8').trim().split('\n')).toHaveLength(1);
+      expect(readFileSync(aPath, 'utf-8').split('\n').filter(Boolean)).toHaveLength(2);
+      expect(readFileSync(bPath, 'utf-8').split('\n').filter(Boolean)).toHaveLength(1);
     });
   });
 
@@ -2228,7 +2887,7 @@ describe('collector-script', () => {
     });
 
     it('writes <storage>/session-by-ppid/<ppid>.txt with the sessionId', () => {
-      writePpidBreadcrumb('sess-bread');
+      writePpidBreadcrumb('sess-bread', tmpDir);
       const ppid = process.ppid;
       const breadcrumbPath = resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`);
       expect(existsSync(breadcrumbPath)).toBe(true);
@@ -2236,20 +2895,20 @@ describe('collector-script', () => {
     });
 
     it('rejects malformed sessionIds without writing', () => {
-      writePpidBreadcrumb('../../escape');
+      writePpidBreadcrumb('../../escape', tmpDir);
       const ppid = process.ppid;
       expect(existsSync(resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`))).toBe(false);
     });
 
     it('short-circuits when content already matches', () => {
-      writePpidBreadcrumb('sess-stable');
+      writePpidBreadcrumb('sess-stable', tmpDir);
       const ppid = process.ppid;
       const breadcrumbPath = resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`);
       const firstStat = statSync(breadcrumbPath).mtimeMs;
       // Tight loop — most calls should observe the existsSync + readFileSync
       // short-circuit and not rewrite the file. mtimeMs has 1ms resolution so
       // we just assert that we don't error and the content is unchanged.
-      for (let i = 0; i < 50; i++) writePpidBreadcrumb('sess-stable');
+      for (let i = 0; i < 50; i++) writePpidBreadcrumb('sess-stable', tmpDir);
       expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-stable');
       // The mtime may or may not change depending on filesystem — the key
       // assertion is correctness; the perf claim is documented separately.
@@ -2257,7 +2916,7 @@ describe('collector-script', () => {
     });
 
     it('refreshes mtime on the short-circuit path so an active session never goes stale', () => {
-      writePpidBreadcrumb('sess-active');
+      writePpidBreadcrumb('sess-active', tmpDir);
       const ppid = process.ppid;
       const breadcrumbPath = resolve(tmpDir, 'session-by-ppid', `${ppid}.txt`);
 
@@ -2272,18 +2931,9 @@ describe('collector-script', () => {
       // resolveFromBreadcrumb()'s staleness check (session-resolver.ts)
       // would reject this breadcrumb forever after any MCP restart that
       // keeps the same ppid and session_id.
-      writePpidBreadcrumb('sess-active');
+      writePpidBreadcrumb('sess-active', tmpDir);
       expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-active');
       expect(statSync(breadcrumbPath).mtimeMs).toBeGreaterThan(Date.now() - 5_000);
-    });
-
-    it('processHook() drops the breadcrumb on every fire (idempotent overwrite)', () => {
-      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
-      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
-
-      processHook(makePreToolUse({ session_id: 'sess-bc' }));
-      const breadcrumbPath = resolve(tmpDir, 'session-by-ppid', `${process.ppid}.txt`);
-      expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-bc');
     });
 
     it('writes breadcrumb at each ancestor PID (end-to-end WSL+fish path)', () => {
@@ -2298,7 +2948,7 @@ describe('collector-script', () => {
         throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
       };
       try {
-        writePpidBreadcrumb('sess-ancestor');
+        writePpidBreadcrumb('sess-ancestor', tmpDir);
       } finally {
         _procFs.readFile = origReadFile;
       }
@@ -2322,21 +2972,21 @@ describe('collector-script', () => {
     });
 
     it('writes <storage>/session-by-cwd/<sanitized-cwd>.txt with the sessionId', () => {
-      writeCwdBreadcrumb('sess-bread', '/projects/test');
+      writeCwdBreadcrumb('sess-bread', '/projects/test', tmpDir);
       const breadcrumbPath = resolve(tmpDir, 'session-by-cwd', '-projects-test.txt');
       expect(existsSync(breadcrumbPath)).toBe(true);
       expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-bread');
     });
 
     it('sanitizes a backslash-separated (Windows) cwd, stripping the drive-letter colon too', () => {
-      writeCwdBreadcrumb('sess-win', 'C:\\Users\\test\\myproject');
+      writeCwdBreadcrumb('sess-win', 'C:\\Users\\test\\myproject', tmpDir);
       const breadcrumbPath = resolve(tmpDir, 'session-by-cwd', 'C--Users-test-myproject.txt');
       expect(existsSync(breadcrumbPath)).toBe(true);
       expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-win');
     });
 
     it('strips the drive-letter colon so the breadcrumb filename has no embedded colon', () => {
-      writeCwdBreadcrumb('sess-colon', 'C:\\Users\\test\\myproject');
+      writeCwdBreadcrumb('sess-colon', 'C:\\Users\\test\\myproject', tmpDir);
       expect(existsSync(resolve(tmpDir, 'session-by-cwd', 'C--Users-test-myproject.txt'))).toBe(
         true,
       );
@@ -2346,30 +2996,299 @@ describe('collector-script', () => {
     });
 
     it('no-ops when cwd is missing or empty', () => {
-      writeCwdBreadcrumb('sess-nocwd', undefined);
-      writeCwdBreadcrumb('sess-nocwd', '');
+      writeCwdBreadcrumb('sess-nocwd', undefined, tmpDir);
+      writeCwdBreadcrumb('sess-nocwd', '', tmpDir);
       expect(existsSync(resolve(tmpDir, 'session-by-cwd'))).toBe(false);
     });
 
     it('rejects malformed sessionIds without writing', () => {
-      writeCwdBreadcrumb('../../escape', '/projects/test');
+      writeCwdBreadcrumb('../../escape', '/projects/test', tmpDir);
       expect(existsSync(resolve(tmpDir, 'session-by-cwd', '-projects-test.txt'))).toBe(false);
     });
 
     it('short-circuits when content already matches', () => {
-      writeCwdBreadcrumb('sess-stable', '/projects/test');
+      writeCwdBreadcrumb('sess-stable', '/projects/test', tmpDir);
       const breadcrumbPath = resolve(tmpDir, 'session-by-cwd', '-projects-test.txt');
-      for (let i = 0; i < 50; i++) writeCwdBreadcrumb('sess-stable', '/projects/test');
+      for (let i = 0; i < 50; i++) writeCwdBreadcrumb('sess-stable', '/projects/test', tmpDir);
       expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-stable');
     });
+  });
 
-    it('processHook() drops the cwd breadcrumb on every fire', () => {
+  describe('processHook() breadcrumb writer', () => {
+    beforeEach(() => {
       delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
       process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      for (const key of [...CLAUDE_CODE_ENV_SIGNALS, 'MCP_CLIENT', 'NEW_RELIC_AI_PLATFORM']) {
+        delete process.env[key];
+      }
+    });
 
-      processHook(makePreToolUse({ session_id: 'sess-bc', cwd: '/projects/test' }));
-      const breadcrumbPath = resolve(tmpDir, 'session-by-cwd', '-projects-test.txt');
-      expect(readFileSync(breadcrumbPath, 'utf-8')).toBe('sess-bc');
+    const crumbs = (writer: string) => ({
+      ppid: resolve(tmpDir, 'breadcrumbs', writer, 'session-by-ppid', `${process.ppid}.txt`),
+      cwd: resolve(tmpDir, 'breadcrumbs', writer, 'session-by-cwd', '-projects-test.txt'),
+    });
+
+    it('files a Claude Code hook under claude-code and in the untagged layout older servers read', () => {
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      const sessionCrumb = resolve(
+        tmpDir,
+        'breadcrumbs',
+        'claude-code',
+        'session-by-id',
+        'sess-claude.txt',
+      );
+      expect(readFileSync(sessionCrumb, 'utf-8')).toBe('sess-claude');
+      expect(existsSync(resolve(tmpDir, 'session-by-id'))).toBe(false);
+      expect(readFileSync(crumbs('claude-code').ppid, 'utf-8')).toBe('sess-claude');
+      expect(readFileSync(crumbs('claude-code').cwd, 'utf-8')).toBe('sess-claude');
+      const legacyPpid = resolve(tmpDir, 'session-by-ppid', `${process.ppid}.txt`);
+      expect(readFileSync(legacyPpid, 'utf-8')).toBe('sess-claude');
+      const legacyCwd = resolve(tmpDir, 'session-by-cwd', '-projects-test.txt');
+      expect(readFileSync(legacyCwd, 'utf-8')).toBe('sess-claude');
+    });
+
+    it.each(createDefaultRegistry().getRegistered())(
+      'files a hook naming $platformName in any case or separator where its server reads',
+      (adapter) => {
+        process.env.MCP_CLIENT = adapter.platformName.toUpperCase().replace(/-/g, '_');
+        processHook(makePreToolUse({ session_id: 'sess-alias', cwd: '/projects/test' }));
+        const writer =
+          adapter.platformName === 'generic-mcp' ? 'unattributed' : adapter.platformName;
+        expect(readFileSync(crumbs(writer).cwd, 'utf-8')).toBe('sess-alias');
+        const reads = sessionBreadcrumbWriters(adapter);
+        // A copilot-sdk server reads its host's copilot breadcrumbs, so no server reads a copilot-sdk writer.
+        if (reads.length > 0 && writer !== 'copilot-sdk') expect(reads).toContain(writer);
+      },
+    );
+
+    it('keeps another engine off a session whose ppid breadcrumbs are gone and whose tagged cwd breadcrumb a newer session replaced', () => {
+      const kiroStartedAt = Date.now() - 60_000;
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse({ session_id: 'sess-cc1', cwd: '/projects/test' }));
+      rmSync(resolve(tmpDir, 'session-by-ppid'), { recursive: true });
+      rmSync(dirname(crumbs('claude-code').ppid), { recursive: true });
+      writeFileSync(crumbs('claude-code').cwd, 'sess-cc2');
+      const kiro = sessionBreadcrumbs(tmpDir, ['kiro', 'unattributed'], kiroStartedAt);
+      expect(kiro.cwd('/projects/test')).toBeNull();
+    });
+
+    it("refreshes a session's id crumb on every hook and never files a malformed id", () => {
+      process.env.CLAUDECODE = '1';
+      const idDir = resolve(tmpDir, 'breadcrumbs', 'claude-code', 'session-by-id');
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      const old = new Date(Date.now() - 60_000);
+      utimesSync(resolve(idDir, 'sess-claude.txt'), old, old);
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(statSync(resolve(idDir, 'sess-claude.txt')).mtimeMs).toBeGreaterThan(
+        Date.now() - 5_000,
+      );
+      processHook(makePreToolUse({ session_id: '../escape', cwd: '/projects/test' }));
+      expect(readdirSync(idDir)).toEqual(['sess-claude.txt']);
+      expect(existsSync(resolve(idDir, '..', 'escape.txt'))).toBe(false);
+    });
+
+    it('files a hook under the engine its command names, over an inherited Claude Code env', () => {
+      process.env.CLAUDECODE = '1';
+      process.env.MCP_CLIENT = 'kiro';
+      processHook(makePreToolUse({ session_id: 'sess-kiro', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('kiro').cwd, 'utf-8')).toBe('sess-kiro');
+      expect(existsSync(crumbs('claude-code').cwd)).toBe(false);
+    });
+
+    it('files a hook that names no engine as unattributed', () => {
+      processHook(makePreToolUse({ session_id: 'sess-codex', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('unattributed').ppid, 'utf-8')).toBe('sess-codex');
+    });
+
+    const STAMPED_HOOK_ENGINES = ['codex', 'droid', 'gemini-cli', 'opencode', 'kilocode'];
+
+    const documentedStamp = (engine: string): string | undefined => {
+      const adapter = createDefaultRegistry()
+        .getRegistered()
+        .find((candidate) => candidate.platformName === engine)!;
+      const instructions = adapter.getHookInstallInstructions();
+      const commandStamp = /"command": "MCP_CLIENT=([\w-]+) preflight-collector"/.exec(
+        instructions,
+      );
+      const spawnStamp = /spawn\("preflight-collector".*MCP_CLIENT: "([\w-]+)"/.exec(instructions);
+      return (commandStamp ?? spawnStamp)?.[1];
+    };
+
+    it.each(STAMPED_HOOK_ENGINES)(
+      'files the hook command %s documents under its own engine, not unattributed',
+      (engine) => {
+        const stamp = documentedStamp(engine);
+        expect(stamp).toBe(engine);
+        process.env.MCP_CLIENT = stamp;
+        processHook(makePreToolUse({ session_id: 'sess-doc', cwd: '/projects/test' }));
+        expect(readFileSync(crumbs(engine).cwd, 'utf-8')).toBe('sess-doc');
+        expect(existsSync(crumbs('unattributed').cwd)).toBe(false);
+      },
+    );
+
+    it('keeps each documented engine out of the other engines breadcrumb pools', () => {
+      for (const engine of STAMPED_HOOK_ENGINES) {
+        const stamp = documentedStamp(engine);
+        expect(stamp).toBe(engine);
+        process.env.MCP_CLIENT = stamp;
+        processHook(makePreToolUse({ session_id: `sess-${engine}`, cwd: '/projects/test' }));
+      }
+      const registered = createDefaultRegistry().getRegistered();
+      for (const engine of STAMPED_HOOK_ENGINES) {
+        const adapter = registered.find((candidate) => candidate.platformName === engine)!;
+        const pool = sessionBreadcrumbs(tmpDir, sessionBreadcrumbWriters(adapter));
+        expect(pool.cwd('/projects/test')).toBe(`sess-${engine}`);
+      }
+    });
+
+    it('ignores an engine name it does not know and keeps detecting Claude Code', () => {
+      process.env.MCP_CLIENT = 'vscode';
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('claude-code').cwd, 'utf-8')).toBe('sess-claude');
+    });
+
+    it('files a hook naming only unknown engines as unattributed and warns once, naming each unknown name', () => {
+      const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const warnings = () =>
+        stderrWriteSpy.mock.calls
+          .map((args) => String(args[0]))
+          .filter((line) => line.includes('no engine Preflight knows'));
+      process.env.MCP_CLIENT = '../escape';
+      process.env.NEW_RELIC_AI_PLATFORM = 'vscode';
+      processHook(makePreToolUse({ session_id: undefined, cwd: '/projects/test' }));
+      expect(warnings()).toHaveLength(0);
+      processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+      processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+      expect(warnings()).toHaveLength(1);
+      expect(warnings()[0]).toContain('MCP_CLIENT="../escape"');
+      expect(warnings()[0]).toContain('NEW_RELIC_AI_PLATFORM="vscode"');
+      expect(readFileSync(crumbs('unattributed').cwd, 'utf-8')).toBe('sess-x');
+      expect(readFileSync(resolve(tmpDir, 'session-by-cwd', '-projects-test.txt'), 'utf-8')).toBe(
+        'sess-x',
+      );
+      expect(existsSync(resolve(tmpDir, 'escape'))).toBe(false);
+      stderrWriteSpy.mockRestore();
+    });
+
+    it('warns again for a fresh storage dir, not once per module load', () => {
+      const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const warnings = () =>
+        stderrWriteSpy.mock.calls
+          .map((args) => String(args[0]))
+          .filter((line) => line.includes('no engine Preflight knows'));
+      process.env.MCP_CLIENT = 'not-an-engine';
+      const other = resolve(tmpdir(), `nr-hook-other-${Date.now()}-${Math.random()}`);
+      try {
+        processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+        process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = other;
+        processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+        processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+        expect(warnings()).toHaveLength(2);
+      } finally {
+        stderrWriteSpy.mockRestore();
+        rmSync(other, { recursive: true, force: true });
+      }
+    });
+
+    it('stays quiet when the install already recorded a warning for the same name', () => {
+      const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const warnings = () =>
+        stderrWriteSpy.mock.calls
+          .map((args) => String(args[0]))
+          .filter((line) => line.includes('no engine Preflight knows'));
+      writeFileSync(resolve(tmpDir, 'unknown-engine-warned'), 'MCP_CLIENT="not-an-engine"');
+      process.env.MCP_CLIENT = 'not-an-engine';
+      try {
+        processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+        expect(warnings()).toHaveLength(0);
+        expect(readFileSync(crumbs('unattributed').cwd, 'utf-8')).toBe('sess-x');
+        process.env.MCP_CLIENT = 'also-not-an-engine';
+        processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+        expect(warnings()).toHaveLength(1);
+      } finally {
+        stderrWriteSpy.mockRestore();
+      }
+    });
+
+    it('warns again when the unrecognized engine name changes, then stays quiet', () => {
+      const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const warnings = () =>
+        stderrWriteSpy.mock.calls
+          .map((args) => String(args[0]))
+          .filter((line) => line.includes('no engine Preflight knows'));
+      try {
+        process.env.MCP_CLIENT = 'typo-one';
+        processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+        process.env.MCP_CLIENT = 'claude-cod';
+        processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+        processHook(makePreToolUse({ session_id: 'sess-x', cwd: '/projects/test' }));
+        expect(warnings()).toEqual([
+          expect.stringContaining('MCP_CLIENT="typo-one"'),
+          expect.stringContaining('MCP_CLIENT="claude-cod"'),
+        ]);
+      } finally {
+        stderrWriteSpy.mockRestore();
+      }
+    });
+
+    it('warns on every failed breadcrumb write', () => {
+      const stderrWriteSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      process.env.CLAUDECODE = '1';
+      mkdirSync(resolve(tmpDir, 'breadcrumbs'), { recursive: true });
+      writeFileSync(resolve(tmpDir, 'breadcrumbs', 'claude-code'), '');
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      const lines = stderrWriteSpy.mock.calls.map((args) => String(args[0]));
+      stderrWriteSpy.mockRestore();
+      expect(lines.filter((line) => line.includes('cannot write PPID breadcrumb'))).toHaveLength(2);
+      expect(lines.filter((line) => line.includes('cannot write cwd breadcrumb'))).toHaveLength(2);
+    });
+
+    it('reads the ancestor pids once per event for both breadcrumb layouts', () => {
+      process.env.CLAUDECODE = '1';
+      const origReadFile = _procFs.readFile;
+      const reads: string[] = [];
+      _procFs.readFile = (path: string): string => {
+        reads.push(path);
+        throw new Error('ENOENT');
+      };
+      try {
+        processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      } finally {
+        _procFs.readFile = origReadFile;
+      }
+      expect(reads).toEqual([`/proc/${process.ppid}/stat`]);
+      expect(readFileSync(crumbs('claude-code').ppid, 'utf-8')).toBe('sess-claude');
+      expect(readFileSync(resolve(tmpDir, 'session-by-ppid', `${process.ppid}.txt`), 'utf-8')).toBe(
+        'sess-claude',
+      );
+    });
+
+    it('writes no untagged copy when the tagged write fails', () => {
+      process.env.CLAUDECODE = '1';
+      mkdirSync(resolve(tmpDir, 'breadcrumbs'), { recursive: true });
+      writeFileSync(resolve(tmpDir, 'breadcrumbs', 'claude-code'), '');
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(existsSync(resolve(tmpDir, 'session-by-ppid'))).toBe(false);
+      expect(existsSync(resolve(tmpDir, 'session-by-cwd'))).toBe(false);
+    });
+
+    it("refreshes an unchanged cwd breadcrumb's mtime on every event", () => {
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      const old = new Date(Date.now() - 60_000);
+      utimesSync(crumbs('claude-code').cwd, old, old);
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(statSync(crumbs('claude-code').cwd).mtimeMs).toBeGreaterThan(old.getTime() + 30_000);
+    });
+
+    it('knows exactly the registered platforms', () => {
+      const registered = createDefaultRegistry()
+        .getRegistered()
+        .map((a) => a.platformName);
+      expect([...registered].sort()).toEqual([...PLATFORM_NAMES].sort());
     });
   });
 
@@ -2671,6 +3590,12 @@ describe('collector-script', () => {
       expect(stdoutSpy).toHaveBeenCalledWith('{}\n');
     });
 
+    it('writes "{}" to stdout when MCP_CLIENT spells Gemini CLI another way', () => {
+      process.env.MCP_CLIENT = 'Gemini_CLI';
+      processHook(makeGeminiAfterTool());
+      expect(stdoutSpy).toHaveBeenCalledWith('{}\n');
+    });
+
     it('writes "{}" to stdout when NEW_RELIC_AI_PLATFORM is "gemini-cli"', () => {
       process.env.NEW_RELIC_AI_PLATFORM = 'gemini-cli';
       processHook(makeGeminiBeforeTool());
@@ -2699,7 +3624,7 @@ describe('collector-script', () => {
       const event = events[0]!;
       expect(event.mode).toBe('pre');
       expect(event.tool).toBe('run_command');
-      expect(event.toolUseId).toBe('19');
+      expect(event.toolUseId).toBe('agy-conv-001:19');
       expect(event.sessionId).toBe('agy-conv-001');
     });
 
@@ -2718,7 +3643,7 @@ describe('collector-script', () => {
       const event = events[0]!;
       expect(event.mode).toBe('post');
       expect(event.tool).toBe('run_command');
-      expect(event.toolUseId).toBe('19');
+      expect(event.toolUseId).toBe('agy-conv-001:19');
       expect(event.success).toBe(true);
     });
 
@@ -2733,7 +3658,45 @@ describe('collector-script', () => {
       expect(event.error).toBe('exit status 1');
     });
 
-    it('omits toolUseId from both events when stepIdx is not a number', () => {
+    it('pairs each conversation’s step with its own pre when one engine drains two conversations at the same step', () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      const records: ToolCallRecord[] = [];
+      const store = new LocalStore(tmpDir);
+      const engine = new HookEventProcessor({
+        store,
+        drainAllSessions: true,
+        onRecord: (r) => records.push(r),
+      });
+      const call = (conversationId: string, name: string) => ({
+        conversationId,
+        stepIdx: 3,
+        toolCall: { name, args: {} },
+      });
+
+      processHook(makeAntigravityPreToolUse(call('agy-conv-a', 'view_file')), 'PreToolUse');
+      processHook(makeAntigravityPreToolUse(call('agy-conv-b', 'run_command')), 'PreToolUse');
+      engine.processEvents(store.drainAllBuffers());
+      processHook(makeAntigravityPostToolUse(call('agy-conv-a', 'view_file')), 'PostToolUse');
+      processHook(makeAntigravityPostToolUse(call('agy-conv-b', 'run_command')), 'PostToolUse');
+      engine.processEvents(store.drainAllBuffers());
+
+      expect(records.map((r) => [r.sessionId, r.toolName, r.success]).sort()).toEqual([
+        ['agy-conv-a', 'view_file', true],
+        ['agy-conv-b', 'run_command', true],
+      ]);
+      expect(engine.pendingCount).toBe(0);
+    });
+
+    it('uses the bare stepIdx as the toolUseId when the payload has no conversationId', () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      processHook(makeAntigravityPreToolUse({ conversationId: undefined }), 'PreToolUse');
+
+      expect(readBufferLines('unknown')[0]!.toolUseId).toBe('19');
+    });
+
+    it('gives both events one minted toolUseId when stepIdx is not a number', () => {
       delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
       process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
       processHook(makeAntigravityPreToolUse({ stepIdx: undefined }), 'PreToolUse');
@@ -2741,7 +3704,8 @@ describe('collector-script', () => {
 
       const events = readBufferLines('agy-conv-001');
       expect(events.map((e) => e.mode)).toEqual(['pre', 'post']);
-      for (const event of events) expect(event).not.toHaveProperty('toolUseId');
+      expect(events[0]!.toolUseId).toEqual(expect.any(String));
+      expect(events[1]!.toolUseId).toBe(events[0]!.toolUseId);
     });
 
     it('replies with only {} on stdout for PostToolUse, never a decision field (#793)', () => {
@@ -2811,5 +3775,318 @@ describe('collector-script', () => {
       expect(events).toHaveLength(1);
       expect(events[0]!.tool).toBe('Read');
     });
+  });
+});
+
+describe('a tool call without tool_use_id', () => {
+  const SESSION = 'sess-noid';
+  const POLL_MS = 10;
+  let clock: ReturnType<typeof jest.spyOn>;
+
+  beforeEach(() => {
+    delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+    clock = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+  });
+
+  afterEach(() => {
+    clock.mockRestore();
+    jest.useRealTimers();
+  });
+
+  function hook(mode: 'pre' | 'post', tool: string, at: number): void {
+    clock.mockReturnValue(at);
+    const make = mode === 'pre' ? makePreToolUse : makePostToolUse;
+    processHook(make({ tool_use_id: undefined, session_id: SESSION, tool_name: tool }));
+  }
+
+  function bufferIds(): unknown[] {
+    return readFileSync(resolve(tmpDir, `buffer-${SESSION}.jsonl`), 'utf-8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => (JSON.parse(line) as Record<string, unknown>).toolUseId);
+  }
+
+  function mintedEntries(): string[] {
+    return readdirSync(resolve(tmpDir, `minted-ids-buffer-${SESSION}`));
+  }
+
+  interface Outcome {
+    readonly at: number;
+    readonly success: boolean;
+    readonly durationMs: number | null;
+  }
+
+  function startEngine(
+    records: Outcome[],
+    amends: Outcome[],
+    { store, drainAllSessions = false }: { store: LocalStore; drainAllSessions?: boolean } = {
+      store: new LocalStore(tmpDir, SESSION),
+    },
+  ) {
+    jest.useFakeTimers({ doNotFake: ['Date'] });
+    const outcome = ({ timestamp, success, durationMs }: ToolCallRecord) => ({
+      at: timestamp,
+      success,
+      durationMs,
+    });
+    const engine = new HookEventProcessor({
+      store,
+      drainAllSessions,
+      pollIntervalMs: POLL_MS,
+      onRecord: (r) => records.push(outcome(r)),
+      onRecordAmend: (r) => amends.push(outcome(r)),
+    });
+    engine.start();
+    return {
+      pollAt(at: number) {
+        clock.mockReturnValue(at);
+        jest.advanceTimersByTime(POLL_MS);
+      },
+      stop() {
+        engine.stop();
+        engine.persistCountedIdsOfSavedSessions([SESSION]);
+      },
+    };
+  }
+
+  it('stamps the post with the id minted for its pre', () => {
+    hook('pre', 'Read', 1_000);
+    hook('post', 'Read', 2_000);
+
+    const [pre, post] = bufferIds();
+    expect(pre).toEqual(expect.any(String));
+    expect(post).toBe(pre);
+  });
+
+  it('gives parallel same-tool calls their ids oldest first, and only within a tool', () => {
+    hook('pre', 'Read', 1_000);
+    hook('pre', 'Bash', 2_000);
+    hook('pre', 'Read', 3_000);
+    hook('post', 'Read', 4_000);
+    hook('post', 'Read', 5_000);
+    hook('post', 'Bash', 6_000);
+
+    const [read1, bash, read2, ...posts] = bufferIds();
+    expect(new Set([read1, bash, read2]).size).toBe(3);
+    expect(posts).toEqual([read1, read2, bash]);
+  });
+
+  it('matches a post to its pre whatever the case of the tool name', () => {
+    hook('pre', 'Read', 1_000);
+    hook('post', 'read', 2_000);
+
+    const [pre, post] = bufferIds();
+    expect(pre).toEqual(expect.any(String));
+    expect(post).toBe(pre);
+  });
+
+  it('leaves a post without an id when no pre of its tool minted one', () => {
+    hook('pre', 'Read', 1_000);
+    hook('post', 'Bash', 2_000);
+
+    const ids = bufferIds();
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toEqual(expect.any(String));
+    expect(ids[1]).toBeUndefined();
+  });
+
+  it.each([
+    ['Read', 'beforeReadFile'],
+    ['Edit', 'afterFileEdit'],
+  ])('never gives the id of a pending %s to Cursor %s, which has no pre', (tool, postOnlyEvent) => {
+    const cursor = (hook_event_name: string, extra: Record<string, unknown>) =>
+      processHook(JSON.stringify({ hook_event_name, conversation_id: SESSION, ...extra }));
+    cursor('preToolUse', { tool_name: tool });
+    cursor(postOnlyEvent, { file_path: '/projects/test/a.ts' });
+    cursor('postToolUse', { tool_name: tool });
+
+    const [pre, postOnly, post] = bufferIds();
+    expect(pre).toEqual(expect.any(String));
+    expect(postOnly).toBeUndefined();
+    expect(post).toBe(pre);
+  });
+
+  it('does not stamp a post with the id of a pre older than any pairing window', () => {
+    hook('pre', 'Read', 1_000);
+    hook('post', 'Read', 1_000 + 41 * 60_000);
+    hook('post', 'Read', 1_000 + 42 * 60_000);
+
+    const ids = bufferIds();
+    expect(ids).toHaveLength(3);
+    expect(ids[0]).toEqual(expect.any(String));
+    expect(ids.slice(1)).toEqual([undefined, undefined]);
+  });
+
+  it('deletes an expired id and gives the post the next one of its tool', () => {
+    hook('pre', 'Read', 1_000);
+    hook('pre', 'Read', 1_000 + 39 * 60_000);
+    hook('post', 'Read', 1_000 + 41 * 60_000);
+
+    const [, second, post] = bufferIds();
+    expect(second).toEqual(expect.any(String));
+    expect(post).toBe(second);
+    expect(mintedEntries()).toEqual([]);
+  });
+
+  it.each([
+    ['its session buffer', () => ({ store: new LocalStore(tmpDir, SESSION) })],
+    ['a drain-all engine', () => ({ store: new LocalStore(tmpDir), drainAllSessions: true })],
+    [
+      'a buffer path override',
+      () => {
+        process.env.NEW_RELIC_AI_MCP_BUFFER_PATH = bufferPath;
+        return { store: new LocalStore(tmpDir, bufferPath) };
+      },
+    ],
+  ])(
+    'pairs each later call with its own pre after a pre that never got a post times out, in %s',
+    (_, makeEngineStore) => {
+      const records: Outcome[] = [];
+      const amends: Outcome[] = [];
+      const engine = startEngine(records, amends, makeEngineStore());
+      hook('pre', 'Read', 1_000);
+      engine.pollAt(62_000);
+      hook('pre', 'Read', 63_000);
+      hook('post', 'Read', 63_400);
+      engine.pollAt(63_500);
+      hook('pre', 'Read', 64_000);
+      hook('post', 'Read', 64_050);
+      engine.pollAt(64_100);
+      engine.stop();
+
+      expect(records).toEqual([
+        { at: 1_000, success: false, durationMs: null },
+        { at: 63_000, success: true, durationMs: 400 },
+        { at: 64_000, success: true, durationMs: 50 },
+      ]);
+      expect(amends).toEqual([]);
+    },
+  );
+
+  it('pairs each later call with its own pre after an engine flushes a pre that never got a post', () => {
+    const records: Outcome[] = [];
+    const amends: Outcome[] = [];
+    hook('pre', 'Read', 1_000);
+    const first = startEngine(records, amends);
+    first.pollAt(1_100);
+    first.stop();
+
+    const restarted = startEngine(records, amends);
+    hook('pre', 'Read', 3_000);
+    hook('post', 'Read', 3_400);
+    restarted.pollAt(3_500);
+    hook('pre', 'Read', 4_000);
+    hook('post', 'Read', 4_050);
+    restarted.pollAt(4_100);
+    restarted.stop();
+
+    expect(records).toEqual([
+      { at: 1_000, success: false, durationMs: null },
+      { at: 3_000, success: true, durationMs: 400 },
+      { at: 4_000, success: true, durationMs: 50 },
+    ]);
+    expect(amends).toEqual([]);
+  });
+
+  it('pairs later calls with their own pres when the hooks send a numeric session id', () => {
+    const records: Outcome[] = [];
+    const engine = startEngine(records, [], {
+      store: new LocalStore(tmpDir),
+      drainAllSessions: true,
+    });
+    const numeric = (make: typeof makePreToolUse, at: number) => {
+      clock.mockReturnValue(at);
+      processHook(make({ tool_use_id: undefined, session_id: 12345, tool_name: 'Read' }));
+    };
+    numeric(makePreToolUse, 1_000);
+    engine.pollAt(62_000);
+    numeric(makePreToolUse, 63_000);
+    numeric(makePostToolUse, 63_400);
+    engine.pollAt(63_500);
+    engine.stop();
+
+    expect(records).toEqual([
+      { at: 1_000, success: false, durationMs: null },
+      { at: 63_000, success: true, durationMs: 400 },
+    ]);
+  });
+
+  it('amends a timed-out call when its own post arrives late', () => {
+    const records: Outcome[] = [];
+    const amends: Outcome[] = [];
+    const engine = startEngine(records, amends);
+    hook('pre', 'Read', 1_000);
+    engine.pollAt(62_000);
+    hook('post', 'Read', 70_000);
+    engine.pollAt(70_100);
+    engine.stop();
+
+    expect(records).toEqual([{ at: 1_000, success: false, durationMs: null }]);
+    expect(amends).toEqual([{ at: 1_000, success: true, durationMs: 69_000 }]);
+  });
+
+  it('records a post as unpaired once its timed-out pre is past the late-post window', () => {
+    const records: Outcome[] = [];
+    const amends: Outcome[] = [];
+    const engine = startEngine(records, amends);
+    hook('pre', 'Read', 1_000);
+    engine.pollAt(62_000);
+    hook('post', 'Read', 200_000);
+    engine.pollAt(200_100);
+    engine.stop();
+
+    expect(records).toEqual([
+      { at: 1_000, success: false, durationMs: null },
+      { at: 200_000, success: true, durationMs: null },
+    ]);
+    expect(amends).toEqual([]);
+  });
+
+  it('still hands a pre to its late post after two engines both counted it', () => {
+    hook('pre', 'Read', 1_000);
+    const redelivered = new LocalStore(tmpDir, SESSION).drainBuffer();
+    for (const _ of [1, 2]) {
+      const engine = new HookEventProcessor({
+        store: new LocalStore(tmpDir, SESSION),
+        onRecord: () => undefined,
+      });
+      engine.processEvents(redelivered);
+      engine.stop();
+    }
+    hook('post', 'Read', 2_000);
+
+    const minted = (redelivered[0] as { toolUseId?: string }).toolUseId;
+    expect(minted).toEqual(expect.any(String));
+    expect(bufferIds()).toEqual([minted]);
+  });
+
+  it('pairs a minted pre with an unstamped post of its tool in one engine', () => {
+    const records: Outcome[] = [];
+    const engine = startEngine(records, []);
+    hook('pre', 'Read', 1_000);
+    rmSync(resolve(tmpDir, `minted-ids-buffer-${SESSION}`), { recursive: true });
+    hook('post', 'Read', 1_250);
+    engine.pollAt(1_300);
+    engine.stop();
+
+    expect(records).toEqual([{ at: 1_000, success: true, durationMs: 250 }]);
+  });
+
+  it('counts a call once, as the first engine timeout, when another engine drains its post', () => {
+    const records: Outcome[] = [];
+    const amends: Outcome[] = [];
+    hook('pre', 'Read', 1_000);
+    const first = startEngine(records, amends);
+    first.pollAt(1_100);
+    first.stop();
+
+    hook('post', 'Read', 2_000);
+    const restarted = startEngine(records, amends);
+    restarted.pollAt(2_100);
+    restarted.stop();
+
+    expect(records).toEqual([{ at: 1_000, success: false, durationMs: null }]);
+    expect(amends).toEqual([]);
   });
 });

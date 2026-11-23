@@ -5,11 +5,11 @@
  *   1. Self-reporting via the `nr_observe_report_tokens` MCP tool (primary)
  *   2. Estimation from hook input/output byte sizes (fallback)
  *
- * Cost calculation delegates to `calculateModelCost()` (pricing-overlay.ts), which normalizes the model id and wraps the shared `calculateCost()`.
+ * Cost calculation delegates to `calculateModelCost()` (pricing-overlay.ts), which normalizes the model id and wraps `calculateCost()`.
  */
 
-import type { TokenUsage, CostBreakdown, MetricAggregator } from '../shared/index.js';
-import { createLogger } from '../shared/index.js';
+import type { TokenUsage, CostBreakdown, MetricAggregator } from '../core/index.js';
+import { createLogger } from '../core/index.js';
 import { CallUsageBook, type CallUsageByDay } from './call-usage.js';
 import { priceModelUsage } from './pricing-overlay.js';
 import { localDateKey } from '../lib/date.js';
@@ -82,9 +82,9 @@ const LATE_ARRIVAL_REJECTION_MS = 48 * 60 * 60 * 1000;
  * Scales every dollar field of a `CostBreakdown` by `factor`, leaving token
  * counts and everything else untouched. Used to correct Preflight's own
  * list-price computation to an org's real contracted rate (see
- * `CostTrackerOptions.rateMultiplier`) — `calculateCost()` itself lives in
- * `src/shared/`, a vendored snapshot this repo must not edit, so the
- * correction is applied to its output here instead of inside it.
+ * `CostTrackerOptions.rateMultiplier`). It stays out of `calculateCost()`
+ * because the dashboard API, the subagent timeline and `AiTurnCost` share
+ * that function and report list price.
  */
 function scaleCostBreakdown(breakdown: CostBreakdown, factor: number): CostBreakdown {
   return {
@@ -195,6 +195,7 @@ export interface CostMetrics {
    * a single day when it has no timeline to pro-rate against.
    */
   readonly costByDayUsd: Record<string, number>;
+  readonly firstActivityByDayMs: Record<string, number>;
   /** Subagent-attributed cost bucketed by local-day key; today-scoped
    * counterpart to `subagentCostUsd`. Same rationale as `costByDayUsd`. */
   readonly subagentCostByDayUsd: Record<string, number>;
@@ -269,6 +270,9 @@ export interface CostTrackerSeed {
   /** Portion of `totalCostUsd`/`subagentCostUsd` attributable to `dayKey` (see `todayPortionOfSessionCost`). */
   readonly dayCostUsd: number;
   readonly daySubagentCostUsd: number;
+  readonly dayFirstActivityMs?: number;
+  /** When the persisted session began, so a restart keeps measuring the session's age from its real start. */
+  readonly sessionStartMs?: number;
   /**
    * Per-workflow-run cost, split by local-day, from the persisted checkpoint
    * — see `seedFromPersisted()`'s doc comment for why this is seeded (unlike
@@ -346,6 +350,10 @@ export class CostTracker implements Resettable {
   // including tokens spent before midnight.
   private costByDayUsd = new Map<string, number>();
   private firstActivityMsByDay = new Map<string, number>();
+  /** Earliest start among the persisted sessions seeded into this tracker, so spend carried over from before a restart is not spread over only the new process's age. */
+  private seededSessionStartMs: number | null = null;
+  /** Days seeded with spend but no persisted first spend: the real first spend is unknown, so no anchor is saved. */
+  private unanchoredDays = new Set<string>();
   /**
    * Per-workflow-run cost attribution split by local-day so a run that crosses
    * midnight contributes to each day's bucket independently. Two-level map:
@@ -354,6 +362,16 @@ export class CostTracker implements Resettable {
    * checkpoint for this same session (see that method's doc comment).
    */
   private costByWorkflowRunId = new Map<string, Map<string, number>>();
+  /**
+   * Per-workflow-run, per-subagent token total of the agent's latest turn
+   * (all five token kinds), observed by this process. The on-disk run rollup
+   * (`totalTokens`) is the sum of each agent's last turn, not of every turn,
+   * so this keeps the same basis. Never persisted: a run restored by
+   * `seedFromPersisted()` is recorded in `seededWorkflowRunIds` and reports no
+   * tokens, because a partial live sum would read as a false reconciliation gap.
+   */
+  private lastTurnTokensByWorkflowRunId = new Map<string, Map<string, number>>();
+  private seededWorkflowRunIds = new Set<string>();
   /** Per-day mutation counter so dashboards can invalidate cached day cards. */
   private lastMutationMsByDay = new Map<string, number>();
   /**
@@ -495,6 +513,7 @@ export class CostTracker implements Resettable {
         usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheCreationTokens;
       const existing = this.subagentByAgentType.get(ctx.agentType);
       const existingBreakdown = existing?.breakdown;
+      const existingUsd = existing?.breakdownUsd;
       this.subagentByAgentType.set(ctx.agentType, {
         costUsd: (existing?.costUsd ?? 0) + breakdown.totalUsd,
         tokens: (existing?.tokens ?? 0) + tokens,
@@ -506,6 +525,12 @@ export class CostTracker implements Resettable {
           cacheReadTokens: (existingBreakdown?.cacheReadTokens ?? 0) + usage.cacheReadTokens,
           cacheCreationTokens:
             (existingBreakdown?.cacheCreationTokens ?? 0) + usage.cacheCreationTokens,
+        },
+        breakdownUsd: {
+          inputUsd: (existingUsd?.inputUsd ?? 0) + breakdown.inputUsd,
+          outputUsd: (existingUsd?.outputUsd ?? 0) + breakdown.outputUsd,
+          cacheReadUsd: (existingUsd?.cacheReadUsd ?? 0) + breakdown.cacheReadUsd,
+          cacheCreationUsd: (existingUsd?.cacheCreationUsd ?? 0) + breakdown.cacheCreationUsd,
         },
       });
     }
@@ -618,7 +643,11 @@ export class CostTracker implements Resettable {
     }
     this.lastMutationMsByDay.set(dayKey, wallNowMs);
     const existingFirst = this.firstActivityMsByDay.get(dayKey);
-    if (existingFirst === undefined || tsMs < existingFirst) {
+    if (
+      breakdown.totalUsd > 0 &&
+      !this.unanchoredDays.has(dayKey) &&
+      (existingFirst === undefined || tsMs < existingFirst)
+    ) {
       // Use earliest event timestamp for the day so cross-midnight burn-rate
       // denominators stay correct (NOT wall-clock arrival time).
       this.firstActivityMsByDay.set(dayKey, tsMs);
@@ -629,6 +658,10 @@ export class CostTracker implements Resettable {
       const runMap = this.costByWorkflowRunId.get(ctx.workflowRunId) ?? new Map<string, number>();
       runMap.set(dayKey, (runMap.get(dayKey) ?? 0) + breakdown.totalUsd);
       this.costByWorkflowRunId.set(ctx.workflowRunId, runMap);
+      const agentTurns =
+        this.lastTurnTokensByWorkflowRunId.get(ctx.workflowRunId) ?? new Map<string, number>();
+      agentTurns.set(ctx.agentId ?? '', tokens);
+      this.lastTurnTokensByWorkflowRunId.set(ctx.workflowRunId, agentTurns);
     }
 
     return breakdown;
@@ -666,6 +699,12 @@ export class CostTracker implements Resettable {
       seed.totalCacheCreationTokens !== 0;
     if (!hasAnyTotal) return;
 
+    if (seed.sessionStartMs !== undefined && seed.sessionStartMs > 0) {
+      this.seededSessionStartMs = Math.min(
+        this.seededSessionStartMs ?? seed.sessionStartMs,
+        seed.sessionStartMs,
+      );
+    }
     this.totalCostUsd += seed.totalCostUsd;
     this.subagentCostUsd += seed.subagentCostUsd;
     this.parentCostUsd += seed.parentCostUsd;
@@ -691,6 +730,10 @@ export class CostTracker implements Resettable {
       }
       for (const [day, usd] of Object.entries(seed.byteEstimates.costByDayUsd)) {
         this.byteEstimateCostByDay.set(day, (this.byteEstimateCostByDay.get(day) ?? 0) + usd);
+        // The seed's own day cost already holds that day's estimates.
+        if (day !== seed.dayKey) {
+          this.costByDayUsd.set(day, (this.costByDayUsd.get(day) ?? 0) + usd);
+        }
       }
       this.byteEstimateUnpriced.addRecords(
         seed.byteEstimates.unpricedByModel,
@@ -717,9 +760,14 @@ export class CostTracker implements Resettable {
         (this.costByDayUsd.get(seed.dayKey) ?? 0) + seed.dayCostUsd,
       );
       this.lastMutationMsByDay.set(seed.dayKey, Date.now());
-      const existingFirst = this.firstActivityMsByDay.get(seed.dayKey);
-      if (existingFirst === undefined) {
-        this.firstActivityMsByDay.set(seed.dayKey, Date.now());
+      if (seed.dayFirstActivityMs === undefined) {
+        this.firstActivityMsByDay.delete(seed.dayKey);
+        this.unanchoredDays.add(seed.dayKey);
+      } else if (!this.unanchoredDays.has(seed.dayKey)) {
+        const existingFirst = this.firstActivityMsByDay.get(seed.dayKey);
+        if (existingFirst === undefined || seed.dayFirstActivityMs < existingFirst) {
+          this.firstActivityMsByDay.set(seed.dayKey, seed.dayFirstActivityMs);
+        }
       }
     }
     if (seed.daySubagentCostUsd !== 0) {
@@ -735,6 +783,7 @@ export class CostTracker implements Resettable {
         runMap.set(dayKey, (runMap.get(dayKey) ?? 0) + usd);
       }
       this.costByWorkflowRunId.set(runId, runMap);
+      this.seededWorkflowRunIds.add(runId);
     }
   }
 
@@ -766,6 +815,11 @@ export class CostTracker implements Resettable {
     return this.subagentCostByDayUsd.get(dayKey) ?? 0;
   }
 
+  /** Earlier of the process start and the saved session start, so a restart keeps the session's real age. */
+  getSessionStartMs(processStartMs: number): number {
+    return Math.min(processStartMs, this.seededSessionStartMs ?? processStartMs);
+  }
+
   /**
    * Epoch ms of the first token event recorded today (local time), or null
    * if no spend has been booked today. The forecast burn-rate denominator
@@ -791,6 +845,18 @@ export class CostTracker implements Resettable {
     if (!m) return 0;
     let total = 0;
     for (const v of m.values()) total += v;
+    return total;
+  }
+
+  /**
+   * Per-workflow-run token total: each subagent's latest turn, summed. That is
+   * the basis of the run rollup's `totalTokens`, so the two are comparable.
+   * 0 when this process has not observed the run live (unknown, not zero).
+   */
+  getTokensForWorkflowRun(runId: string): number {
+    if (this.seededWorkflowRunIds.has(runId)) return 0;
+    let total = 0;
+    for (const v of this.lastTurnTokensByWorkflowRunId.get(runId)?.values() ?? []) total += v;
     return total;
   }
 
@@ -905,6 +971,7 @@ export class CostTracker implements Resettable {
       parentCostUsd: this.parentCostUsd,
       costByWorkflowRunId,
       costByDayUsd: Object.fromEntries(this.costByDayUsd),
+      firstActivityByDayMs: Object.fromEntries(this.firstActivityMsByDay),
       unpricedByModel: this.unpriced.byModel(),
       estimatedByModel: this.estimated.byModel(),
       unpricedByDay: this.unpriced.byDay(),
@@ -1002,7 +1069,11 @@ export class CostTracker implements Resettable {
     this.highContextCostUsd = 0;
     this.apiDurationMs = null;
     this.firstActivityMsByDay = new Map();
+    this.seededSessionStartMs = null;
+    this.unanchoredDays = new Set();
     this.costByWorkflowRunId = new Map();
+    this.lastTurnTokensByWorkflowRunId = new Map();
+    this.seededWorkflowRunIds = new Set();
     this.lastMutationMsByDay = new Map();
     this.subagentCostUsd = 0;
     this.parentCostUsd = 0;

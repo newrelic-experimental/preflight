@@ -1,7 +1,8 @@
 import { describe, it, expect } from '@jest/globals';
 
-import type { ToolCallRecord } from '../storage/types.js';
+import type { SkillStamp, ToolCallRecord } from '../storage/types.js';
 import { SkillActivationTracker } from './skill-activation-tracker.js';
+import type { SkillRunOpenContext } from './skill-activation-tracker.js';
 
 function makeRecord(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord {
   return {
@@ -392,5 +393,175 @@ describe('SkillActivationTracker', () => {
     );
 
     expect(stamp).toBeNull();
+  });
+});
+
+function makeTrackerWithOpenLog(): {
+  tracker: SkillActivationTracker;
+  opened: Array<{ stamp: SkillStamp; ctx: SkillRunOpenContext }>;
+} {
+  const opened: Array<{ stamp: SkillStamp; ctx: SkillRunOpenContext }> = [];
+  const tracker = new SkillActivationTracker({
+    onRunOpened: (stamp, ctx) => {
+      opened.push({ stamp, ctx });
+    },
+  });
+  return { tracker, opened };
+}
+
+describe('SkillActivationTracker.openRun', () => {
+  it('returns the slash run until the next prompt closes it', () => {
+    const t = new SkillActivationTracker();
+    const run = t.recordPrompt('s1', 'review');
+
+    expect(t.openRun('s1')).toEqual(run);
+    expect(t.openRun('s2')).toBeNull();
+
+    t.recordPrompt('s1', null);
+    expect(t.openRun('s1')).toBeNull();
+  });
+
+  it('returns a tool-opened run to later replies in the session', () => {
+    const t = new SkillActivationTracker();
+    const run = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint' }));
+
+    expect(t.openRun('s1')).toEqual(run);
+  });
+
+  it('ignores a run a subagent opened', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', agentId: 'agent-1' }));
+
+    expect(t.openRun('s1')).toBeNull();
+  });
+});
+
+describe('SkillActivationTracker.recordToolStart', () => {
+  it('stamps a call recorded after a later prompt with the run open when it started', () => {
+    const t = new SkillActivationTracker();
+    const review = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'review' }));
+    t.recordToolStart('s1', 'bash-1');
+    t.recordPrompt('s1', 'simplify');
+
+    expect(t.recordToolCall(makeRecord({ toolName: 'Bash', toolUseId: 'bash-1' }))).toEqual(review);
+    expect(t.recordToolCall(makeRecord({ toolName: 'Bash', toolUseId: 'bash-2' }))?.name).toBe(
+      'simplify',
+    );
+  });
+
+  it('leaves a call that started outside any run unattributed', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolStart('s1', 'bash-1');
+    t.recordPrompt('s1', 'simplify');
+
+    expect(t.recordToolCall(makeRecord({ toolName: 'Bash', toolUseId: 'bash-1' }))).toBeNull();
+  });
+
+  it("does not lend one session's start to another session's call", () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', 'review');
+    t.recordToolStart('s1', 'bash-1');
+    const simplify = t.recordPrompt('s2', 'simplify');
+
+    expect(
+      t.recordToolCall(makeRecord({ sessionId: 's2', toolName: 'Bash', toolUseId: 'bash-1' })),
+    ).toEqual(simplify);
+  });
+
+  it('keeps a subagent call on the run the subagent opened', () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', 'review');
+    const lint = t.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'lint', agentId: 'agent-1' }),
+    );
+    t.recordToolStart('s1', 'read-1');
+
+    expect(t.recordToolCall(makeRecord({ toolUseId: 'read-1', agentId: 'agent-1' }))).toEqual(lint);
+  });
+});
+
+describe('SkillActivationTracker onRunOpened', () => {
+  it('fires once for a Skill tool run with the stamp it returned and the record context', () => {
+    const { tracker, opened } = makeTrackerWithOpenLog();
+    const stamp = tracker.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'lint', timestamp: 1500 }),
+    );
+    tracker.recordToolCall(makeRecord({ toolName: 'Read', toolUseId: 'u2', timestamp: 1600 }));
+
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.stamp).toEqual(stamp);
+    expect(opened[0]!.stamp).toMatchObject({ name: 'lint', source: 'tool' });
+    expect(opened[0]!.ctx).toEqual({ sessionId: 's1', timestamp: 1500 });
+  });
+
+  it('passes the platform of the record that opened a Skill run', () => {
+    const { tracker, opened } = makeTrackerWithOpenLog();
+    tracker.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'lint', platform: 'opencode' }),
+    );
+
+    expect(opened[0]!.ctx.platform).toBe('opencode');
+  });
+
+  it('fires once for a slash run and passes the prompt timestamp', () => {
+    const { tracker, opened } = makeTrackerWithOpenLog();
+    tracker.recordPrompt('s1', 'simplify', 2000);
+    tracker.recordToolCall(makeRecord({ toolName: 'Read' }));
+
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.stamp).toMatchObject({ name: 'simplify', source: 'slash' });
+    expect(opened[0]!.ctx).toEqual({ sessionId: 's1', timestamp: 2000 });
+  });
+
+  it('does not fire for a prompt that opens no run', () => {
+    const { tracker, opened } = makeTrackerWithOpenLog();
+    tracker.recordPrompt('s1', null, 2000);
+
+    expect(opened).toHaveLength(0);
+  });
+
+  it('does not fire when a Skill call repeats the slash run already open', () => {
+    const { tracker, opened } = makeTrackerWithOpenLog();
+    tracker.recordPrompt('s1', 'code-review', 2000);
+    tracker.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'code-review', toolUseId: 'u2' }),
+    );
+
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.stamp).toMatchObject({ name: 'code-review', source: 'slash' });
+  });
+
+  it('does not fire when a subagent pins the main run it first appeared under', () => {
+    const { tracker, opened } = makeTrackerWithOpenLog();
+    tracker.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'main-skill' }));
+    tracker.recordToolCall(makeRecord({ toolName: 'Read', agentId: 'bg-1', toolUseId: 'u2' }));
+    tracker.recordToolCall(makeRecord({ toolName: 'Bash', agentId: 'bg-1', toolUseId: 'u3' }));
+
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.stamp).toMatchObject({ name: 'main-skill', source: 'tool' });
+  });
+
+  it('fires for a subagent Skill call that opens its own run', () => {
+    const { tracker, opened } = makeTrackerWithOpenLog();
+    tracker.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'main-skill' }));
+    tracker.recordToolCall(
+      makeRecord({
+        toolName: 'Skill',
+        skillName: 'sub-skill',
+        agentId: 'agent-1',
+        toolUseId: 'u2',
+      }),
+    );
+
+    expect(opened).toHaveLength(2);
+    expect(opened[1]!.stamp).toMatchObject({ name: 'sub-skill', source: 'tool' });
+  });
+
+  it('passes a null session and an undefined timestamp when neither was given', () => {
+    const { tracker, opened } = makeTrackerWithOpenLog();
+    tracker.recordPrompt(undefined, 'lint');
+
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.ctx).toEqual({ sessionId: null, timestamp: undefined });
   });
 });

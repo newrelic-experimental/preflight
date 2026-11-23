@@ -5,6 +5,9 @@ import type {
   PlatformConfig,
   PlatformSessionMetadata,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
+
+export const CLAUDE_CODE_PLATFORM_NAME = 'claude-code';
 
 // `CLAUDECODE=1`, `CLAUDE_CODE_ENTRYPOINT`, and `CLAUDE_CODE_SESSION_ID` are
 // what current Claude Code actually sets in every child process env (hooks,
@@ -20,12 +23,12 @@ export const CLAUDE_CODE_ENV_SIGNALS = [
 ] as const;
 
 export class ClaudeCodeAdapter implements PlatformAdapter {
-  readonly platformName = 'claude-code';
+  readonly platformName = CLAUDE_CODE_PLATFORM_NAME;
   readonly visibilityLevel = 'full-hooks' as const;
   readonly capabilities = {
     instructionFilePaths: ['CLAUDE.md', '.claude/'] as const,
     // Claude Code's hooks send session_id and the collector stamps its own env signals.
-    sessionBreadcrumbWriters: ['claude-code'] as const,
+    sessionBreadcrumbWriters: [CLAUDE_CODE_PLATFORM_NAME] as const,
   };
 
   async initialize(_config: PlatformConfig): Promise<void> {
@@ -77,7 +80,7 @@ export class ClaudeCodeAdapter implements PlatformAdapter {
   isSupported(): boolean {
     return (
       CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined) ||
-      process.env.MCP_CLIENT === 'claude-code'
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'claude-code'
     );
   }
 }

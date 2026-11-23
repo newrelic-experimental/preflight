@@ -1,4 +1,4 @@
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { getIsoWeekId } from '../storage/weekly-summary.js';
 import type { WeeklySummaryGenerator } from '../storage/weekly-summary.js';
 import type { DeveloperWeeklyStats } from '../storage/weekly-summary.js';

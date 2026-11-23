@@ -92,13 +92,32 @@ Show the current server configuration with sensitive fields masked.
   "region": "US",
   "storagePath": "/Users/alice/.newrelic-preflight",
   "dashboardUrl": "https://one.newrelic.com/dashboards/...",
-  "configFilePath": "/Users/alice/.newrelic-preflight/config.json"
+  "configFilePath": "/Users/alice/.newrelic-preflight/config.json",
+  "tiers": [
+    {
+      "name": "personal",
+      "type": "nr",
+      "accountId": "12345",
+      "primary": true,
+      "eventTypes": ["*"]
+    },
+    {
+      "name": "org",
+      "type": "local",
+      "path": "/data/org",
+      "primary": false,
+      "eventTypes": ["AiCodingTask"],
+      "writes": 42,
+      "failures": 0
+    }
+  ],
+  "primaryTier": "personal"
 }
 ```
 
-**Data source:** Server config at startup
+**Data source:** Server config at startup, plus live write counts for local tiers
 
-**How it works:** Returns a sanitized snapshot of the active configuration. `licenseKeyMasked` shows the first 8 characters and last 4 characters only. `nrApiKeyMasked` shows the prefix only. Use this to diagnose misconfiguration (wrong region, unset developer name, unexpected mode) without exposing credentials.
+**How it works:** Returns a sanitized snapshot of the active configuration. `licenseKeyMasked` shows the first 8 characters and last 4 characters only. `nrApiKeyMasked` shows the prefix only. `tiers` lists each tier's destination and event types, so read it instead of `accountId` when `tiers` is configured. A tier's `accountId` is the configured value for display; the license key selects the account events go to. A local tier reports `writes` and `failures`, and a nonzero `failures` means its path cannot be written. Tier license keys are never returned. Use this to diagnose misconfiguration (wrong region, unset developer name, unexpected mode, a tier with the wrong license key or path) without exposing credentials.
 
 **Requires:** Always available
 
@@ -195,18 +214,19 @@ Source: `src/tools/session-stats.ts`
 
 ### `nr_observe_report_tokens`
 
-Self-report token usage for cost tracking. Called by Claude Code to report its own token consumption.
+Self-report token usage for cost tracking. An agent calls it to report its own token consumption. Claude Code records the report in process. A Cursor or Windsurf engine leaves it to the client's post-MCP hook, as described below.
 
 **Parameters:**
 
-| Parameter               | Type   | Required | Description                                         |
-| ----------------------- | ------ | -------- | --------------------------------------------------- |
-| `input_tokens`          | number | Yes      | Input/prompt token count                            |
-| `output_tokens`         | number | Yes      | Output/completion token count                       |
-| `model`                 | string | Yes      | Model identifier (e.g., `claude-sonnet-4-20250514`) |
-| `thinking_tokens`       | number | No       | Extended thinking token count                       |
-| `cache_read_tokens`     | number | No       | Prompt cache read token count                       |
-| `cache_creation_tokens` | number | No       | Prompt cache creation token count                   |
+| Parameter               | Type   | Required | Description                                                                                                                                                  |
+| ----------------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `input_tokens`          | number | Yes      | Input/prompt token count                                                                                                                                     |
+| `output_tokens`         | number | Yes      | Output/completion token count                                                                                                                                |
+| `model`                 | string | Yes      | Model identifier (e.g., `claude-sonnet-4-20250514`)                                                                                                          |
+| `thinking_tokens`       | number | No       | Extended thinking token count                                                                                                                                |
+| `cache_read_tokens`     | number | No       | Prompt cache read token count                                                                                                                                |
+| `cache_creation_tokens` | number | No       | Prompt cache creation token count                                                                                                                            |
+| `report_id`             | string | See note | Cursor and Windsurf only. 8 to 128 of `[A-Za-z0-9_-]`, new per report and kept on retry. Required while the engine is pending. Claude Code does not list it. |
 
 **Returns:**
 
@@ -219,12 +239,35 @@ Self-report token usage for cost tracking. Called by Claude Code to report its o
 }
 ```
 
+**Returns (Cursor and Windsurf, with `report_id`):**
+
+```json
+{
+  "accepted": true,
+  "report_id": "3f2b9c1e-5d7a-4e8b-9a6c-1d2e3f4a5b6c",
+  "model": "claude-sonnet-4-20250514",
+  "recorded_by": "hook",
+  "hooks_detected": true,
+  "message": "Preflight's afterMCPExecution hook was found, so the hook should record it in this conversation after the call returns."
+}
+```
+
+`accepted` means the engine handed the report to the hook, not that it is saved. It stays `true` when `hooks_detected` is `false`, because the hook records only an accepted reply and the check can miss a hook that runs. Read `hooks_detected` and `message` to learn whether the report is likely saved.
+
+**On Cursor and Windsurf.** One engine serves every chat in the window, so the hook saves a report to the conversation that made it. These engines stay pending, because their adapters declare no session breadcrumb writers. This path is on when `MCP_CLIENT` or `NEW_RELIC_AI_PLATFORM` names the client, or when its hooks file runs `preflight-collector` for the post-MCP event. A host that Preflight detects as Cursor only from an inherited `CURSOR_TRACE_ID` keeps recording in process. The tool takes a `report_id`, a new random value (such as a UUID) per call. A retry keeps its `report_id`. Within 7 days, Preflight saves a report with the same `report_id` and the same counts and model once per conversation, and a reused `report_id` with different counts as a new report. While the engine is pending, `report_id` is required. If an engine of one of these clients ever resolved a session, which none does today, a call without `report_id` would be recorded in that engine's own session, as before.
+
+- The tool replies `{"accepted": true, "recorded_by": "hook", "hooks_detected": ..., ...}`. Preflight's `afterMCPExecution` (Cursor) or `post_mcp_tool_use` (Windsurf) hook then sees this reply and the call's arguments, and writes the report into that conversation's hook buffer. It writes nothing for an error result, another `report_id`, a synthetic or unknown conversation id, or a server whose `mcp_server_name` neither contains `preflight` (such as `newrelic-preflight`) nor is the older `nr-ai-observability`.
+- `hooks_detected` is `false` when neither the user-level hooks file (`~/.cursor/hooks.json`, `~/.codeium/windsurf/hooks.json`) nor the project's (`.cursor/hooks.json`, `.windsurf/hooks.json`) runs `preflight-collector` for that event. The message then says the report may not be saved and how to add the hook. When the hook is found, the message says it should record the report only if a server key in the client's MCP config (`~/.cursor/mcp.json`, `.cursor/mcp.json`, `~/.codeium/windsurf/mcp_config.json`) contains `preflight`. Otherwise it says the report may not be saved and asks to rename the key. The check is best effort. It reads the project file under the engine's working directory, which may not be the workspace root, and the hook still saves the report if it runs from a file the check does not read.
+- Whichever Preflight process drains the buffer prices the report and saves it with that conversation's session at its next checkpoint. It does not count toward that process's own session cost. The reply does not claim the cost is saved yet.
+- A malformed report returns `invalid_token_report`.
+- Antigravity does not list the tool while pending yet (#1027).
+
 **Data source:** `CostTracker`
 
 **How it works:**
 
 1. Constructs a `TokenUsage` object from the reported counts
-2. Calls `CostTracker.recordTokenUsage(usage, model)` which looks up per-token prices from the pricing table (`src/shared/pricing-data.ts`)
+2. Calls `CostTracker.recordTokenUsage(usage, model)` which looks up per-token prices from the pricing table (`src/core/pricing-data.ts`)
 3. Cost breakdown: `inputCost = inputTokens * inputPricePerToken`, similarly for output, thinking, cache read, and cache creation tokens
 4. Accumulates into session total and per-model totals
 5. Returns both the cost for this specific report and the running session total
@@ -1311,6 +1354,30 @@ Data-driven model recommendation ranked by historical efficiency score, cost, an
 - Ranks by efficiency descending, cost ascending on ties, null-efficiency last.
 - Assigns confidence tier based on the top-ranked model's session count.
 
+**Published file:** For consumers that cannot call an MCP tool, such as a SessionStart hook, the overall verdict is also written to `model-recommendation.json` in the configured storage directory (`~/.newrelic-preflight/` by default). It is first written about 10 seconds after startup, then hourly, only while `confidence` is `high`. When confidence drops, the file is removed. The file is rewritten only when the recommended model or its ranked stats change. Writes are atomic (temp file, then rename), and temp files left by a crashed write are removed on the next publish. No hook reads it by default.
+
+```json
+{
+  "schemaVersion": 1,
+  "recommendedModel": "claude-sonnet-4-20250514",
+  "confidence": "high",
+  "basedOn": {
+    "ranked": [
+      {
+        "model": "claude-sonnet-4-20250514",
+        "sessionCount": 25,
+        "avgCostUsd": 0.04,
+        "avgEfficiencyScore": 0.82,
+        "avgTaskSuccessRate": 0.95
+      }
+    ]
+  },
+  "generatedAt": 1746345600000
+}
+```
+
+`basedOn.ranked` is the same list the tool returns. `generatedAt` is the time of the last write, not the verdict's age.
+
 **Requires:** `TrendAnalyzer`
 
 Source: `src/metrics/trend-analyzer.ts`, `src/tools/cross-session-tools.ts`
@@ -1423,10 +1490,10 @@ Cost attribution per tool type — approximate, based on turn-level token correl
 
 **How it works:** Attributes token costs reported via `nr_observe_report_tokens` to the tool calls that occurred within the same conversation turn. Each turn's cost is split evenly across its tool calls, then aggregated by tool type. `attributionRate` is the fraction of tool calls whose turn had a token report. Results are approximate — cost is correlated at the turn level, not the individual call level. `evictedToolBursts` counts tool-call bursts dropped without a closing token report, either because the burst went stale or the pending queue overflowed. Each one's cost is lost, so a value above zero means `totalAttributedCost` understates real spend. A token report that no burst claims is not counted: it becomes its own response turn.
 
-`costBySkill` has one row per skill name (`code-review`, `pstack:how`) and covers every tool call made inside that skill's runs. A run opens on a named `Skill` call or a `/<skill>` prompt and lasts until the next prompt or the next skill. `callCount` counts invocations, and `avgCost` is cost per invocation. `attributedCallCount`, `totalDurationMs`, cost, and tokens cover the tool calls inside the runs, each with the same even split of its turn that `costByToolType` uses, so a Read inside a skill run counts in both `costByToolType.Read` and that skill's row. Skill calls that arrive without a skill name (some non-Claude-Code adapters) open no run. Runs, calls, and time per skill over any window are also available in New Relic, since every `AiToolCall` inside a run carries `skill_name`, `skill_source`, and `skill_run_id`:
+`costBySkill` has one row per skill name (`code-review`, `pstack:how`) and covers every tool call made inside that skill's runs. A run opens on a named `Skill` call or a `/<skill>` prompt and lasts until the next prompt or the next skill. `callCount` counts invocations, and `avgCost` is cost per invocation. `attributedCallCount`, `totalDurationMs`, cost, and tokens cover the tool calls inside the runs, each with the same even split of its turn that `costByToolType` uses, so a Read inside a skill run counts in both `costByToolType.Read` and that skill's row. Skill calls that arrive without a skill name (some non-Claude-Code adapters) open no run. Runs, calls, and time per skill over any window are also available in New Relic, since every `AiToolCall` inside a run carries `skill_name`, `skill_source`, and `skill_run_id`. `AiSkillRun` is emitted once when each run opens, so `runs` also counts runs whose replies made no tool calls. `calls` and `hours` come from `AiToolCall` alone:
 
 ```sql
-FROM AiToolCall SELECT uniqueCount(skill_run_id) AS runs, count(*), sum(duration_ms)/3.6e6 AS hours WHERE skill_name IS NOT NULL FACET skill_name SINCE 1 week ago
+FROM AiToolCall, AiSkillRun SELECT uniqueCount(skill_run_id) AS runs, filter(count(*), WHERE eventType() = 'AiToolCall') AS calls, sum(duration_ms)/3.6e6 AS hours WHERE skill_name IS NOT NULL FACET skill_name SINCE 1 week ago
 ```
 
 Cost and tokens per skill over any window come from `AiTurnCost`:
@@ -1561,7 +1628,7 @@ Thrashing and retry detection alerts within a sliding window.
 
 **Data source:** `RetryDetector`
 
-**How it works:** Tracks repeated tool calls with identical or highly similar inputs (similarity ≥ 0.8, via Levenshtein distance or exact input-hash match) within a rolling window (default: 5 calls). Fires an alert when the same input appears 3+ times consecutively. `totalTokensWasted` estimates tokens consumed on redundant calls (`inputSize / 4`).
+**How it works:** Within a rolling window (default: 5 calls), takes a tool's first failed call and the calls after it. Fires an alert when there are 3+ of them and every one failed or every one repeats the failed call's input exactly. Successful calls before the first failure never count. `totalTokensWasted` estimates tokens consumed on redundant calls (`inputSize / 4`).
 
 **Requires:** `RetryDetector`
 
@@ -1714,6 +1781,8 @@ Tool selection quality score with penalty breakdown for redundant reads, repeate
 
 **Data source:** `ToolSelectionScorer`
 
+Redundant-read and repeated-failure checks compare calls within one agent, so a call without `agent_id` can be counted against the parent session instead of its subagent. Preflight fills `agent_id` from the subagent transcripts when the hook payload omits it. The live process repeats that fill when it saves the session summary, so the saved `toolSelectionMetrics` resolve more calls than were known at intake. This tool, the dashboard and the stored-session rollups score records as they were saved, so a record the intake pass could not attribute stays unattributed there.
+
 **How it works:** Scores the full session tool call sequence. Penalizes: redundant reads (same file read again without intervening modification), repeated failures (same Bash command failed twice), and unused large outputs (tool returned a large response that was never referenced). Score 0–1 where 1 is perfect selection. `worstOffenders` lists the highest-penalty calls. See [Improving Your Tool Selection Score](ADVANCED.md#improving-your-tool-selection-score) for prompt-writing tips to reduce penalties.
 
 **Requires:** `ToolSelectionScorer`
@@ -1794,6 +1863,35 @@ Source: `src/tools/extended-analytics-tools.ts`, `src/metrics/api-failure-tracke
 
 ---
 
+### `nr_observe_get_compute_waste`
+
+Total tokens spent on retried tool calls and on anti-pattern activity, with a per-pattern breakdown and a status.
+
+**Parameters:** None
+
+**Returns:**
+
+```json
+{
+  "total_tokens_wasted": 5200,
+  "retry_tokens_wasted": 2400,
+  "anti_pattern_tokens_wasted": 2800,
+  "waste_ratio": 0.04,
+  "breakdown": [{ "type": "stuck_loop", "tokens_wasted": 2800, "instances": 2 }],
+  "status": "clean"
+}
+```
+
+**Data source:** `RetryDetector`, `AntiPatternDetector`, `CostTracker` (optional)
+
+**How it works:** Adds the tokens wasted by retries to the tokens wasted by anti-patterns. When the session has token counts from a `CostTracker`, `waste_ratio` is that total divided by all session tokens, and `status` is `clean`, `moderate`, or `needs_attention` from that ratio. Otherwise `waste_ratio` is `null` and `status` comes from absolute token counts.
+
+**Requires:** `RetryDetector`, `AntiPatternDetector`
+
+Source: `src/tools/extended-analytics-tools.ts`, `src/metrics/retry-detector.ts`, `src/metrics/anti-patterns.ts`
+
+---
+
 ## Cross-Session and Team Tools
 
 ### `nr_observe_get_team_summary`
@@ -1842,6 +1940,89 @@ Source: `src/tools/cross-session-tools.ts`
 
 ---
 
+## Generic MCP Tools
+
+These tools cover activity that MCP does not capture on its own. An assistant calls them to report its non-MCP tool calls and its session boundaries. They need the `GenericMcpAdapter`.
+
+### `nr_observe_report_tool_call`
+
+Reports one non-MCP tool call, such as a file read, a file write, or a terminal command.
+
+**Parameters:**
+
+- `tool` (string, required): tool name, such as `Read`, `Edit`, or `Bash`
+- `success` (boolean, required): whether the call succeeded
+- `input` (object): tool input parameters
+- `input_size_bytes` (number): size of the input in bytes
+- `output_size_bytes` (number): size of the output in bytes
+- `duration_ms` (number): duration in milliseconds
+- `error` (string): error message for a failed call
+- `timestamp` (number): epoch milliseconds when the call occurred, defaults to now
+
+**Returns:**
+
+```json
+{ "recorded": true, "tool": "Edit", "timestamp": 1767225600000 }
+```
+
+**Data source:** `GenericMcpAdapter`, `SessionTracker`, NR ingest
+
+**How it works:** Normalizes the call through the adapter, records it in the session tracker. In cloud mode, it also sends the call to New Relic as an `AiToolCall` event. Local mode sends nothing.
+
+**Requires:** `GenericMcpAdapter`
+
+Source: `src/tools/generic-mcp-tools.ts`, `src/platforms/generic-mcp-adapter.ts`
+
+---
+
+### `nr_observe_report_session_start`
+
+Reports that a new AI coding session has begun and sets its platform metadata.
+
+**Parameters:**
+
+- `platform` (string, required): platform name, such as `my-ai-assistant`
+- `model` (string): AI model in use
+- `developer` (string): developer name or identifier
+
+**Returns:**
+
+```json
+{ "recorded": true, "platform": "my-ai-assistant" }
+```
+
+**Data source:** `GenericMcpAdapter`
+
+**How it works:** Validates the input and passes it to the adapter's session handler, which stores the session metadata that later events use.
+
+**Requires:** `GenericMcpAdapter`
+
+Source: `src/tools/generic-mcp-tools.ts`, `src/platforms/generic-mcp-adapter.ts`
+
+---
+
+### `nr_observe_report_session_end`
+
+Reports that the current AI coding session has ended.
+
+**Parameters:**
+
+- `summary` (string): brief summary of what was accomplished
+
+**Returns:**
+
+```json
+{ "recorded": true, "summary": "Fixed the login redirect." }
+```
+
+**Data source:** None. The handler validates the input and echoes the summary back. It does not change tracker state.
+
+**Requires:** `GenericMcpAdapter`
+
+Source: `src/tools/generic-mcp-tools.ts`
+
+---
+
 ## Digest and Subscription Tools
 
 ### `nr_observe_subscribe_digest`
@@ -1874,9 +2055,8 @@ Register a Slack webhook URL to receive weekly AI coding cost and efficiency sum
 **Config fields:**
 
 - `NEW_RELIC_AI_DIGEST_WEBHOOK_URL` — Slack incoming webhook endpoint
-- `NEW_RELIC_AI_DIGEST_SCHEDULE` — cron expression for digest delivery (default: `"0 9 * * 1"`)
 
-**Note:** Digest delivery is manual-only today. `digestSchedule`/`NEW_RELIC_AI_DIGEST_SCHEDULE` is stored for future use but nothing currently reads it to trigger a send — call `nr_observe_send_digest` on-demand (e.g. from an external cron job or CI schedule) to actually deliver a digest.
+**Note:** Digest delivery is manual. Preflight does not send a digest on a timer. To deliver one on a schedule, run an external cron job or CI schedule that calls `nr_observe_send_digest`.
 
 **Requires:** `configFilePath`
 
@@ -1938,5 +2118,31 @@ Generate the current weekly AI coding summary and POST it to the configured Slac
 4. POSTs the payload to the webhook URL
 
 **Requires:** `configFilePath` + `WeeklySummaryGenerator`
+
+Source: `src/tools/cross-session-tools.ts`
+
+---
+
+### `nr_observe_get_digest_preview`
+
+Return the current week's digest as `nr_observe_send_digest` would deliver it, as Block Kit blocks plus plain text. Nothing is sent, and no webhook is needed.
+
+**Parameters:** None
+
+**Returns:**
+
+```json
+{
+  "week": "2026-W20",
+  "blocks": [
+    { "type": "header", "text": { "type": "plain_text", "text": "🤖 Weekly AI Coding Summary" } }
+  ],
+  "text": "🤖 Weekly AI Coding Summary\nTotal Cost: $12.5000\n..."
+}
+```
+
+**Data source:** `WeeklySummaryGenerator`. The same builder that the send tool uses, so the content matches for the same moment.
+
+**Requires:** `WeeklySummaryGenerator`
 
 Source: `src/tools/cross-session-tools.ts`

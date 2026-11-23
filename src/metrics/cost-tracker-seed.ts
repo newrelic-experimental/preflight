@@ -1,6 +1,6 @@
 import { exactTotalsOf, hasAttributableActivity } from '../storage/session-store.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
-import type { CostTrackerSeed } from './cost-tracker.js';
+import type { CostMetrics, CostTrackerSeed } from './cost-tracker.js';
 import { localDateKey, todayPortionRatio } from '../lib/date.js';
 
 export interface TodayCostSource {
@@ -83,6 +83,7 @@ export function buildCostTrackerSeed(persisted: FullSessionSummary): CostTracker
     persisted,
     dayKey,
   );
+  const dayFirstActivityMs = persisted.firstActivityByDayMs?.[dayKey];
   return {
     totalCostUsd,
     subagentCostUsd: persisted.subagentCostUsd,
@@ -98,6 +99,8 @@ export function buildCostTrackerSeed(persisted: FullSessionSummary): CostTracker
     dayKey,
     dayCostUsd,
     daySubagentCostUsd,
+    ...(dayFirstActivityMs !== undefined && { dayFirstActivityMs }),
+    sessionStartMs: persisted.startTime,
     legacyCallsDayKey: latestActivityDayKey(persisted) ?? dayKey,
     ...(persisted.unpricedByModel && { unpricedByModel: persisted.unpricedByModel }),
     ...(persisted.estimatedByModel && { estimatedByModel: persisted.estimatedByModel }),
@@ -105,5 +108,81 @@ export function buildCostTrackerSeed(persisted: FullSessionSummary): CostTracker
     ...(persisted.estimatedByDay && { estimatedByDay: persisted.estimatedByDay }),
     ...(persisted.byteEstimates && { byteEstimates: persisted.byteEstimates }),
     ...(!hadExactReport(persisted) && { hadExactReport: false }),
+  };
+}
+
+// A process that never writes a session's byte-estimate ledger holds it the way
+// the session file does, as spend: only the ledger's own writer replays the
+// turns it stood in for, and only that writer's save takes it back out.
+export function settledCostTrackerSeed(persisted: FullSessionSummary): CostTrackerSeed {
+  const { byteEstimates: _ledger, ...seed } = buildCostTrackerSeed(persisted);
+  return seed;
+}
+
+/** The cost a process's CostTracker holds for one session, split by local day. */
+export interface HeldSessionCost {
+  readonly startTime: number;
+  endTime: number;
+  estimatedCostUsd: number;
+  readonly costByDayUsd: Record<string, number>;
+}
+
+// Seeded from `persisted` when there is one. A summary with no day map books
+// the seed's day share, the one figure the tracker put on a day.
+export function heldSessionCostOf(
+  persisted: FullSessionSummary | null,
+  nowMs: number,
+  seed?: CostTrackerSeed,
+): HeldSessionCost {
+  if (!persisted)
+    return { startTime: nowMs, endTime: nowMs, estimatedCostUsd: 0, costByDayUsd: {} };
+  return {
+    startTime: persisted.startTime,
+    endTime: persisted.endTime,
+    estimatedCostUsd: persisted.estimatedCostUsd ?? 0,
+    costByDayUsd: {
+      ...(persisted.costByDayUsd ?? (seed ? { [seed.dayKey]: seed.dayCostUsd } : {})),
+    },
+  };
+}
+
+export function addHeldCost(held: HeldSessionCost, usd: number, timestampMs: number): void {
+  const dayKey = localDateKey(timestampMs);
+  held.estimatedCostUsd += usd;
+  held.costByDayUsd[dayKey] = (held.costByDayUsd[dayKey] ?? 0) + usd;
+  held.endTime = Math.max(held.endTime, timestampMs);
+}
+
+/** A seeded session's saved cost that its CostTracker books on no day. */
+export interface UnbookedSeedCost {
+  readonly startTime: number;
+  readonly costByDayUsd: Readonly<Record<string, number>>;
+}
+
+// The seed books only its own day. Byte estimates are left out because the
+// tracker books them itself and drops them on its first exact report.
+export function unbookedSeedCostOf(
+  persisted: FullSessionSummary,
+  seed: CostTrackerSeed,
+): UnbookedSeedCost {
+  const { [seed.dayKey]: _booked, ...costByDayUsd } = exactTotalsOf(persisted).costByDayUsd;
+  return { startTime: persisted.startTime, costByDayUsd };
+}
+
+/** A --stdio engine's own seeded session: its CostTracker's cost on top of the unbooked days. */
+export function heldOwnSessionCost(
+  unbooked: UnbookedSeedCost,
+  metrics: Pick<CostMetrics, 'sessionTotalCostUsd' | 'costByDayUsd'>,
+  nowMs: number,
+): HeldSessionCost {
+  const costByDayUsd = { ...unbooked.costByDayUsd };
+  for (const [day, usd] of Object.entries(metrics.costByDayUsd)) {
+    costByDayUsd[day] = (costByDayUsd[day] ?? 0) + usd;
+  }
+  return {
+    startTime: unbooked.startTime,
+    endTime: nowMs,
+    estimatedCostUsd: metrics.sessionTotalCostUsd ?? 0,
+    costByDayUsd,
   };
 }

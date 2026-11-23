@@ -7,6 +7,7 @@ import type {
   SessionAttribution,
 } from '../storage/types.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from './quality-proxy-tracker.js';
+import { localDateKey, localStartOfDay } from '../lib/date.js';
 
 const NOW = Date.parse('2026-06-15T12:00:00.000Z');
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -107,7 +108,11 @@ describe('computeUsageInsights', () => {
       tokensCacheRead: 10,
       tokensCacheCreation: 5,
     });
-    const outOfWindow = makeSummary({ startTime: NOW - 10 * DAY_MS, estimatedCostUsd: 100 });
+    const outOfWindow = makeSummary({
+      startTime: NOW - 10 * DAY_MS,
+      endTime: NOW - 10 * DAY_MS + 60_000,
+      estimatedCostUsd: 100,
+    });
 
     const report = computeUsageInsights([inWindow, outOfWindow], { nowMs: NOW, windowDays: 7 });
 
@@ -131,19 +136,173 @@ describe('computeUsageInsights', () => {
     expect(report.totalTokens).toBe(205);
   });
 
-  it('uses cutoffMs instead of nowMs - windowDays * DAY_MS when given, while windowDays still reports as given', () => {
-    const afterCutoff = makeSummary({ startTime: NOW - 30 * 60_000, estimatedCostUsd: 3 });
-    const beforeCutoff = makeSummary({ startTime: NOW - 90 * 60_000, estimatedCostUsd: 100 });
-
-    const report = computeUsageInsights([afterCutoff, beforeCutoff], {
-      nowMs: NOW,
-      windowDays: 1,
-      cutoffMs: NOW - 60 * 60_000,
+  it('counts the in-window share of a session started before the window and active now', () => {
+    const startedNineDaysAgo = makeSummary({
+      startTime: NOW - 9 * DAY_MS,
+      endTime: NOW,
+      estimatedCostUsd: 90,
+      costByDayUsd: { [localDateKey(NOW - 9 * DAY_MS)]: 60, [localDateKey(NOW)]: 30 },
     });
 
+    const report = computeUsageInsights([startedNineDaysAgo], { nowMs: NOW, windowDays: 7 });
+
     expect(report.sessionCount).toBe(1);
-    expect(report.totalCostUsd).toBe(3);
-    expect(report.windowDays).toBe(1);
+    expect(report.totalCostUsd).toBeCloseTo(30, 9);
+  });
+
+  describe("selection: 'today'", () => {
+    const TODAY_START = localStartOfDay(NOW);
+    const TODAY_NOW = TODAY_START + 6 * 60 * 60 * 1000;
+    const today = (sessions: FullSessionSummary[]) =>
+      computeUsageInsights(sessions, { selection: 'today', nowMs: TODAY_NOW });
+
+    it('counts only the in-window share of costByDayUsd for a session open for days', () => {
+      const tenDays = makeSummary({
+        startTime: TODAY_NOW - 10 * DAY_MS,
+        endTime: TODAY_NOW,
+        durationMs: 10 * DAY_MS,
+        estimatedCostUsd: 100,
+        costByDayUsd: {
+          [localDateKey(TODAY_NOW - 9 * DAY_MS)]: 50,
+          [localDateKey(TODAY_NOW - 2 * DAY_MS)]: 40,
+          [localDateKey(TODAY_NOW)]: 10,
+        },
+        tokensInput: 1000,
+        tokensOutput: 1000,
+        subagentCostUsd: 50,
+        toolBreakdown: { ScheduleWakeup: 3 },
+        attribution: attribution({
+          highContextCostUsd: 20,
+          buckets: {
+            tool: { Read: bucket({ costUsd: 80, tokens: 1000 }) },
+            skill: {
+              'pstack:unslop': bucket({
+                costUsd: 30,
+                tokens: 600,
+                count: 3,
+                breakdownUsd: { inputUsd: 10, outputUsd: 20, cacheReadUsd: 0, cacheCreationUsd: 0 },
+              }),
+            },
+            subagent: { Explore: bucket({ costUsd: 50, tokens: 800, count: 2 }) },
+          },
+        }),
+      });
+
+      const report = today([tenDays]);
+
+      expect(report.windowDays).toBe(1);
+      expect(report.sessionCount).toBe(1);
+      expect(report.totalCostUsd).toBeCloseTo(10, 9);
+      expect(report.totalTokens).toBe(200);
+      expect(report.skills[0]).toMatchObject({ key: 'pstack:unslop', tokens: 60 });
+      expect(report.skills[0]!.costUsd).toBeCloseTo(3, 9);
+      expect(report.skills[0]!.breakdownUsd!.inputUsd).toBeCloseTo(1, 9);
+      expect(report.skills[0]!.breakdownUsd!.outputUsd).toBeCloseTo(2, 9);
+      expect(report.subagents[0]).toMatchObject({ key: 'Explore', tokens: 80 });
+      expect(report.subagents[0]!.costUsd).toBeCloseTo(5, 9);
+      expect(report.plugins[0]).toMatchObject({ key: 'pstack', tokens: 60 });
+      expect(report.plugins[0]!.costUsd).toBeCloseTo(3, 9);
+      expect(report.loops[0]).toMatchObject({ runs: 4, tokens: 200 });
+      expect(report.loops[0]!.costUsd).toBeCloseTo(10, 9);
+      const byId = Object.fromEntries(report.insights.map((i) => [i.id, i]));
+      expect(byId.high_context!.costUsd).toBeCloseTo(2, 9);
+      expect(byId.subagent_heavy!.costUsd).toBeCloseTo(10, 9);
+      expect(byId.long_sessions!.tokens).toBe(200);
+      expect(report.attributionRatePct).toBe(80);
+    });
+
+    it('excludes a session whose costByDayUsd has nothing for today', () => {
+      const idleToday = makeSummary({
+        startTime: TODAY_NOW - 3 * DAY_MS,
+        endTime: TODAY_NOW,
+        estimatedCostUsd: 100,
+        costByDayUsd: { [localDateKey(TODAY_NOW - 3 * DAY_MS)]: 100 },
+      });
+
+      const report = today([idleToday]);
+
+      expect(report.sessionCount).toBe(0);
+      expect(report.totalCostUsd).toBe(0);
+    });
+
+    it('without costByDayUsd, weights by time overlap with today', () => {
+      const halfToday = makeSummary({
+        startTime: TODAY_START - 6 * 60 * 60 * 1000,
+        endTime: TODAY_NOW,
+        estimatedCostUsd: 4,
+        tokensInput: 100,
+        tokensOutput: 100,
+      });
+
+      const report = today([halfToday]);
+
+      expect(report.sessionCount).toBe(1);
+      expect(report.totalCostUsd).toBeCloseTo(2, 9);
+      expect(report.totalTokens).toBe(100);
+    });
+
+    it('without costByDayUsd or any calls, subagent cost or timeline, counts none of its cost today', () => {
+      const unattributable = { toolCallCount: 0, timeline: [], estimatedCostUsd: 4 };
+      const report = today([makeSummary({ ...unattributable, startTime: TODAY_START - 1000 })]);
+      expect(report.totalCostUsd).toBe(0);
+      expect(report.totalTokens).toBe(0);
+    });
+
+    it.each([0, null])(
+      'counts an unpriced session (estimatedCostUsd %p) that overlaps today, with pro-rated tokens',
+      (estimatedCostUsd) => {
+        const unpriced = makeSummary({
+          startTime: TODAY_START - 6 * 60 * 60 * 1000,
+          endTime: TODAY_NOW,
+          estimatedCostUsd,
+          tokensInput: 100,
+          tokensOutput: 100,
+        });
+
+        const report = today([unpriced]);
+
+        expect(report.sessionCount).toBe(1);
+        expect(report.totalCostUsd).toBe(0);
+        expect(report.totalTokens).toBe(100);
+      },
+    );
+
+    it('excludes a session that ended before local midnight', () => {
+      const ended = makeSummary({
+        startTime: TODAY_START - 30 * 60_000,
+        endTime: TODAY_START - 10 * 60_000,
+      });
+
+      expect(today([ended]).sessionCount).toBe(0);
+    });
+
+    it('counts a session with an unknown endTime of 0 that started today', () => {
+      const unknownEnd = makeSummary({
+        startTime: TODAY_START + 60 * 60_000,
+        endTime: 0,
+        durationMs: 0,
+        estimatedCostUsd: 3,
+      });
+
+      const report = today([unknownEnd]);
+
+      expect(report.sessionCount).toBe(1);
+      expect(report.totalCostUsd).toBeCloseTo(3, 9);
+    });
+
+    it('falls back to startTime + durationMs when endTime is before startTime', () => {
+      const spanning = makeSummary({
+        startTime: TODAY_START - 30 * 60_000,
+        endTime: TODAY_START - 60 * 60_000,
+        durationMs: 60 * 60_000,
+        estimatedCostUsd: 4,
+      });
+
+      const report = today([spanning]);
+
+      expect(report.sessionCount).toBe(1);
+      expect(report.totalCostUsd).toBeCloseTo(2, 9);
+    });
   });
 
   it('treats a null estimatedCostUsd as 0', () => {
@@ -490,6 +649,39 @@ describe('computeUsageInsights', () => {
         cacheReadTokens: 30,
         cacheCreationTokens: 30,
       });
+    });
+
+    it('sums breakdownUsd per key, and drops it when a bucket with spend predates it', () => {
+      const usd = (n: number) => ({
+        inputUsd: n,
+        outputUsd: 2 * n,
+        cacheReadUsd: 3 * n,
+        cacheCreationUsd: 4 * n,
+      });
+      const withUsd = (n: number): FullSessionSummary =>
+        makeSummary({
+          startTime: NOW - DAY_MS,
+          attribution: attribution({
+            buckets: {
+              skill: { unslop: bucket({ costUsd: 1, tokens: 10, count: 1, breakdownUsd: usd(n) }) },
+            },
+          }),
+        });
+      const legacy = makeSummary({
+        startTime: NOW - DAY_MS,
+        attribution: attribution({
+          buckets: { skill: { unslop: bucket({ costUsd: 1, tokens: 10, count: 1 }) } },
+        }),
+      });
+
+      const complete = computeUsageInsights([withUsd(1), withUsd(2)], {
+        nowMs: NOW,
+        windowDays: 7,
+      });
+      const partial = computeUsageInsights([withUsd(1), legacy], { nowMs: NOW, windowDays: 7 });
+
+      expect(complete.skills[0]!.breakdownUsd).toEqual(usd(3));
+      expect(partial.skills[0]!.breakdownUsd).toBeUndefined();
     });
 
     it('omits breakdown from a row when no contributing bucket had one', () => {

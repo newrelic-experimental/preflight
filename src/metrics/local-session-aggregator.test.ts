@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
+import { buildCostTrackerSeed } from './cost-tracker-seed.js';
 import { estimatedFromOf } from '../__test-utils__/estimated-from.js';
 import {
   spawnSync as nodeSpawnSync,
@@ -15,8 +16,8 @@ import {
   collectCommitsAcrossRepos,
   LocalSessionAggregator,
   RepoNameResolver,
-  stripHeredocs,
 } from './local-session-aggregator.js';
+import { backfillAgentId } from './agent-partition.js';
 import { ToolSelectionScorer } from './tool-selection-scorer.js';
 
 // git sets GIT_DIR/GIT_WORK_TREE for hook subprocesses, which override `-C
@@ -76,6 +77,34 @@ describe('LocalSessionAggregator', () => {
     expect(summary?.timeline).toEqual([
       { timestamp: 1000, toolName: 'Agent', durationMs: 180_000, success: true },
     ]);
+  });
+
+  it('keeps two distinct calls that share a millisecond and a tool through a save and reload', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'timeline-collide-'));
+    try {
+      const agg = new LocalSessionAggregator();
+      for (const toolUseId of ['toolu_a', 'toolu_b']) {
+        const call = {
+          id: toolUseId,
+          toolUseId,
+          sessionId: REAL_ID,
+          toolName: 'Read',
+          timestamp: 1000,
+          durationMs: 5,
+          success: true,
+        };
+        agg.recordToolCall(call);
+      }
+      const [summary] = summariesOf(agg) as unknown as FullSessionSummary[];
+      expect(summary?.timeline).toHaveLength(2);
+
+      const store = new SessionStore({ storagePath: dir });
+      store.saveSession(summary!);
+      store.saveSession(summary!);
+      expect(store.loadSession(REAL_ID)?.timeline).toHaveLength(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('amends the right timeline entry after older entries were evicted, and skips an evicted one', () => {
@@ -604,6 +633,28 @@ describe('LocalSessionAggregator timeline persistence', () => {
     expect(timeline[0]?.createdPrNumber).toBe('42');
   });
 
+  it('persists the created PR repo lowercased, and drops a malformed one', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Bash',
+      timestamp: 100,
+      command: 'gh pr create --fill',
+      createdPrNumber: '42',
+      createdPrRepo: 'Acme/App',
+    });
+    agg.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Bash',
+      timestamp: 200,
+      command: 'gh pr create --fill',
+      createdPrNumber: '43',
+      createdPrRepo: 'not a repo',
+    });
+    const timeline = summariesOf(agg, 'in progress')[0]?.timeline as Array<Record<string, unknown>>;
+    expect(timeline.map((e) => e.createdPrRepo)).toEqual(['acme/app', undefined]);
+  });
+
   it('persists the PR target of a GitHub MCP PR call', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({
@@ -714,6 +765,46 @@ describe('LocalSessionAggregator panel rehydration', () => {
     expect(typeof quality?.totalSignals).toBe('number');
     const toolSelection = summary?.toolSelectionMetrics as { totalCalls: number } | null;
     expect(toolSelection?.totalCalls).toBe(2);
+  });
+
+  it('scores tool selection with each call attributed to its subagent by backfillRecord', () => {
+    const agg = new LocalSessionAggregator();
+    for (const [i, toolUseId] of ['toolu_a', 'toolu_b', 'toolu_c'].entries()) {
+      agg.recordToolCall({
+        id: `r${i}`,
+        sessionId: REAL_ID,
+        toolName: 'Read',
+        filePath: '/src/shared.ts',
+        toolUseId,
+        timestamp: 1000 + i * 1000,
+        success: true,
+      } as never);
+    }
+    const redundantReads = (
+      backfillRecord?: Parameters<LocalSessionAggregator['toSummaries']>[0]['backfillRecord'],
+    ) => {
+      const [summary] = agg.toSummaries({
+        developer: 'tester',
+        outcome: 'in progress',
+        repoResolver: new StubRepoResolver(),
+        toolSelectionScorer: new ToolSelectionScorer(),
+        ...(backfillRecord && { backfillRecord }),
+      });
+      const metrics = summary?.toolSelectionMetrics as {
+        totalCalls: number;
+        redundantReadCount: number;
+      };
+      expect(metrics.totalCalls).toBe(3);
+      return metrics.redundantReadCount;
+    };
+    const agentByToolUse = new Map([
+      ['toolu_a', 'agent-1'],
+      ['toolu_b', 'agent-2'],
+      ['toolu_c', 'agent-3'],
+    ]);
+
+    expect(redundantReads()).toBe(1);
+    expect(redundantReads((r) => backfillAgentId(r, agentByToolUse))).toBe(0);
   });
 
   it('carries the cache savings of recorded token usage into the summary', () => {
@@ -836,6 +927,30 @@ describe('LocalSessionAggregator subagent cost', () => {
     expect(summary?.subagentCostUsd).toBe(5);
   });
 
+  it('keeps subagent reasoning tokens out of the persisted tokensThinking', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, {
+      costUsd: 1,
+      timestamp: 1000,
+      inputTokens: 10,
+      thinkingTokens: 40,
+      agentId: 'agent-1',
+      model: 'claude-sonnet-4-6',
+    });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.tokensThinking).toBe(0);
+  });
+
+  it('takes the platform of a token usage that arrives first, and keeps it afterwards', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, inputTokens: 10, platform: 'cursor' });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, inputTokens: 10, platform: 'windsurf' });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.platform).toBe('cursor');
+  });
+
   it('omits costByDayUsd (undefined, not {}) for a rollup with only tool calls and no token usage', () => {
     const agg = new LocalSessionAggregator();
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: 1 });
@@ -843,6 +958,35 @@ describe('LocalSessionAggregator subagent cost', () => {
     const [summary] = summariesOf(agg);
     expect(summary?.costByDayUsd).toBeUndefined();
     expect(summary?.subagentCostByDayUsd).toBeUndefined();
+    expect(summary?.firstActivityByDayMs).toBeUndefined();
+  });
+
+  it('leaves $0 usage out of firstActivityByDayMs', () => {
+    const agg = new LocalSessionAggregator();
+    const firstSpend = Date.parse('2026-09-10T12:00:00Z');
+    agg.recordTokenUsage(REAL_ID, { costUsd: 0, timestamp: firstSpend - 60_000 });
+    agg.recordTokenUsage(REAL_ID, { timestamp: firstSpend - 30_000 });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: firstSpend });
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: firstSpend });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.firstActivityByDayMs).toEqual({ [localDateKey(firstSpend)]: firstSpend });
+  });
+
+  it('records the earliest token event per local day as firstActivityByDayMs', () => {
+    const agg = new LocalSessionAggregator();
+    const day1 = Date.parse('2026-09-10T12:00:00Z');
+    const day2 = day1 + 48 * 60 * 60 * 1000;
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: day1 + 60_000 });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: day1 });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: day2 });
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'read_file', timestamp: day1 - 60_000 });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.firstActivityByDayMs).toEqual({
+      [localDateKey(day1)]: day1,
+      [localDateKey(day2)]: day2,
+    });
   });
 });
 
@@ -894,7 +1038,40 @@ describe('LocalSessionAggregator restart seeding (persistedCostBaseline)', () =>
     expect(summary?.subagentCostUsd).toBe(13);
   });
 
-  it('does not seed on rollup creation — an earlier agentId-less (parent) turn must not trigger it', () => {
+  it('folds the baseline in on a parent turn, so a restarted process keeps the earlier turns', () => {
+    const agg = new LocalSessionAggregator({
+      persistedCostBaseline: () => ({
+        estimatedCostUsd: 4,
+        subagentCostUsd: 0,
+        costByDayUsd: { '2026-09-10': 4 },
+        subagentCostByDayUsd: {},
+      }),
+    });
+    const noon = new Date(2026, 8, 10, 12).getTime();
+    agg.recordTokenUsage(REAL_ID, { costUsd: 4, timestamp: noon });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: noon + 1000 });
+
+    const [summary] = summariesOf(agg);
+    expect(summary?.estimatedCostUsd).toBe(9);
+    expect(summary?.costByDayUsd).toEqual({ '2026-09-10': 9 });
+    expect(summary?.subagentCostUsd).toBe(0);
+  });
+
+  it('folds a saved subagent-only cost once when the stored exact share is empty', () => {
+    const agg = new LocalSessionAggregator({
+      persistedCostBaseline: () => ({
+        estimatedCostUsd: 5,
+        subagentCostUsd: 5,
+        exactTotals: { costUsd: 0, inputTokens: 0, outputTokens: 0, costByDayUsd: {} },
+      }),
+    });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: 1000 });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: 2000 });
+
+    expect(summariesOf(agg)[0]?.estimatedCostUsd).toBe(7);
+  });
+
+  it('does not seed on rollup creation, and keeps looking while parent turns find no saved cost', () => {
     let calls = 0;
     const agg = new LocalSessionAggregator({
       persistedCostBaseline: () => {
@@ -902,11 +1079,16 @@ describe('LocalSessionAggregator restart seeding (persistedCostBaseline)', () =>
         return null;
       },
     });
-    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: 1000 });
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: 1000, success: true });
     expect(calls).toBe(0);
 
-    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: 2000, agentId: 'agent-1' });
-    expect(calls).toBe(1);
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: 2000 });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: 3000 });
+    expect(calls).toBe(2);
+
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: 4000, agentId: 'agent-1' });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: 5000, agentId: 'agent-1' });
+    expect(calls).toBe(3);
   });
 
   it('leaves the rollup at its own accumulated total when persistedCostBaseline returns null', () => {
@@ -930,6 +1112,26 @@ describe('LocalSessionAggregator restart seeding (persistedCostBaseline)', () =>
 
 describe('LocalSessionAggregator baseline fold after its own checkpoint', () => {
   const DAY = new Date(2026, 8, 10, 12).getTime();
+  const foldedAfter = (confirmed: boolean) => {
+    let written = false;
+    const agg = new LocalSessionAggregator({
+      persistedCostBaseline: () => (written ? { estimatedCostUsd: 5, subagentCostUsd: 0 } : null),
+    });
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
+    agg.recordTokenUsage(REAL_ID, { costUsd: 5, timestamp: DAY });
+    summariesOf(agg);
+    written = true;
+    if (confirmed) agg.markSaved(REAL_ID);
+    agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000, agentId: 'agent-1' });
+    return summariesOf(agg)[0]?.estimatedCostUsd;
+  };
+
+  it.each([
+    ['a checkpoint the store did not confirm', false, 11],
+    ['a checkpoint the store confirmed', true, 6],
+  ])('folds the whole baseline after %s', (_label, confirmed, expected) => {
+    expect(foldedAfter(confirmed)).toBe(expected);
+  });
 
   it('does not re-add parent cost the aggregator already checkpointed', () => {
     let file: ReturnType<typeof summariesOf>[number] | undefined;
@@ -947,6 +1149,7 @@ describe('LocalSessionAggregator baseline fold after its own checkpoint', () => 
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
     agg.recordTokenUsage(REAL_ID, { costUsd: 5, timestamp: DAY });
     [file] = summariesOf(agg);
+    agg.markSaved(REAL_ID);
 
     agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000, agentId: 'agent-1' });
 
@@ -970,6 +1173,7 @@ describe('LocalSessionAggregator baseline fold after its own checkpoint', () => 
     agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: DAY, success: true });
     agg.recordTokenUsage(REAL_ID, { costUsd: 5, timestamp: DAY });
     summariesOf(agg);
+    agg.markSaved(REAL_ID);
     fileCost = 8;
 
     agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: DAY + 1000, agentId: 'agent-1' });
@@ -977,6 +1181,69 @@ describe('LocalSessionAggregator baseline fold after its own checkpoint', () => 
     const [summary] = summariesOf(agg);
     expect(summary?.estimatedCostUsd).toBe(9);
     expect(summary?.costByDayUsd).toEqual({ '2026-09-10': 9 });
+  });
+});
+
+describe('LocalSessionAggregator unsaved rollups', () => {
+  it.each([
+    [
+      'a tool call',
+      (agg: LocalSessionAggregator) =>
+        agg.recordToolCall({ sessionId: 'conv-a', toolName: 'Edit', timestamp: 2000 }),
+    ],
+    [
+      'a self-report',
+      (agg: LocalSessionAggregator) =>
+        agg.recordTokenUsage('conv-a', { timestamp: 2000, inputTokens: 10, selfReported: true }),
+    ],
+    [
+      'subagent usage',
+      (agg: LocalSessionAggregator) =>
+        agg.recordTokenUsage('conv-a', { timestamp: 2000, costUsd: 1, agentId: 'agent-1' }),
+    ],
+  ])('is unsaved from creation, clean once saved, and unsaved again after %s', (_label, change) => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: 'conv-a', toolName: 'Read', timestamp: 1000 });
+    const states = [agg.isUnsaved('conv-a')];
+    agg.markSaved('conv-a');
+    states.push(agg.isUnsaved('conv-a'));
+    change(agg);
+    states.push(agg.isUnsaved('conv-a'));
+
+    expect(states).toEqual([true, false, true]);
+  });
+
+  it('summarizes a self-report that carries no tokens', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, { timestamp: 1000, selfReported: true });
+
+    expect(summariesOf(agg)).toMatchObject([{ sessionId: REAL_ID, selfReportCount: 1 }]);
+  });
+
+  it('is unsaved again after a late result amends a failed call', () => {
+    const agg = new LocalSessionAggregator();
+    const call = { sessionId: 'conv-a', id: 'call-1', toolName: 'Read', timestamp: 1000 };
+    agg.recordToolCall({ ...call, success: false });
+    agg.markSaved('conv-a');
+
+    agg.amendToolCall({ ...call, success: true, durationMs: 5 } as never);
+
+    expect(agg.isUnsaved('conv-a')).toBe(true);
+  });
+
+  it('summarizes a rollup that holds only a self-report', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, { timestamp: 1000, inputTokens: 10, selfReported: true });
+
+    expect(summariesOf(agg)).toMatchObject([{ sessionId: REAL_ID, selfReportCount: 1 }]);
+  });
+
+  it('never makes a rollup for an id that cannot name a session file', () => {
+    const agg = new LocalSessionAggregator();
+    for (const id of ['bad id!', 'unknown', 'conv-a'])
+      agg.recordToolCall({ sessionId: id, toolName: 'Read', timestamp: 1000 });
+
+    expect(summariesOf(agg).map((s) => s.sessionId)).toEqual(['conv-a']);
   });
 });
 
@@ -1097,68 +1364,90 @@ describe('LocalSessionAggregator baseline fold from a file with a byte-estimate 
   });
 });
 
-describe('stripHeredocs', () => {
-  it.each([
-    ['a closed heredoc', "cat <<'EOF'\ngit push\nEOF\ngit log", "cat <<'EOF'\ngit log", false],
-    [
-      'a heredoc inside "$( … )"',
-      'git commit -m "$(cat <<\'EOF\'\nfix: git push\nEOF\n)" && git push',
-      'git commit -m "$(cat <<\'EOF\'\n)" && git push',
-      false,
-    ],
-    ['a <<- heredoc', 'cat <<-EOF\n\tgit push\n\tEOF\ngit log', 'cat <<-EOF\ngit log', false],
-    [
-      'a heredoc with CRLF line ends',
-      'cat <<EOF\r\ngit push\r\nEOF\r\ngit log',
-      'cat <<EOF\r\ngit log',
-      false,
-    ],
-    ['a here-string', 'grep -q x <<<"$(gh pr view 1)"\ngit push', null, false],
-    ['a double-quoted <<', 'gh pr comment 1 --body "see <<X"\ngit push', null, true],
-    ['a single-quoted <<', "echo 'a <<B'\ngit push", null, true],
-    ['a quoted "<<EOF"', 'echo "<<EOF"\ngit push', null, true],
-    ['a << in a comment with an apostrophe', "# don't <<X\ngit push", null, true],
-    ['a << before a number', 'echo $((1<<2))\ngit push', null, false],
-    [
-      'a quoted << before a real heredoc',
-      'echo "see <<X" && cat <<EOF\ngit push\nEOF\ngit log',
-      'echo "see <<X" && cat <<EOF\ngit log',
-      true,
-    ],
-    [
-      'a quoted <<EOF that a real heredoc closes',
-      'gh pr merge 1 --body "see <<EOF"\ngh pr comment 1 <<\'EOF\'\nDone.\nEOF',
-      'gh pr merge 1 --body "see <<EOF"',
-      true,
-    ],
-  ])('reads %s and reports no unclosed heredoc', (_label, command, text, readingsDiffer) => {
-    expect(stripHeredocs(command)).toEqual({
-      text: text ?? command,
-      unclosed: false,
-      readingsDiffer,
+describe('LocalSessionAggregator first spend of a day against a saved file', () => {
+  const MORNING = new Date().setHours(9, 0, 0, 0);
+  const RESTART = new Date().setHours(14, 6, 0, 0);
+  const DAY_KEY = localDateKey(MORNING);
+
+  function savedFile(overrides: Partial<FullSessionSummary>): FullSessionSummary {
+    const writer = new LocalSessionAggregator();
+    writer.recordToolCall({
+      sessionId: REAL_ID,
+      toolName: 'Read',
+      timestamp: MORNING,
+      success: true,
     });
+    const [base] = summariesOf(writer) as unknown as FullSessionSummary[];
+    const { firstActivityByDayMs: _dropped, ...legacy } = base!;
+    return { ...legacy, ...overrides };
+  }
+
+  function restartedSummary(): FullSessionSummary {
+    const agg = new LocalSessionAggregator();
+    agg.recordTokenUsage(REAL_ID, { costUsd: 3, timestamp: RESTART });
+    const [incoming] = summariesOf(agg) as unknown as FullSessionSummary[];
+    return incoming!;
+  }
+
+  it('saves no first spend for a day a legacy file already spent on', () => {
+    const file = savedFile({ estimatedCostUsd: 2, costByDayUsd: { [DAY_KEY]: 2 } });
+    const merged = mergeSummaries(file, restartedSummary());
+    expect(merged.costByDayUsd?.[DAY_KEY]).toBe(3);
+    expect(merged.firstActivityByDayMs?.[DAY_KEY]).toBeUndefined();
+    expect(buildCostTrackerSeed(merged).dayFirstActivityMs).toBeUndefined();
   });
 
-  it.each([
-    ['a heredoc whose terminator never comes', 'cat <<EOF\ngit log\n', 'cat <<EOF', false],
-    ['an unquoted << in arithmetic', 'echo $((1<<N))\ngit push', 'echo $((1<<N))', false],
-    ['a quoted << whose quote never closes', 'echo "see <<X\ngit push', 'echo "see <<X', true],
-    [
-      'a <<- terminator indented with spaces',
-      'cat <<-EOF\n  git push\n  EOF\ngit log',
-      'cat <<-EOF',
-      false,
-    ],
-    [
-      'a terminator with a trailing space',
-      'cat <<EOF\ngit push\nEOF \ngit log',
-      'cat <<EOF',
-      false,
-    ],
-  ])(
-    'drops the lines after %s and reports it unclosed',
-    (_label, command, text, readingsDiffer) => {
-      expect(stripHeredocs(command)).toEqual({ text, unclosed: true, readingsDiffer });
+  it('saves the first spend of a day the file had no spend on', () => {
+    const merged = mergeSummaries(savedFile({}), restartedSummary());
+    expect(merged.firstActivityByDayMs).toEqual({ [DAY_KEY]: RESTART });
+    expect(buildCostTrackerSeed(merged).dayFirstActivityMs).toBe(RESTART);
+  });
+
+  it('keeps the earlier saved first spend over a later restart', () => {
+    const file = savedFile({
+      estimatedCostUsd: 2,
+      costByDayUsd: { [DAY_KEY]: 2 },
+      firstActivityByDayMs: { [DAY_KEY]: MORNING },
+    });
+    const merged = mergeSummaries(file, restartedSummary());
+    expect(merged.firstActivityByDayMs).toEqual({ [DAY_KEY]: MORNING });
+  });
+
+  it.each([0, 1])(
+    'keeps every saved first spend after a restart seeded from the file, with a $%d usage',
+    (usd) => {
+      const yesterday = MORNING - 86_400_000;
+      const saved = { [localDateKey(yesterday)]: yesterday, [DAY_KEY]: MORNING };
+      const file = savedFile({
+        estimatedCostUsd: 20,
+        costByDayUsd: { [localDateKey(yesterday)]: 10, [DAY_KEY]: 10 },
+        firstActivityByDayMs: saved,
+      });
+      const agg = new LocalSessionAggregator({ persistedCostBaseline: () => file });
+      agg.recordTokenUsage(REAL_ID, { costUsd: 1, timestamp: yesterday - 3_600_000 });
+      agg.recordTokenUsage(REAL_ID, { costUsd: usd, timestamp: RESTART, agentId: 'sub' });
+      const [incoming] = summariesOf(agg) as unknown as FullSessionSummary[];
+      expect(mergeSummaries(file, incoming!).firstActivityByDayMs).toEqual({
+        ...saved,
+        [localDateKey(yesterday)]: yesterday - 3_600_000,
+      });
+    },
+  );
+
+  it.each([0, 1])(
+    'keeps an earlier day saved first spend when a restart spends only today, with a $%d usage',
+    (usd) => {
+      const yesterday = MORNING - 86_400_000;
+      const saved = { [localDateKey(yesterday)]: yesterday, [DAY_KEY]: MORNING };
+      const file = savedFile({
+        estimatedCostUsd: 20,
+        costByDayUsd: { [localDateKey(yesterday)]: 10, [DAY_KEY]: 10 },
+        firstActivityByDayMs: saved,
+      });
+      const agg = new LocalSessionAggregator({ persistedCostBaseline: () => file });
+      agg.recordTokenUsage(REAL_ID, { costUsd: usd, timestamp: RESTART, agentId: 'sub' });
+      const [incoming] = summariesOf(agg) as unknown as FullSessionSummary[];
+      expect(mergeSummaries(file, incoming!).firstActivityByDayMs).toEqual(saved);
     },
   );
 });
@@ -1194,5 +1483,72 @@ describe('saved timeline past the cap', () => {
     expect(stamps).toHaveLength(10_000);
     expect(stamps[0]).toBe(26);
     expect(stamps.at(-1)).toBe(10_025);
+  });
+});
+
+describe('saved taskCount', () => {
+  const OTHER_ID = '5b0f3c1e-92d4-4f7a-8a63-0d2c7e9b1a55';
+  const taskCountsById = (agg: LocalSessionAggregator): Record<string, unknown> =>
+    Object.fromEntries(summariesOf(agg).map((s) => [String(s.sessionId), s.taskCount]));
+  const closedTask = (agg: LocalSessionAggregator, sessionId: string, at: number): void => {
+    agg.recordToolCall({ sessionId, toolName: 'Read', timestamp: at });
+    agg.recordToolCall({ sessionId, toolName: 'AskUserQuestion', timestamp: at + 1 });
+  };
+
+  it('counts the tasks a session closed', () => {
+    const agg = new LocalSessionAggregator();
+    closedTask(agg, REAL_ID, 1000);
+    closedTask(agg, REAL_ID, 2000);
+
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 2 });
+  });
+
+  it('keeps two concurrent sessions from sharing a count', () => {
+    const agg = new LocalSessionAggregator();
+    closedTask(agg, REAL_ID, 1000);
+    closedTask(agg, OTHER_ID, 1100);
+    closedTask(agg, REAL_ID, 2000);
+
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 2, [OTHER_ID]: 1 });
+  });
+
+  it('closes a session task on its own Stop and leaves another session open', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: 1000 });
+    agg.recordToolCall({ sessionId: OTHER_ID, toolName: 'Read', timestamp: 1000 });
+    agg.markTaskBoundary(REAL_ID, 1500);
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: 2000 });
+    agg.recordToolCall({ sessionId: OTHER_ID, toolName: 'Read', timestamp: 2000 });
+    agg.markTaskBoundary(REAL_ID, 2500);
+
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 2, [OTHER_ID]: 0 });
+  });
+
+  it('does not count a prompt that made no tool call', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: 1000 });
+    agg.markTaskBoundary(REAL_ID, 1500);
+    agg.startTask(REAL_ID, 2000);
+    agg.markTaskBoundary(REAL_ID, 2500);
+
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 1 });
+  });
+
+  it('counts a task only once it closes', () => {
+    const agg = new LocalSessionAggregator();
+    agg.recordToolCall({ sessionId: REAL_ID, toolName: 'Read', timestamp: 1000 });
+    agg.startTask(REAL_ID, 1500);
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 0 });
+
+    agg.markTaskBoundary(REAL_ID, 1700);
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 1 });
+  });
+
+  it('adds to the tasks an earlier process saved, once', () => {
+    const agg = new LocalSessionAggregator({ persistedTaskCount: () => 3 });
+    closedTask(agg, REAL_ID, 1000);
+    closedTask(agg, REAL_ID, 2000);
+
+    expect(taskCountsById(agg)).toEqual({ [REAL_ID]: 5 });
   });
 });
