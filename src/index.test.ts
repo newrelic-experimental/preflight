@@ -706,6 +706,16 @@ describe('startRetentionSweep()', () => {
     clearInterval(handle as NodeJS.Timeout);
   });
 
+  it('removes week-old self-report claims on start', () => {
+    mkdirSync(resolve(storagePath, 'self-reports', 'conv-old'), { recursive: true });
+    const oldClaim = writeOldFile('self-reports/conv-old', 'report-old-1-0123456789abcdef');
+
+    const handle = startRetentionSweep({ storagePath, retainSessionsDays: 90 });
+
+    expect(existsSync(oldClaim)).toBe(false);
+    clearInterval(handle as NodeJS.Timeout);
+  });
+
   it('re-runs the sweep every 6 hours', () => {
     const handle = startRetentionSweep({ storagePath, retainSessionsDays: 90 });
 
@@ -1704,7 +1714,14 @@ describe('stdio integration', () => {
 
   describe('an engine that adopts its session after draining others', () => {
     const storages: string[] = [];
+    let pausedPid: number | undefined;
     afterEach(() => {
+      if (pausedPid !== undefined) {
+        try {
+          process.kill(pausedPid, 'SIGCONT');
+        } catch {}
+        pausedPid = undefined;
+      }
       for (const dir of storages.splice(0)) rmSync(dir, { recursive: true, force: true });
     });
     const CHECKPOINT_OFTEN = { NR_AI_SESSION_PERSIST_INTERVAL_MS: '200' };
@@ -1720,22 +1737,22 @@ describe('stdio integration', () => {
       const env: NodeJS.ProcessEnv = { ...process.env, MCP_CLIENT: 'claude-code' };
       delete env.CLAUDE_JOB_DIR;
       const client = new Client({ name: 'test-client', version: '1.0.0' });
-      await connectToConfiguredEngine(
-        client,
-        new StdioClientTransport({
-          command: 'node',
-          args: [resolve(__dirname, '..', 'dist', 'index.js'), '--stdio'],
-          ...(cwd !== undefined && { cwd }),
-          env: {
-            ...env,
-            NR_AI_DASHBOARD_PORT: '0',
-            NR_AI_MODE: 'local',
-            NEW_RELIC_AI_MCP_STORAGE_PATH: storage,
-            ...envOverrides,
-          },
-        }),
-      );
-      return client;
+      const transport = new StdioClientTransport({
+        command: 'node',
+        args: [resolve(__dirname, '..', 'dist', 'index.js'), '--stdio'],
+        ...(cwd !== undefined && { cwd }),
+        env: {
+          ...env,
+          NR_AI_DASHBOARD_PORT: '0',
+          NR_AI_MODE: 'local',
+          NEW_RELIC_AI_MCP_STORAGE_PATH: storage,
+          ...envOverrides,
+        },
+      });
+      await connectToConfiguredEngine(client, transport);
+      const pid = transport.pid;
+      if (pid === null) throw new Error('engine has no pid: spawn failed');
+      return Object.assign(client, { pid });
     };
     let drainedCalls = 0;
     const drainCalls = async (storage: string, sessionId: string, count: number) => {
@@ -2370,41 +2387,49 @@ describe('stdio integration', () => {
         const first = await startEngine(storage);
         await drainCalls(storage, id, 1);
         const checkpointing = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
-        let next = 1;
-        for (; next <= 20 && savedCalls(storage, id) === null; next++) {
-          // Both engines poll every 100 ms, so a fixed phase could hand every call to one of them.
-          await sleep((next * 37) % 100);
+        // Paused, the first engine cannot win the race to drain the next call.
+        process.kill(first.pid, 'SIGSTOP');
+        pausedPid = first.pid;
+        try {
           await drainCalls(storage, id, 1);
-          for (let i = 0; i < 6 && savedCalls(storage, id) === null; i++) {
-            await sleep(100);
-          }
+          await waitFor(() => savedCalls(storage, id) !== null);
+        } finally {
+          process.kill(first.pid, 'SIGCONT');
+          pausedPid = undefined;
         }
-        expect(savedCalls(storage, id)).not.toBeNull();
         return { first, checkpointing };
       };
 
-      it('stays completed across its checkpoints after a pending engine with no live owner completes it', async () => {
-        const storage = makeStorage();
-        const { first, checkpointing } = await startWithSessionDrained(storage);
-        await first.close();
-        await waitFor(() => outcome(storage) === 'completed');
+      itOffWindows(
+        'stays completed across its checkpoints after a pending engine with no live owner completes it',
+        async () => {
+          const storage = makeStorage();
+          const { first, checkpointing } = await startWithSessionDrained(storage);
+          await first.close();
+          await waitFor(() => outcome(storage) === 'completed');
 
-        expect(await outcomesEvery100Ms(storage, 15)).toEqual(Array(15).fill('completed'));
-        await checkpointing.close();
-        expect(outcome(storage)).toBe('completed');
-      }, 60000);
+          expect(await outcomesEvery100Ms(storage, 15)).toEqual(Array(15).fill('completed'));
+          await checkpointing.close();
+          expect(outcome(storage)).toBe('completed');
+        },
+        60000,
+      );
 
-      it('goes back in progress after a pending engine completes it when the session makes a new call', async () => {
-        const storage = makeStorage();
-        const { first, checkpointing } = await startWithSessionDrained(storage);
-        await first.close();
-        await waitFor(() => outcome(storage) === 'completed');
+      itOffWindows(
+        'goes back in progress after a pending engine completes it when the session makes a new call',
+        async () => {
+          const storage = makeStorage();
+          const { first, checkpointing } = await startWithSessionDrained(storage);
+          await first.close();
+          await waitFor(() => outcome(storage) === 'completed');
 
-        await drainCalls(storage, id, 1);
-        await waitFor(() => outcome(storage) === 'in progress');
-        await checkpointing.close();
-        await waitFor(() => outcome(storage) === 'completed');
-      }, 60000);
+          await drainCalls(storage, id, 1);
+          await waitFor(() => outcome(storage) === 'in progress');
+          await checkpointing.close();
+          await waitFor(() => outcome(storage) === 'completed');
+        },
+        60000,
+      );
 
       it('stays completed across its checkpoints after its own engine completes it', async () => {
         const storage = makeStorage();
@@ -2949,7 +2974,9 @@ describe('stdio integration', () => {
       });
     const savedSession = (storagePath: string, id: string): Record<string, unknown> | null => {
       const dir = resolve(storagePath, 'sessions');
-      const name = existsSync(dir) ? readdirSync(dir).find((f) => f.includes(id)) : undefined;
+      const name = existsSync(dir)
+        ? readdirSync(dir).find((f) => f.includes(id) && f.endsWith('.json'))
+        : undefined;
       return name ? JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) : null;
     };
     const until = async <T>(read: () => T | Promise<T>, done: (v: T) => boolean): Promise<T> => {
@@ -3702,7 +3729,7 @@ describe('stdio integration', () => {
         const dir = resolve(tmpStoragePath, 'sessions');
         for (let i = 0; i < 40; i++) {
           const name = existsSync(dir)
-            ? readdirSync(dir).find((f) => f.includes(conversationId))
+            ? readdirSync(dir).find((f) => f.includes(conversationId) && f.endsWith('.json'))
             : undefined;
           const saved = name ? JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) : null;
           if (saved?.estimatedCostUsd || saved?.toolCallCount) return saved;

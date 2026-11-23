@@ -1,7 +1,12 @@
 import type { FullSessionSummary } from '../storage/session-store.js';
 import type { AttributionBucket, TokenBreakdown, UsdBreakdown } from '../storage/types.js';
-import { localDateKey, todayPortionRatio } from '../lib/date.js';
-import { todayCostOfSummary } from './cost-tracker-seed.js';
+import { localEndOfDay, localStartOfDay } from '../lib/date.js';
+import {
+  lastActivityMs,
+  lastDaysWindow,
+  windowedSessions,
+  type ActivityWindow,
+} from '../storage/session-window.js';
 
 /**
  * "What's contributing to your spend": independent characteristics of the
@@ -70,20 +75,18 @@ export interface UsageInsightsReport {
 }
 
 /**
- * `started` (the default) keeps sessions that started inside the rolling
- * `windowDays` window and counts them in full. `today` keeps every session
- * with spend on the local calendar day of `nowMs` and counts only that day's
- * share, the same figure Spend Today uses (see `todayCostOfSummary`).
+ * Both windows keep every session with activity inside them and count only
+ * its in-window share of cost and tokens. `rolling` (the default) is the last
+ * `windowDays` local calendar days; `today` is the local calendar day of `nowMs`.
  */
 export type UsageInsightsOptions =
-  | { readonly selection?: 'started'; readonly nowMs: number; readonly windowDays: number }
+  | { readonly selection?: 'rolling'; readonly nowMs: number; readonly windowDays: number }
   | { readonly selection: 'today'; readonly nowMs: number };
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const LONG_SESSION_MS = 8 * 60 * 60 * 1000;
 /** A session counts as "subagent-heavy" once subagent cost reaches this share of its total. */
 const SUBAGENT_HEAVY_SHARE = 0.25;
@@ -284,45 +287,20 @@ function makeInsight(
 // computeUsageInsights
 // ---------------------------------------------------------------------------
 
-interface WeightedSession {
-  readonly session: FullSessionSummary;
-  /** Share of the session's lifetime cost and tokens that falls in the window, in (0, 1]. */
-  readonly weight: number;
-}
-
-// The deserializer maps a missing endTime to 0; like
-// loadSessionsOverlappingToday, treat that (or an end before the start) as
-// unknown rather than as an end before the window.
-function lastActivityMs(s: FullSessionSummary): number {
-  return s.endTime > 0 && s.endTime >= s.startTime ? s.endTime : s.startTime + (s.durationMs ?? 0);
-}
-
-function todayWeight(s: FullSessionSummary, nowMs: number): number {
-  const withEnd = { ...s, endTime: lastActivityMs(s) };
-  const lifetimeUsd = s.estimatedCostUsd ?? 0;
-  if (lifetimeUsd <= 0) return todayPortionRatio(withEnd, nowMs);
-  const todayUsd = todayCostOfSummary(withEnd, localDateKey(nowMs), nowMs).costUsd;
-  return Math.min(1, Math.max(0, todayUsd / lifetimeUsd));
-}
-
-function selectSessions(
-  sessions: readonly FullSessionSummary[],
-  opts: UsageInsightsOptions,
-): WeightedSession[] {
+/** The span of time a report covers. */
+export function usageInsightsWindow(opts: UsageInsightsOptions): ActivityWindow {
   if (opts.selection === 'today') {
-    return sessions
-      .map((session) => ({ session, weight: todayWeight(session, opts.nowMs) }))
-      .filter((w) => w.weight > 0);
+    const startMs = localStartOfDay(opts.nowMs);
+    return { startMs, endMs: localEndOfDay(startMs) };
   }
-  const cutoffMs = opts.nowMs - opts.windowDays * DAY_MS;
-  return sessions.filter((s) => s.startTime >= cutoffMs).map((session) => ({ session, weight: 1 }));
+  return lastDaysWindow(opts.nowMs, opts.windowDays);
 }
 
 export function computeUsageInsights(
   sessions: readonly FullSessionSummary[],
   opts: UsageInsightsOptions,
 ): UsageInsightsReport {
-  const windowSessions = selectSessions(sessions, opts);
+  const windowSessions = windowedSessions(sessions, usageInsightsWindow(opts));
 
   let totalCostUsd = 0;
   let totalTokens = 0;
@@ -355,7 +333,10 @@ export function computeUsageInsights(
   // One per-session pass: every table and insight below is built from the
   // accumulators this loop fills, rather than re-scanning `windowSessions`
   // once per characteristic.
-  for (const { session: s, weight } of windowSessions) {
+  for (const {
+    session: s,
+    share: { weight },
+  } of windowSessions) {
     const lifetimeCost = s.estimatedCostUsd ?? 0;
     const cost = lifetimeCost * weight;
     totalCostUsd += cost;

@@ -200,9 +200,49 @@ function sizeOf(value: unknown): number {
   }
 }
 
+const TRUNCATED = '...[truncated]';
+
 function truncate(value: string, maxLen: number): string {
   if (value.length <= maxLen) return value;
-  return value.slice(0, maxLen) + '...[truncated]';
+  return value.slice(0, maxLen) + TRUNCATED;
+}
+
+// Redacts each string, keys included, before JSON encoding, so an escape the encoding adds
+// (\n, \u001b, \") cannot hide a secret from the pass, and before the cap, so the cut cannot shorten
+// a secret below its pattern. A string is stored as itself and any other value as its JSON. Strings
+// that start past the cap are replaced unread by the truncation marker; redaction can shorten what
+// comes before them, so the marker can land inside the cap. Each string costs at least its length
+// plus its two quotes. Values and keys each count toward their own cap, because serialization visits
+// each kind in order. Keys that redact to the same text are numbered so no entry is dropped.
+function recordedContent(value: unknown, maxLen: number): string {
+  const redactUpTo = (): ((text: string) => string) => {
+    let left = maxLen;
+    return (text) => {
+      const kept = left > 0 ? redact(text) : TRUNCATED;
+      left -= text.length + 2;
+      return kept;
+    };
+  };
+  const redactValue = redactUpTo();
+  const redactKey = redactUpTo();
+  const content =
+    typeof value === 'string'
+      ? redactValue(value)
+      : JSON.stringify(value, (_key, v: unknown) => {
+          if (typeof v === 'string') return redactValue(v);
+          if (v === null || typeof v !== 'object' || Array.isArray(v)) return v;
+          const keys = new Set<string>();
+          return Object.fromEntries(
+            Object.entries(v).map(([k, x]) => {
+              const base = redactKey(k);
+              let key = base;
+              for (let n = 2; keys.has(key); n++) key = `${base} (${n})`;
+              keys.add(key);
+              return [key, x];
+            }),
+          );
+        });
+  return truncate(content, maxLen);
 }
 
 function countLines(text: string): number {
@@ -967,9 +1007,7 @@ function processHook(raw: string, cliEvent?: string): void {
     if (inputMeta !== undefined) event.toolInput = inputMeta;
 
     if (recordContent && data.tool_input !== undefined) {
-      const content =
-        typeof data.tool_input === 'string' ? data.tool_input : JSON.stringify(data.tool_input);
-      event.inputContent = redact(truncate(content, maxContentLen));
+      event.inputContent = recordedContent(data.tool_input, maxContentLen);
     }
   } else if (eventName === 'posttooluse') {
     // Claude Code generally signals tool failure via a separate
@@ -1034,9 +1072,7 @@ function processHook(raw: string, cliEvent?: string): void {
     if (outputMeta !== undefined) event.toolOutput = outputMeta;
 
     if (recordContent && toolResponse !== undefined) {
-      const content =
-        typeof toolResponse === 'string' ? toolResponse : JSON.stringify(toolResponse);
-      event.outputContent = redact(truncate(content, maxContentLen));
+      event.outputContent = recordedContent(toolResponse, maxContentLen);
     }
   } else if (eventName === 'posttoolusefailure') {
     event = {
@@ -1091,9 +1127,7 @@ function processHook(raw: string, cliEvent?: string): void {
     if (inputMeta !== undefined) event.toolInput = inputMeta;
 
     if (recordContent && data.tool_input !== undefined) {
-      const content =
-        typeof data.tool_input === 'string' ? data.tool_input : JSON.stringify(data.tool_input);
-      event.inputContent = redact(truncate(content, maxContentLen));
+      event.inputContent = recordedContent(data.tool_input, maxContentLen);
     }
   } else if (eventName === 'aftertool') {
     // Gemini CLI has no tool_response.success boolean (unlike Kiro/Amazon Q) —
@@ -1122,11 +1156,7 @@ function processHook(raw: string, cliEvent?: string): void {
     if (outputMeta !== undefined) event.toolOutput = outputMeta;
 
     if (recordContent && data.tool_response !== undefined) {
-      const content =
-        typeof data.tool_response === 'string'
-          ? data.tool_response
-          : JSON.stringify(data.tool_response);
-      event.outputContent = redact(truncate(content, maxContentLen));
+      event.outputContent = recordedContent(data.tool_response, maxContentLen);
     }
   } else if (eventName === 'beforeshellexecution') {
     // Cursor's shell hooks carry no tool_name field — the event name itself
@@ -1201,7 +1231,7 @@ function processHook(raw: string, cliEvent?: string): void {
     // buffer unless recordContent is enabled, same as Claude Code's existing
     // tool_response/tool_input content handling.
     if (recordContent && data.content !== undefined) {
-      event.outputContent = redact(truncate(data.content, maxContentLen));
+      event.outputContent = recordedContent(data.content, maxContentLen);
     }
   } else if (eventName === 'afterfileedit') {
     // Cursor has no "beforeFileEdit" event — afterFileEdit is post-only,
@@ -1329,7 +1359,7 @@ function processHook(raw: string, cliEvent?: string): void {
     if (inputMeta !== undefined) event.toolInput = inputMeta;
 
     if (recordContent && data.toolCall?.args !== undefined) {
-      event.inputContent = redact(truncate(JSON.stringify(data.toolCall.args), maxContentLen));
+      event.inputContent = recordedContent(data.toolCall.args, maxContentLen);
     }
   } else if (isAntigravityPost) {
     // Antigravity PostToolUse — carries the same `toolCall` as PreToolUse
@@ -1366,14 +1396,10 @@ function processHook(raw: string, cliEvent?: string): void {
     // (a safe closed enum), so both are gated behind recordContent.
     if (recordContent) {
       if (data.error_details !== undefined) {
-        const details =
-          typeof data.error_details === 'string'
-            ? data.error_details
-            : JSON.stringify(data.error_details);
-        event.errorDetails = redact(truncate(details, maxContentLen));
+        event.errorDetails = recordedContent(data.error_details, maxContentLen);
       }
       if (typeof data.last_assistant_message === 'string') {
-        event.lastAssistantMessage = redact(truncate(data.last_assistant_message, maxContentLen));
+        event.lastAssistantMessage = recordedContent(data.last_assistant_message, maxContentLen);
       }
     }
   } else if (eventName === 'sessionstart') {

@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { createHash as createHash2 } from "node:crypto";
 
 // src/redaction-patterns.ts
-var AFTER_ESCAPE = String.raw`\\[nrt]|\\u[0-9a-fA-F]{4}|\x1b\[[0-9;]{0,20}m|%[0-9a-fA-F]{2}`;
+var AFTER_ESCAPE = String.raw`\\[nrtbf]|\\u[0-9a-fA-F]{4}|(?:\x1b|\\u001[bB])\[[0-9;]{0,20}m|%[0-9a-fA-F]{2}`;
 var CONTINUATION = String.raw`(?:\\\r?\n|\\\\\\n)`;
 var REDACTION_PATTERNS = [
   /(?:sk-|ghp_|gho_|ghs_|github_pat_|xoxb-|xoxp-|Bearer\s+)[A-Za-z0-9_-]{20,200}/g,
@@ -225,12 +225,19 @@ var nameValue = (text, match, quote, spans) => {
   pushValue(spans, start, floor, end);
   return i;
 };
-var MYSQL = /\b(?:mysql(?:dump|admin)?|mariadb)\b/g;
+var MYSQL = /(?:mysql(?:dump|admin)?|mariadb)\b/g;
 var ESCAPED_P = new RegExp(String.raw`(?<=${AFTER_ESCAPE})-p`, "y");
 var PORT_MAPPING = /[\d.]+:\d/y;
 var REDIRECT = /&>>?|[<>][<>&|]*/y;
-var mysqlPasswords = (text, match, quote, spans) => {
+var ONLY_CONTINUATION = new RegExp(String.raw`^${CONTINUATION}$`);
+var WORD_START = new RegExp(String.raw`(?<!\w)|(?<=${AFTER_ESCAPE})`, "y");
+function startsWord(text, index) {
+  WORD_START.lastIndex = index;
+  return WORD_START.test(text);
+}
+function commandWords(text, match, quote, visit) {
   let i = match.index + match[0].length;
+  if (!startsWord(text, match.index)) return i;
   for (; ; ) {
     while (isSpace(unitAt(text, i, quote)) && text.charCodeAt(i) !== LF) {
       i += unitLength(text, i, quote);
@@ -242,11 +249,14 @@ var mysqlPasswords = (text, match, quote, spans) => {
     }
     const end = valueEnd(text, i, quote);
     if (end === i) return i;
-    const flag = passwordFlag(text, i, end);
-    if (flag >= 0) spans.push(flag, end);
+    if (!ONLY_CONTINUATION.test(text.slice(i, end))) visit(i, end);
     i = end;
   }
-};
+}
+var mysqlPasswords = (text, match, quote, spans) => commandWords(text, match, quote, (from, end) => {
+  const flag = passwordFlag(text, from, end);
+  if (flag >= 0) spans.push(flag, end);
+});
 function passwordFlag(text, from, end) {
   for (let flag = from; flag + 2 < end; flag++) {
     if (text.charCodeAt(flag) !== 45 || text.charCodeAt(flag + 1) !== 112) continue;
@@ -257,12 +267,46 @@ function passwordFlag(text, from, end) {
   }
   return -1;
 }
+var CURL = /curl\b/g;
+var CURL_LONG_CREDENTIAL = /--(?:proxy-)?user(?:=|$)/y;
+var CURL_TAKES_VALUE = charTable("AbcCdDeEFHKmoPQrtTuUwxXyYz");
+var CURL_CREDENTIAL = charTable("tuU");
+var ONLY_QUOTES = /^(?:\\*["'])*$/;
+var curlCredentials = (text, match, quote, spans) => {
+  let pending;
+  return commandWords(text, match, quote, (from, end) => {
+    if (pending !== void 0) {
+      if (pending.credential) spans.push(pending.start, end);
+      pending = void 0;
+      return;
+    }
+    const word = text.slice(from, end);
+    CURL_LONG_CREDENTIAL.lastIndex = 0;
+    if (CURL_LONG_CREDENTIAL.test(word)) {
+      if (word.includes("=")) spans.push(from, end);
+      else pending = { start: from, credential: true };
+      return;
+    }
+    if (word[0] !== "-" || word[1] === "-") return;
+    for (let k = 1; k < word.length; k++) {
+      const c = word.charCodeAt(k);
+      if (c >= 128 || CURL_TAKES_VALUE[c] !== 1) continue;
+      const start = k === 1 ? from : from + k;
+      const credential = CURL_CREDENTIAL[c] === 1;
+      if (!ONLY_QUOTES.test(word.slice(k + 1))) {
+        if (credential) spans.push(start, end);
+      } else pending = { start, credential };
+      return;
+    }
+  });
+};
 var RULES = [
   { start: HEADER, redact: headerValue },
   { start: NAME, redact: nameValue },
   ...REDACTION_PATTERNS,
   { start: FLAG, redact: wordValue },
-  { start: MYSQL, redact: mysqlPasswords }
+  { start: MYSQL, redact: mysqlPasswords },
+  { start: CURL, redact: curlCredentials }
 ];
 function redactSecrets(text, counts) {
   let result = text;
@@ -367,7 +411,16 @@ var UNATTRIBUTED_BREADCRUMB_WRITER = "unattributed";
 
 // src/hooks/self-report.ts
 import { createHash } from "node:crypto";
-import { closeSync, constants, mkdirSync, openSync, unlinkSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  rmdirSync,
+  statSync,
+  unlinkSync
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 
 // src/hooks/synthetic-session-id.ts
@@ -472,14 +525,26 @@ function hookSelfReportLine(call, conversationId, timestamp, platform) {
 function claimPath(storageDir, line) {
   return resolve(storageDir, "self-reports", line.sessionId, reportKey(line));
 }
+function createClaim(path) {
+  closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 384));
+}
+var CLAIM_DIR_RETRIES = 3;
 function claimReport(storageDir, line) {
   const path = claimPath(storageDir, line);
-  try {
-    mkdirSync(dirname(path), { recursive: true, mode: 448 });
-    closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 384));
-    return true;
-  } catch {
-    return false;
+  for (let retries = 0; ; retries++) {
+    try {
+      createClaim(path);
+      return true;
+    } catch (err) {
+      if (err.code !== "ENOENT" || retries === CLAIM_DIR_RETRIES) {
+        return false;
+      }
+    }
+    try {
+      mkdirSync(dirname(path), { recursive: true, mode: 448 });
+    } catch {
+      return false;
+    }
   }
 }
 function releaseReport(storageDir, line) {
@@ -489,6 +554,7 @@ function releaseReport(storageDir, line) {
     return;
   }
 }
+var SELF_REPORT_CLAIM_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1e3;
 
 // src/hooks/session-breadcrumbs.ts
 import { resolve as resolve2 } from "node:path";
@@ -514,7 +580,7 @@ import {
   openSync as openSync2,
   readFileSync,
   readSync,
-  statSync,
+  statSync as statSync2,
   unlinkSync as unlinkSync2,
   writeSync
 } from "node:fs";
@@ -548,7 +614,7 @@ function offsetAfterWrite(fd) {
   }
 }
 function isAt(path, file) {
-  const now = statSync(path, { bigint: true, throwIfNoEntry: false });
+  const now = statSync2(path, { bigint: true, throwIfNoEntry: false });
   return now !== void 0 && now.ino === file.ino && now.dev === file.dev;
 }
 var LineWrittenError = class extends Error {
@@ -1051,7 +1117,7 @@ import {
   closeSync as closeSync3,
   mkdirSync as mkdirSync2,
   openSync as openSync3,
-  readdirSync,
+  readdirSync as readdirSync2,
   renameSync,
   unlinkSync as unlinkSync3,
   writeFileSync
@@ -1089,7 +1155,7 @@ function parseEntry(name) {
 }
 function listEntries(dir) {
   try {
-    return readdirSync(dir).sort().flatMap((name) => parseEntry(name) ?? []);
+    return readdirSync2(dir).sort().flatMap((name) => parseEntry(name) ?? []);
   } catch {
     return void 0;
   }
@@ -1252,9 +1318,37 @@ function sizeOf(value) {
     return 0;
   }
 }
+var TRUNCATED = "...[truncated]";
 function truncate(value, maxLen) {
   if (value.length <= maxLen) return value;
-  return value.slice(0, maxLen) + "...[truncated]";
+  return value.slice(0, maxLen) + TRUNCATED;
+}
+function recordedContent(value, maxLen) {
+  const redactUpTo = () => {
+    let left = maxLen;
+    return (text) => {
+      const kept = left > 0 ? redact(text) : TRUNCATED;
+      left -= text.length + 2;
+      return kept;
+    };
+  };
+  const redactValue = redactUpTo();
+  const redactKey = redactUpTo();
+  const content = typeof value === "string" ? redactValue(value) : JSON.stringify(value, (_key, v) => {
+    if (typeof v === "string") return redactValue(v);
+    if (v === null || typeof v !== "object" || Array.isArray(v)) return v;
+    const keys = /* @__PURE__ */ new Set();
+    return Object.fromEntries(
+      Object.entries(v).map(([k, x]) => {
+        const base = redactKey(k);
+        let key = base;
+        for (let n = 2; keys.has(key); n++) key = `${base} (${n})`;
+        keys.add(key);
+        return [key, x];
+      })
+    );
+  });
+  return truncate(content, maxLen);
 }
 function countLines(text) {
   if (text === "") return 0;
@@ -1665,8 +1759,7 @@ function processHook(raw, cliEvent) {
     const inputMeta = extractInputMeta(toolName, data.tool_input);
     if (inputMeta !== void 0) event.toolInput = inputMeta;
     if (recordContent && data.tool_input !== void 0) {
-      const content = typeof data.tool_input === "string" ? data.tool_input : JSON.stringify(data.tool_input);
-      event.inputContent = redact(truncate(content, maxContentLen));
+      event.inputContent = recordedContent(data.tool_input, maxContentLen);
     }
   } else if (eventName === "posttooluse") {
     const toolResponse = data.tool_response ?? data.tool_result;
@@ -1687,8 +1780,7 @@ function processHook(raw, cliEvent) {
     const outputMeta = extractOutputMeta(toolName, toolResponse, data.tool_input);
     if (outputMeta !== void 0) event.toolOutput = outputMeta;
     if (recordContent && toolResponse !== void 0) {
-      const content = typeof toolResponse === "string" ? toolResponse : JSON.stringify(toolResponse);
-      event.outputContent = redact(truncate(content, maxContentLen));
+      event.outputContent = recordedContent(toolResponse, maxContentLen);
     }
   } else if (eventName === "posttoolusefailure") {
     event = {
@@ -1725,8 +1817,7 @@ function processHook(raw, cliEvent) {
     const inputMeta = extractInputMeta(toolName, data.tool_input);
     if (inputMeta !== void 0) event.toolInput = inputMeta;
     if (recordContent && data.tool_input !== void 0) {
-      const content = typeof data.tool_input === "string" ? data.tool_input : JSON.stringify(data.tool_input);
-      event.inputContent = redact(truncate(content, maxContentLen));
+      event.inputContent = recordedContent(data.tool_input, maxContentLen);
     }
   } else if (eventName === "aftertool") {
     const toolResponse = data.tool_response;
@@ -1743,8 +1834,7 @@ function processHook(raw, cliEvent) {
     const outputMeta = extractOutputMeta(toolName, data.tool_response, data.tool_input);
     if (outputMeta !== void 0) event.toolOutput = outputMeta;
     if (recordContent && data.tool_response !== void 0) {
-      const content = typeof data.tool_response === "string" ? data.tool_response : JSON.stringify(data.tool_response);
-      event.outputContent = redact(truncate(content, maxContentLen));
+      event.outputContent = recordedContent(data.tool_response, maxContentLen);
     }
   } else if (eventName === "beforeshellexecution") {
     const command = data.command ?? "";
@@ -1795,7 +1885,7 @@ function processHook(raw, cliEvent) {
       ...data.file_path !== void 0 && { toolInput: { file_path: data.file_path } }
     };
     if (recordContent && data.content !== void 0) {
-      event.outputContent = redact(truncate(data.content, maxContentLen));
+      event.outputContent = recordedContent(data.content, maxContentLen);
     }
   } else if (eventName === "afterfileedit") {
     event = {
@@ -1899,7 +1989,7 @@ function processHook(raw, cliEvent) {
     const inputMeta = extractInputMeta(agyToolName, data.toolCall?.args);
     if (inputMeta !== void 0) event.toolInput = inputMeta;
     if (recordContent && data.toolCall?.args !== void 0) {
-      event.inputContent = redact(truncate(JSON.stringify(data.toolCall.args), maxContentLen));
+      event.inputContent = recordedContent(data.toolCall.args, maxContentLen);
     }
   } else if (isAntigravityPost) {
     const hasError = typeof data.error === "string" && data.error !== "";
@@ -1919,11 +2009,10 @@ function processHook(raw, cliEvent) {
     };
     if (recordContent) {
       if (data.error_details !== void 0) {
-        const details = typeof data.error_details === "string" ? data.error_details : JSON.stringify(data.error_details);
-        event.errorDetails = redact(truncate(details, maxContentLen));
+        event.errorDetails = recordedContent(data.error_details, maxContentLen);
       }
       if (typeof data.last_assistant_message === "string") {
-        event.lastAssistantMessage = redact(truncate(data.last_assistant_message, maxContentLen));
+        event.lastAssistantMessage = recordedContent(data.last_assistant_message, maxContentLen);
       }
     }
   } else if (eventName === "sessionstart") {
