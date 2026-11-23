@@ -3096,6 +3096,30 @@ describe('collector-script', () => {
       expect(existsSync(crumbs('claude-code').cwd)).toBe(false);
     });
 
+    it("files a Claude Code hook under claude-code when Claude Code's env names its session", () => {
+      process.env.CLAUDECODE = '1';
+      process.env.CLAUDE_CODE_SESSION_ID = 'sess-claude';
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('claude-code').cwd, 'utf-8')).toBe('sess-claude');
+      expect(readBufferLines('sess-claude')[0]!.platform).toBe('claude-code');
+    });
+
+    it("files an unstamped hook run inside a Claude Code shell as unattributed, not Claude Code's", () => {
+      process.env.CLAUDECODE = '1';
+      process.env.CLAUDE_CODE_SESSION_ID = 'sess-claude';
+      processHook(makePreToolUse({ session_id: 'sess-codex', cwd: '/projects/test' }));
+      expect(readFileSync(crumbs('unattributed').cwd, 'utf-8')).toBe('sess-codex');
+      expect(existsSync(crumbs('claude-code').cwd)).toBe(false);
+      expect(readBufferLines('sess-codex')[0]!.platform).toBeUndefined();
+    });
+
+    it('stamps a hook with no session id inside a Claude Code shell as Claude Code', () => {
+      process.env.CLAUDECODE = '1';
+      process.env.CLAUDE_CODE_SESSION_ID = 'sess-claude';
+      processHook(makePreToolUse({ session_id: undefined, cwd: '/projects/test' }));
+      expect(readBufferLines('unknown')[0]!.platform).toBe('claude-code');
+    });
+
     it('files a hook that names no engine as unattributed', () => {
       processHook(makePreToolUse({ session_id: 'sess-codex', cwd: '/projects/test' }));
       expect(readFileSync(crumbs('unattributed').ppid, 'utf-8')).toBe('sess-codex');
