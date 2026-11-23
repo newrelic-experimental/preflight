@@ -234,6 +234,83 @@ describe('api-handler GET /api/sessions', () => {
     expect(ids).toEqual(['chat-only', 'tools']);
   });
 
+  describe('ids filter', () => {
+    const makeHandler = () => {
+      const fakeSessions = Array.from({ length: 120 }, (_v, i) => ({
+        sessionId: `sess-${i}`,
+        toolCallCount: i + 1,
+      }));
+      return createApiHandler({
+        sessionStore: {
+          loadTodaySessions: () => [],
+          listSessions: () => fakeSessions,
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+    };
+
+    it('returns a session outside the newest page when requested by id', async () => {
+      const req = { method: 'GET', url: '/api/sessions?ids=sess-0' } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeHandler()(req, res);
+      const result = JSON.parse(body()) as Array<{ sessionId: string }>;
+      expect(result.map((s) => s.sessionId)).toEqual(['sess-0']);
+    });
+
+    it('returns every requested session even past the default limit of 50', async () => {
+      const ids = Array.from({ length: 80 }, (_v, i) => `sess-${i}`);
+      const req = { method: 'GET', url: `/api/sessions?ids=${ids.join(',')}` } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeHandler()(req, res);
+      const result = JSON.parse(body()) as Array<{ sessionId: string }>;
+      expect(result).toHaveLength(80);
+    });
+
+    it('returns an empty list for an unknown id', async () => {
+      const req = { method: 'GET', url: '/api/sessions?ids=nope' } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeHandler()(req, res);
+      expect(JSON.parse(body())).toEqual([]);
+    });
+
+    const makeLiveHandler = () =>
+      createApiHandler({
+        sessionStore: {
+          loadTodaySessions: () => [],
+          listSessions: () => [{ sessionId: 'sess-0', toolCallCount: 1 }],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+        sessionTracker: {
+          getMetrics: () => ({
+            sessionId: 'live-session',
+            sessionName: null,
+            sessionStartTime: 1000,
+            sessionDurationMs: 500,
+            toolCallCount: 3,
+          }),
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+      });
+
+    it('leaves out the live session when its id is not requested', async () => {
+      const req = { method: 'GET', url: '/api/sessions?ids=sess-0' } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeLiveHandler()(req, res);
+      const result = JSON.parse(body()) as Array<{ sessionId: string }>;
+      expect(result.map((s) => s.sessionId)).toEqual(['sess-0']);
+    });
+
+    it('includes the live session when its id is requested', async () => {
+      const req = {
+        method: 'GET',
+        url: '/api/sessions?ids=sess-0,live-session',
+      } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeLiveHandler()(req, res);
+      const result = JSON.parse(body()) as Array<{ sessionId: string }>;
+      expect(result.map((s) => s.sessionId)).toEqual(['sess-0', 'live-session']);
+    });
+  });
+
   it('uses default limit of 50 when not specified', async () => {
     const fakeSessions = Array.from({ length: 100 }, (_v, i) => ({
       filename: `2026-05-${String(i + 1).padStart(2, '0')}_sess-${i}.json`,
@@ -470,6 +547,32 @@ describe('api-handler GET /api/sessions', () => {
     expect(status()).toBe(200);
     const result = JSON.parse(body()) as Array<{ sessionId: string }>;
     expect(result.some((s) => s.sessionId === 'other-process-session')).toBe(true);
+  });
+
+  it('omits unrequested live stub rows when filtering by ids', async () => {
+    const now = Date.now();
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadAllSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getLastActivity: () => null,
+        getSessionName: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['liveSessionRegistry'],
+      localStore: {
+        peekAllBuffers: () => [
+          { mode: 'post', sessionId: 'other-process-session', timestamp: now - 1_000 },
+        ],
+      } as unknown as Parameters<typeof createApiHandler>[0]['localStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions?ids=someone-else' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    expect(JSON.parse(body())).toEqual([]);
   });
 
   it('keeps a session in the list once it goes idle past the 3-minute live window', async () => {
@@ -2836,6 +2939,7 @@ describe('api-handler GET /api/usage-insights', () => {
             {
               ...sinceLastMidnight,
               estimatedCostUsd: 2,
+              toolCallCount: 1,
               durationMs: 0,
               subagentCostUsd: 0,
               tokensInput: 0,
@@ -2870,6 +2974,27 @@ describe('api-handler GET /api/usage-insights', () => {
     expect(result.windowDays).toBe(1);
     expect(result.sessionCount).toBe(1);
     expect(result.totalCostUsd).toBe(2);
+  });
+
+  it('window=today also loads older-dated session files modified since local midnight', async () => {
+    let receivedOpts: { since?: Date; includeModifiedSince?: Date } | undefined;
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: (opts?: { since?: Date; includeModifiedSince?: Date }) => {
+          receivedOpts = opts;
+          return [];
+        },
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/usage-insights?window=today' } as IncomingMessage;
+    const { res } = fakeRes();
+    await handler(req, res);
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    expect(receivedOpts?.includeModifiedSince?.getTime()).toBe(startOfToday.getTime());
   });
 
   it('window=today takes precedence over days, which stays unaffected when omitted', async () => {

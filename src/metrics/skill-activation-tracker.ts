@@ -17,6 +17,8 @@ export interface SkillRunOpenContext {
   readonly sessionId: string | null;
   readonly timestamp: number | undefined;
   readonly platform?: string;
+  /** The subagent whose Skill call opened the run. Absent for the main agent. */
+  readonly agentId?: string;
 }
 
 export interface SkillActivationTrackerOptions {
@@ -90,6 +92,7 @@ export class SkillActivationTracker implements Resettable {
         sessionId: record.sessionId ?? null,
         timestamp: record.timestamp,
         ...(typeof record.platform === 'string' && { platform: record.platform }),
+        ...(agentKey !== MAIN_AGENT_KEY && { agentId: agentKey }),
       });
       return stamp;
     }

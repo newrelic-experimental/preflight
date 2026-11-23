@@ -2163,6 +2163,15 @@ describe('stdio integration', () => {
         }
         return seen;
       };
+      const ownerJobDir = () => {
+        const jobDir = mkdtempSync(join(tmpdir(), 'nr-owner-job-'));
+        storages.push(jobDir);
+        writeFileSync(
+          resolve(jobDir, 'state.json'),
+          JSON.stringify({ linkScanPath: `/fake/transcript/${id}.jsonl` }),
+        );
+        return jobDir;
+      };
       const startWithSessionDrained = async (storage: string) => {
         const first = await startEngine(storage);
         await drainCalls(storage, id, 1);
@@ -2208,13 +2217,7 @@ describe('stdio integration', () => {
         const checkpointing = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
         await drainCalls(storage, id, 1);
         await waitFor(() => savedCalls(storage, id) === 1);
-        const jobDir = mkdtempSync(join(tmpdir(), 'nr-owner-job-'));
-        storages.push(jobDir);
-        writeFileSync(
-          resolve(jobDir, 'state.json'),
-          JSON.stringify({ linkScanPath: `/fake/transcript/${id}.jsonl` }),
-        );
-        const owner = await startEngine(storage, undefined, { CLAUDE_JOB_DIR: jobDir });
+        const owner = await startEngine(storage, undefined, { CLAUDE_JOB_DIR: ownerJobDir() });
         await waitFor(() => existsSync(resolve(storage, `active-${id}.pid`)));
         await drainCalls(storage, id, 1);
         await owner.close();
@@ -2223,6 +2226,29 @@ describe('stdio integration', () => {
         expect(await outcomesEvery100Ms(storage, 15)).toEqual(Array(15).fill('completed'));
         await checkpointing.close();
         expect(outcome(storage)).toBe('completed');
+      }, 60000);
+
+      it('goes back in progress while a resumed engine runs after its own engine completes it', async () => {
+        const storage = makeStorage();
+        const jobDir = ownerJobDir();
+        const heartbeat = resolve(storage, `active-${id}.pid`);
+        const owner = await startEngine(storage, undefined, { CLAUDE_JOB_DIR: jobDir });
+        await waitFor(() => existsSync(heartbeat));
+        await drainCalls(storage, id, 1);
+        await owner.close();
+        await waitFor(() => outcome(storage) === 'completed');
+
+        const resumed = await startEngine(storage, undefined, {
+          ...CHECKPOINT_OFTEN,
+          CLAUDE_JOB_DIR: jobDir,
+        });
+        await waitFor(() => existsSync(heartbeat));
+        writeHook(storage, id, 'pre', 'toolu_resumed');
+        writeHook(storage, id, 'post', 'toolu_resumed');
+        await waitFor(drained(storage, id));
+        await waitFor(() => outcome(storage) === 'in progress');
+        await resumed.close();
+        await waitFor(() => outcome(storage) === 'completed');
       }, 60000);
     });
 

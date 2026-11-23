@@ -35,6 +35,7 @@ import {
 } from '../hooks/session-breadcrumbs.js';
 import { countMintedToolUseId, MINTED_IDS_DIR_PREFIX } from '../hooks/minted-tool-use-ids.js';
 import { appendToHookBuffer, readSealed, sealHookBuffer, textBeforeSeal } from './hook-buffer.js';
+import { renameIntoPlace } from './rename-into-place.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
 
@@ -119,7 +120,7 @@ function parseHookEvents(raw: string): HookEvent[] {
  * we have rights to signal. ESRCH = dead, EPERM = alive (different uid),
  * anything else (e.g. EINVAL on a malformed PID) = treat as dead.
  */
-function isPidAlive(pid: number): boolean {
+export function isPidAlive(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -519,7 +520,15 @@ export class LocalStore {
       if (!existsSync(this.storagePath)) {
         mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
       }
-      writeFileSync(heartbeatPath, String(pid), { mode: 0o600 });
+      // Rename into place: a sibling engine reading a half-written heartbeat
+      // sees no live owner, then archives this session's buffer as an orphan.
+      const tmpPath = `${heartbeatPath}.${process.pid}.tmp`;
+      try {
+        writeFileSync(tmpPath, String(pid), { mode: 0o600 });
+        renameIntoPlace(tmpPath, heartbeatPath, String(pid));
+      } finally {
+        rmSync(tmpPath, { force: true });
+      }
       // Sidecar metadata for listActiveStdioInstances() — kept separate from
       // the heartbeat's own bare-PID content so hasLiveOwner(),
       // getActiveSessionIdsFromHeartbeats(), and gcOrphanBuffers() (which all
@@ -1197,7 +1206,8 @@ export class LocalStore {
    * `session-by-cwd/<cwd>.txt` names no process, so it is stale when it and
    * every same-root ppid breadcrumb naming its session are older than
    * `STALE_CWD_BREADCRUMB_MS`. A collector that never refreshes an unchanged
-   * cwd breadcrumb still touches the ppid one on each event.
+   * cwd breadcrumb still touches the ppid one on each event. A writer's
+   * `session-by-id/<session>.txt` goes by the same rule.
    *
    * @returns the number of breadcrumb files deleted
    */
@@ -1211,7 +1221,10 @@ export class LocalStore {
     const breadcrumbDirs = roots.map((root) => resolve(root, 'session-by-ppid'));
 
     let deleted = 0;
-    for (const root of roots) deleted += this.gcStaleCwdBreadcrumbs(root);
+    for (const root of roots) {
+      for (const kind of ['session-by-cwd', 'session-by-id'])
+        deleted += this.gcIdleBreadcrumbs(resolve(root, kind), resolve(root, 'session-by-ppid'));
+    }
     for (const breadcrumbDir of breadcrumbDirs) {
       let entries: string[];
       try {
@@ -1242,15 +1255,14 @@ export class LocalStore {
     return deleted;
   }
 
-  private gcStaleCwdBreadcrumbs(root: string): number {
+  private gcIdleBreadcrumbs(dir: string, ppidDir: string): number {
     const cutoff = Date.now() - STALE_CWD_BREADCRUMB_MS;
-    const cwdDir = resolve(root, 'session-by-cwd');
     let names: string[];
     try {
-      names = readdirSync(cwdDir).filter((name) => name.endsWith('.txt'));
+      names = readdirSync(dir).filter((name) => name.endsWith('.txt'));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        logger.warn('Failed to enumerate cwd breadcrumb dir', { error: String(err) });
+        logger.warn('Failed to enumerate breadcrumb dir', { error: String(err) });
       }
       return 0;
     }
@@ -1261,7 +1273,6 @@ export class LocalStore {
         return null;
       }
     };
-    const ppidDir = resolve(root, 'session-by-ppid');
     let liveSessions: Set<string> | undefined;
     const liveSessionIds = () => {
       if (liveSessions) return liveSessions;
@@ -1278,14 +1289,14 @@ export class LocalStore {
     };
     let deleted = 0;
     for (const name of names) {
-      const path = resolve(cwdDir, name);
+      const path = resolve(dir, name);
       try {
         if (statSync(path).mtimeMs >= cutoff) continue;
         if (liveSessionIds().has(readFileSync(path, 'utf-8').trim())) continue;
         unlinkSync(path);
         deleted++;
       } catch (err) {
-        logger.debug('Failed to delete stale cwd breadcrumb', { name, error: String(err) });
+        logger.debug('Failed to delete idle breadcrumb', { name, error: String(err) });
       }
     }
     return deleted;

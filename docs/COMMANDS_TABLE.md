@@ -1354,6 +1354,30 @@ Data-driven model recommendation ranked by historical efficiency score, cost, an
 - Ranks by efficiency descending, cost ascending on ties, null-efficiency last.
 - Assigns confidence tier based on the top-ranked model's session count.
 
+**Published file:** For consumers that cannot call an MCP tool, such as a SessionStart hook, the overall verdict is also written to `model-recommendation.json` in the configured storage directory (`~/.newrelic-preflight/` by default). It is first written about 10 seconds after startup, then hourly, only while `confidence` is `high`. When confidence drops, the file is removed. The file is rewritten only when the recommended model or its ranked stats change. Writes are atomic (temp file, then rename), and temp files left by a crashed write are removed on the next publish. No hook reads it by default.
+
+```json
+{
+  "schemaVersion": 1,
+  "recommendedModel": "claude-sonnet-4-20250514",
+  "confidence": "high",
+  "basedOn": {
+    "ranked": [
+      {
+        "model": "claude-sonnet-4-20250514",
+        "sessionCount": 25,
+        "avgCostUsd": 0.04,
+        "avgEfficiencyScore": 0.82,
+        "avgTaskSuccessRate": 0.95
+      }
+    ]
+  },
+  "generatedAt": 1746345600000
+}
+```
+
+`basedOn.ranked` is the same list the tool returns. `generatedAt` is the time of the last write, not the verdict's age.
+
 **Requires:** `TrendAnalyzer`
 
 Source: `src/metrics/trend-analyzer.ts`, `src/tools/cross-session-tools.ts`
@@ -1604,7 +1628,7 @@ Thrashing and retry detection alerts within a sliding window.
 
 **Data source:** `RetryDetector`
 
-**How it works:** Tracks repeated tool calls with identical or highly similar inputs (similarity ≥ 0.8, via Levenshtein distance or exact input-hash match) within a rolling window (default: 5 calls). Fires an alert when the same input appears 3+ times consecutively. `totalTokensWasted` estimates tokens consumed on redundant calls (`inputSize / 4`).
+**How it works:** Within a rolling window (default: 5 calls), takes a tool's first failed call and the calls after it. Fires an alert when there are 3+ of them and every one failed or every one repeats the failed call's input exactly. Successful calls before the first failure never count. `totalTokensWasted` estimates tokens consumed on redundant calls (`inputSize / 4`).
 
 **Requires:** `RetryDetector`
 

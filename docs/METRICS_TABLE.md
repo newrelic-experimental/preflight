@@ -356,7 +356,7 @@ Emitted when a configured budget threshold is crossed (50%, 80%, 100%).
 - `80%` — first time spend reaches 80% of budget
 - `100%` — first time spend reaches or exceeds 100% of budget
 
-Each threshold fires only once per period; subsequent additions to spend do not re-fire. A `daily` period's thresholds reset at UTC midnight, although the daily spend itself is summed by local calendar day, a `weekly` period is an ISO week, and a `session` period never rolls over by itself. One cost update that jumps past several thresholds fires all of them together. When a session resumes after a restart, the session thresholds it had already crossed do not fire again. A restarted process starts its daily and weekly spend at the totals already saved, so the daily and weekly thresholds that spend crossed do not fire again either. A budget that is unset or `0` never fires.
+Each threshold fires only once per period; subsequent additions to spend do not re-fire. A `daily` period's thresholds reset at local midnight, the same local calendar day the daily spend is summed by. A `weekly` threshold re-arms once the rolling 7-day spend falls 10 percentage points below it, and a `session` period never rolls over by itself. One cost update that jumps past several thresholds fires all of them together. When a session resumes after a restart, the session thresholds it had already crossed do not fire again. A restarted process starts its daily and weekly spend at the totals already saved, so the daily and weekly thresholds that spend crossed do not fire again either. A budget that is unset or `0` never fires.
 
 Source: `src/transport/nr-ingest.ts`, `src/metrics/budget-tracker.ts`
 
@@ -523,9 +523,9 @@ Source: `src/transport/nr-ingest.ts` — `observabilityHealthToNrEvent()`
 
 #### `AiRetryAlert`
 
-**What it is:** A warning that your assistant seems stuck, either repeating nearly identical calls to the same tool or failing repeatedly with it across its last few calls, with an estimate of the tokens wasted. Use it to catch thrashing loops early.
+**What it is:** A warning that your assistant seems stuck, either repeating a failed call to the same tool exactly or failing repeatedly with it across its last few calls, with an estimate of the tokens wasted. Use it to catch thrashing loops early.
 
-Emitted when `RetryDetector` flags a thrashing pattern in a tool's recent calls: they are highly similar (default similarity 0.8 or more), or every one of them failed. The defaults are at least 3 occurrences within a window of 5 calls.
+Emitted when `RetryDetector` flags a tool's recent calls as retries. It takes the first failed call and the calls after it, and flags them when every one failed or every one repeats the failed call's input exactly. Calls before the first failure never count. The defaults are at least 3 such calls within a window of 5 calls.
 
 | Field           | Type   | Description                                                                                                                                                                        |
 | --------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -611,6 +611,48 @@ Emitted once, when a skill run opens, for every run. A run opens on a named `Ski
 | `org_id`              | string | Organization identifier (if configured)                                                                            |
 
 Source: `src/transport/nr-ingest.ts` — `skillRunToNrEvent()` and `ingestSkillRun()`
+
+#### `AiWorkUnit`
+
+**What it is:** One record for each skill run once it ends, with its cost, tokens and wall-clock duration. It is the one row to read for what a skill run cost and how long it took. Use it for cost per run and duration per run by skill, and to compare a skill before and after a rewrite.
+
+Emitted once per run, after the run closes and the token reports for its tool calls have arrived. A run closes at the next prompt in its session, or when the agent that opened it opens another skill. If a token report never comes, the row waits until a later report arrives more than 10 minutes after the close, then goes out with what it has. When Preflight shuts down, it sends every run it still holds, including runs still open. Runs live only in memory, so a crash or `SIGKILL` loses every open run and every closed run still waiting for a token report. A session's last run has no next prompt, so a long-lived `--local` daemon sends it only at shutdown, or when the daemon holds 256 runs and sends the oldest closed one. With none closed it sends the oldest open run, so that row is partial and the run's later calls are on `AiTurnCost` only. A `--stdio` engine holds other sessions' runs until that cap too, because it drops them only when it sends. `unit_kind` is `skill_run` for every row today. A skill run that a subagent opens has a row, but a subagent invocation itself has none yet.
+
+Cost and tokens are the sums of the run's `AiTurnCost` tool rows, so they cover the run's tool calls and keep the same gaps. A reply's cost, the text a skill responds with, is on `AiTurnCost` response rows that carry the run's `skill_name` and is not counted here. So this row's cost can be lower than the run's `AiTurnCost` sum by the reply's cost, and a text-only run reads 0 here while its cost is on `AiTurnCost`. A subagent's own spend stays on `AiSubagentTurn`. A subagent can keep stamping a run after the prompt that closed it. Those calls count only while the row still waits for a token report, so this row can miss them, and its `tool_call_count` and `duration_ms` then depend on report latency. A `--stdio` run that starts before the engine resolves its session id still gets this row, but its `AiSkillRun` and `AiTurnCost` rows from that window are dropped, so this row has cost those rows miss. To roll a session up with `AiSubagentTurn`, key this event on `session_id`, not `parent_session_id`.
+
+| Field                   | Type   | Description                                                                                                                            |
+| ----------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `eventType`             | string | Always `"AiWorkUnit"`                                                                                                                  |
+| `event_version`         | number | Always `1`                                                                                                                             |
+| `timestamp`             | number | Unix epoch milliseconds when the run ended                                                                                             |
+| `unit_kind`             | string | Always `skill_run`                                                                                                                     |
+| `skill_name`            | string | Skill whose run this is (redacted, as on `AiToolCall`)                                                                                 |
+| `skill_source`          | string | `tool` or `slash`                                                                                                                      |
+| `skill_run_id`          | string | Matches `skill_run_id` on the run's `AiSkillRun`, `AiToolCall` and `AiTurnCost` rows                                                   |
+| `skill_parent_run_id`   | string | The run that was open when this one started; absent when none was                                                                      |
+| `started_at`            | number | Unix epoch milliseconds when the run opened, the same as its `AiSkillRun` `timestamp`                                                  |
+| `duration_ms`           | number | From open to the run's last activity: its last tool call's end, its turn's `Stop` for a main-agent run, or the next skill in its agent |
+| `cost_usd`              | number | Sum of `cost_usd` on the run's `AiTurnCost` tool rows                                                                                  |
+| `input_tokens`          | number | Sum of the same rows' `input_tokens`; fractional, like each share                                                                      |
+| `output_tokens`         | number | Sum of the same rows' `output_tokens`                                                                                                  |
+| `cache_read_tokens`     | number | Sum of the same rows' `cache_read_tokens`                                                                                              |
+| `cache_creation_tokens` | number | Sum of the same rows' `cache_creation_tokens`                                                                                          |
+| `tool_call_count`       | number | Tool calls made inside the run                                                                                                         |
+| `priced_call_count`     | number | Of those, the calls whose turn got a token report; lower than `tool_call_count` means `cost_usd` is missing a share                    |
+| `session_id`            | string | Session the run belongs to; falls back to the engine's session when the run has none                                                   |
+| `agent_id`              | string | Subagent that opened the run; absent when the main agent did                                                                           |
+| `parent_session_id`     | string | Equals `session_id` when set, since a subagent shares its parent's session; absent for a main-agent run                                |
+| `developer`             | string | Developer identifier                                                                                                                   |
+| `app_name`              | string | Application name                                                                                                                       |
+| `platform`              | string | Platform of the call that opened the run, else of its first priced turn; `"claude-code"` when neither has one                          |
+| `team_id`               | string | User-defined team label (if configured)                                                                                                |
+| `project_id`            | string | Project identifier (if configured)                                                                                                     |
+| `org_id`                | string | Organization identifier (if configured)                                                                                                |
+| `cost_authority`        | string | `"external"` only when `companionMode` is true and the run's platform was stamped `claude-code`; omitted otherwise                     |
+
+Cost and duration per run by skill: `FROM AiWorkUnit SELECT average(cost_usd), percentile(duration_ms, 50, 90), count(*) FACET skill_name SINCE 30 days ago`.
+
+Source: `src/metrics/skill-run-ledger.ts` and `src/transport/nr-ingest.ts`, `workUnitToNrEvent()` and `ingestWorkUnit()`
 
 ### Setup Validation
 
