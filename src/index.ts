@@ -1420,6 +1420,7 @@ async function main(): Promise<void> {
         emitSkillRunOpened(stamp, ctx);
         skillRunLedger.recordRunOpened(stamp, ctx);
       },
+      onRunIdleClosed: (stamp, timestamp) => skillRunLedger.recordRunClosed(stamp.runId, timestamp),
     });
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();

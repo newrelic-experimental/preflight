@@ -548,6 +548,38 @@ describe('SkillActivationTracker.openRun', () => {
 });
 
 describe('SkillActivationTracker onRunOpened', () => {
+  it('fires again for a run reopened after an idle gap closed the last one', () => {
+    const opened: SkillStamp[] = [];
+    const closed: Array<{ stamp: SkillStamp; timestamp: number }> = [];
+    const tracker = new SkillActivationTracker({
+      onRunOpened: (stamp) => opened.push(stamp),
+      onRunIdleClosed: (stamp, timestamp) => closed.push({ stamp, timestamp }),
+    });
+    const first = tracker.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'lint', timestamp: 1000 }),
+    );
+    const later = 1000 + DEFAULT_IDLE_TIMEOUT_MS + 1;
+    const second = tracker.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'lint', toolUseId: 'u2', timestamp: later }),
+    );
+
+    expect(opened).toEqual([first, second]);
+    expect(second?.runId).not.toBe(first?.runId);
+    expect(second).not.toHaveProperty('parentRunId');
+    expect(closed).toEqual([{ stamp: first, timestamp: later }]);
+  });
+
+  it('reports no idle close for a gap with no run open', () => {
+    const closed: SkillStamp[] = [];
+    const tracker = new SkillActivationTracker({ onRunIdleClosed: (stamp) => closed.push(stamp) });
+    tracker.recordToolCall(makeRecord({ timestamp: 1000 }));
+    tracker.recordToolCall(
+      makeRecord({ toolUseId: 'u2', timestamp: 1000 + DEFAULT_IDLE_TIMEOUT_MS + 1 }),
+    );
+
+    expect(closed).toHaveLength(0);
+  });
+
   it('fires once for a Skill tool run with the stamp it returned and the record context', () => {
     const { tracker, opened } = makeTrackerWithOpenLog();
     const stamp = tracker.recordToolCall(

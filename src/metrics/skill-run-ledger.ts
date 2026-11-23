@@ -52,10 +52,11 @@ const MAX_RUNS = 256;
 
 /**
  * Totals each skill run and hands it to `onClosed` once. A run closes at the
- * next prompt in its session, or when the agent that opened it opens another
- * skill. It is handed over when every call it made has been priced, or after
- * `STALE_UNPRICED_MS`, or on `flush()`. Cost and tokens are the run's even
- * shares of each turn, the same values its `AiTurnCost` tool rows carry.
+ * next prompt in its session, when the agent that opened it opens another
+ * skill, or when the tracker closes it on an idle gap. It is handed over when
+ * every call it made has been priced, or after `STALE_UNPRICED_MS`, or on
+ * `flush()`. Cost and tokens are the run's even shares of each turn, the same
+ * values its `AiTurnCost` tool rows carry.
  */
 export class SkillRunLedger {
   private readonly runs = new Map<string, Run>();
@@ -99,6 +100,11 @@ export class SkillRunLedger {
   /** Call before the prompt can open a slash run, so it closes only the runs before it. */
   recordPrompt(sessionId: string | null | undefined, timestamp: number): void {
     for (const run of this.openRuns(sessionId ?? null)) this.close(run, timestamp);
+  }
+
+  recordRunClosed(runId: string, timestamp: number): void {
+    const run = this.runs.get(runId);
+    if (run) this.close(run, timestamp);
   }
 
   /** The main agent finished its turn, so its open run was busy until now. */

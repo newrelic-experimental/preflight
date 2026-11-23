@@ -28,6 +28,8 @@ export interface SkillActivationTrackerOptions {
    * slash run absorbs its Skill call, nor when a subagent pins an existing run.
    */
   readonly onRunOpened?: (stamp: SkillStamp, ctx: SkillRunOpenContext) => void;
+  /** Called when an idle gap closes the main agent's run, at the record that ended the gap. */
+  readonly onRunIdleClosed?: (stamp: SkillStamp, timestamp: number) => void;
 }
 
 /**
@@ -119,8 +121,10 @@ export class SkillActivationTracker implements Resettable {
   ): void {
     if (this.promptedSessions.has(sessionKey)) return;
     const last = this.lastActivity.get(sessionKey);
-    if (last !== undefined && timestamp - last > DEFAULT_IDLE_TIMEOUT_MS) {
+    const open = runs.get(MAIN_AGENT_KEY);
+    if (open && last !== undefined && timestamp - last > DEFAULT_IDLE_TIMEOUT_MS) {
       runs.set(MAIN_AGENT_KEY, null);
+      this.options.onRunIdleClosed?.(open, timestamp);
     }
     if (last === undefined || timestamp > last) this.lastActivity.set(sessionKey, timestamp);
   }
