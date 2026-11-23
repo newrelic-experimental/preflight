@@ -141,7 +141,7 @@ export function hookRecordedReportTokensTool(
     ...REPORT_TOKENS_TOOL,
     description:
       REPORT_TOKENS_TOOL.description +
-      ' Set report_id to a new random value (such as a UUID) on every call, and keep it when retrying: Preflight saves a retry with the same report_id and the same counts once per conversation.' +
+      ' Set report_id to a new random value (such as a UUID) on every call, and keep it when retrying: within 7 days, Preflight saves a retry with the same report_id and the same counts once per conversation.' +
       " Preflight's hook for this call should record the report in this conversation." +
       (withoutReportId
         ? ' Without report_id, this server records the report in its own session.'
