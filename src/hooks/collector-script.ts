@@ -353,6 +353,13 @@ function writePpidBreadcrumb(sessionId: string, root: string, legacyRoot?: strin
   }
 }
 
+function writeSessionIdBreadcrumb(sessionId: string, root: string): void {
+  if (!SESSION_ID_RE.test(sessionId)) return;
+  try {
+    writeOrTouch(resolve(root, 'session-by-id'), `${sessionId}.txt`, sessionId);
+  } catch {}
+}
+
 function writeCwdBreadcrumb(
   sessionId: string,
   cwd: string | undefined,
@@ -880,6 +887,7 @@ function processHook(raw: string, cliEvent?: string): void {
       }
     }
     const tagged = breadcrumbRoot(storageDir, writer);
+    writeSessionIdBreadcrumb(data.session_id, tagged);
     writePpidBreadcrumb(data.session_id, tagged, storageDir);
     writeCwdBreadcrumb(data.session_id, data.cwd, tagged, storageDir);
   }
@@ -935,7 +943,12 @@ function processHook(raw: string, cliEvent?: string): void {
   // Both Antigravity branches spread this, so a pre and its post agree on
   // whether they carry a toolUseId: HookEventProcessor pairs a post by its
   // toolUseId whenever it has one, and a pre without one is keyed by a UUID.
-  const agyToolUseId = typeof data.stepIdx === 'number' ? { toolUseId: String(data.stepIdx) } : {};
+  // stepIdx counts within one conversation, so the id leads with the
+  // conversation to stay unique for an engine that drains several.
+  const agyToolUseId =
+    typeof data.stepIdx === 'number'
+      ? { toolUseId: sessionId ? `${sessionId}:${data.stepIdx}` : String(data.stepIdx) }
+      : {};
 
   let event: Record<string, unknown>;
   let selfReportCall: HookReportCall | undefined;
