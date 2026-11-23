@@ -602,7 +602,7 @@ Antigravity's hook payloads have **no field naming the event type at all**, and 
 - **`PostToolUse` carries no output content/exit-code field at all** (only `toolCall`/`stepIdx`/`error`) — `toolOutput` metadata (e.g. Bash exit codes) can never be populated for Antigravity, a platform limitation, not an implementation gap.
 - **The Antigravity SDK (Python, for building custom agents on Antigravity's own runtime) is out of scope** — it documents MCP support but no interactive hooks surface of its own.
 - **No confirmed ambient env var** — detection is explicit-opt-in only (`MCP_CLIENT=antigravity`).
-- **Self-reported cost is not recorded while the engine is pending.** Antigravity's hooks and `tools/call` carry no documented conversation id that would route a report to its own conversation, so the adapter declares no `tokenReportHook` and a pending engine does not list `nr_observe_report_tokens`.
+- **Self-reported cost is not recorded while the engine is pending.** Antigravity's docs do not say its hooks fire for MCP tools, and `tools/call` carries no documented conversation id, so a report cannot be routed to its own conversation. The adapter declares no `tokenReportHook`, and a pending engine does not list `nr_observe_report_tokens`.
 
 **Setup:**
 
