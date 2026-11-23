@@ -65,7 +65,7 @@ export default {
   // Env: NEW_RELIC_AI_DAILY_BUDGET_USD
   dailyBudgetUsd: 20.0,
 
-  // Maximum spend per calendar week in USD before a budget warning event is emitted.
+  // Maximum spend over a rolling 7 days in USD before a budget warning event is emitted.
   // Env: NEW_RELIC_AI_WEEKLY_BUDGET_USD
   weeklyBudgetUsd: 100.0,
 
