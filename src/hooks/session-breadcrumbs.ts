@@ -10,11 +10,23 @@ import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
 /**
  * Session breadcrumbs live at `<storage>/breadcrumbs/<writer>/`, one
  * directory per engine whose hooks wrote them, each laid out as
- * `session-by-ppid/<pid>.txt` and `session-by-cwd/<sanitized-cwd>.txt`.
- * Older collectors wrote that layout at the storage root itself, with no
- * writer.
+ * `session-by-ppid/<pid>.txt` and `session-by-cwd/<sanitized-cwd>.txt`, plus
+ * `session-by-id/<session>.txt` for every session it filed. Collectors also
+ * copy the ppid and cwd breadcrumbs to the storage root itself, with no
+ * writer, where older collectors wrote only that layout. A server skips a root
+ * copy whose session any writer filed.
  */
 export const BREADCRUMBS_DIR = 'breadcrumbs';
+
+/**
+ * A cwd breadcrumb idle this long is collected. The resolver accepts a cwd
+ * breadcrumb only while its session was active within 12 hours, so the window
+ * is well past that. A legacy-root breadcrumb the resolver accepts by process
+ * start time is also collected once idle this long, because the sweep cannot
+ * see other processes' start times. A process that old normally resolved on its first
+ * poll.
+ */
+export const STALE_CWD_BREADCRUMB_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function breadcrumbRoot(storagePath: string, writer: string): string {
   return resolve(storagePath, BREADCRUMBS_DIR, writer);

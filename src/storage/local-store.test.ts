@@ -13,7 +13,9 @@ import {
 } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { appendToHookBuffer } from './hook-buffer.js';
 import { LocalStore } from './local-store.js';
+import { mintToolUseId, takeMintedToolUseId } from '../hooks/minted-tool-use-ids.js';
 import type { HookEvent, PostHookEvent, AuditEntry } from './types.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -740,6 +742,22 @@ describe('LocalStore', () => {
       const all = drainAll.drainAllBuffers();
       expect(all.map((e) => e.tool)).toEqual(['dead-owner']);
     });
+
+    it('leaves buffer-unknown.jsonl while its own id is pending, stop included, and drains it once the id is known', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const line = (tool: string): string => JSON.stringify(makeEvent({ tool })) + '\n';
+      appendToHookBuffer(resolve(tmpDir, 'buffer-unknown.jsonl'), line('no-session'));
+      appendToHookBuffer(resolve(tmpDir, 'buffer-sess-1.jsonl'), line('one'));
+
+      const pending = new LocalStore(tmpDir);
+      pending.setOwnIdPending(true);
+      expect(pending.drainAllBuffers().map((e) => e.tool)).toEqual(['one']);
+      pending.giveUpHeldOrder();
+      expect(pending.drainAllBuffers()).toEqual([]);
+
+      pending.setOwnIdPending(false);
+      expect(pending.drainAllBuffers().map((e) => e.tool)).toEqual(['no-session']);
+    });
   });
 
   describe('migrateLegacyBuffer()', () => {
@@ -1421,6 +1439,7 @@ describe('LocalStore', () => {
         subagentCursors: 0,
         transcriptCursors: 0,
         parentTranscriptCursors: 0,
+        mintedIdDirs: 0,
       });
       expect(existsSync(resolve(tmpDir, '.subagent-pos-not-a-valid-agent-id'))).toBe(true);
       expect(existsSync(resolve(tmpDir, '.transcript-pos-'))).toBe(true);
@@ -1434,6 +1453,45 @@ describe('LocalStore', () => {
         subagentCursors: 0,
         transcriptCursors: 0,
         parentTranscriptCursors: 0,
+        mintedIdDirs: 0,
+      });
+    });
+
+    describe('minted tool-use ids', () => {
+      const SESSION = 'sess-noid';
+      const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+
+      function mint(): string {
+        mkdirSync(tmpDir, { recursive: true });
+        const id = mintToolUseId(resolve(tmpDir, `buffer-${SESSION}.jsonl`), 'Read', 1_000);
+        const dir = resolve(
+          tmpDir,
+          readdirSync(tmpDir).find((n) => n.includes(SESSION))!,
+        );
+        utimesSync(dir, twoDaysAgo, twoDaysAgo);
+        return id!;
+      }
+
+      it('keeps a live session id, however old', () => {
+        mint();
+        new LocalStore(tmpDir).gcWatcherCursors(new Set([SESSION]), 24);
+        expect(
+          takeMintedToolUseId(resolve(tmpDir, `buffer-${SESSION}.jsonl`), 'Read', 2_000),
+        ).toEqual(expect.any(String));
+      });
+
+      it('removes a dead session id idle past the discovery window', () => {
+        mint();
+        expect(new LocalStore(tmpDir).gcWatcherCursors(new Set(), 24).mintedIdDirs).toBe(1);
+        expect(readdirSync(tmpDir)).toEqual([]);
+      });
+
+      it('keeps a dead session id written within the discovery window', () => {
+        const id = mint();
+        new LocalStore(tmpDir).gcWatcherCursors(new Set(), 72);
+        expect(takeMintedToolUseId(resolve(tmpDir, `buffer-${SESSION}.jsonl`), 'Read', 2_000)).toBe(
+          id,
+        );
       });
     });
   });
@@ -1701,6 +1759,84 @@ describe('LocalStore', () => {
       mkdirSync(tmpDir, { recursive: true });
       const store = new LocalStore(tmpDir);
       expect(store.gcStaleBreadcrumbs()).toBe(0);
+    });
+
+    describe('stale cwd breadcrumbs', () => {
+      const DAY_MS = 24 * 60 * 60 * 1000;
+      const WRITERS = ['claude-code', 'kiro'];
+      const roots = () => [tmpDir, ...WRITERS.map((w) => resolve(tmpDir, 'breadcrumbs', w))];
+      const crumb = (root: string, kind: string, name: string, session: string, ageMs: number) => {
+        const dir = resolve(root, kind);
+        mkdirSync(dir, { recursive: true });
+        const path = resolve(dir, name);
+        writeFileSync(path, session);
+        const when = new Date(Date.now() - ageMs);
+        utimesSync(path, when, when);
+        return path;
+      };
+
+      it('deletes 90-day-old crumbs of every kind in the legacy root and every writer', () => {
+        const paths = roots().flatMap((root) => [
+          crumb(root, 'session-by-ppid', '9999999.txt', 'sess-old', 90 * DAY_MS),
+          crumb(root, 'session-by-cwd', '-repo.txt', 'sess-old', 90 * DAY_MS),
+        ]);
+        expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(6);
+        for (const path of paths) expect(existsSync(path)).toBe(false);
+      });
+
+      it('keeps a cwd crumb touched within the last day or two', () => {
+        const paths = roots().map((root) =>
+          crumb(root, 'session-by-cwd', '-repo.txt', 'sess-new', 2 * DAY_MS),
+        );
+        expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(0);
+        for (const path of paths) expect(existsSync(path)).toBe(true);
+      });
+
+      it('keeps an old cwd crumb while a fresh live ppid crumb names the same session', () => {
+        const paths = roots().map((root) => {
+          crumb(root, 'session-by-ppid', `${process.pid}.txt`, 'sess-live', 1 * DAY_MS);
+          return crumb(root, 'session-by-cwd', '-repo.txt', 'sess-live', 30 * DAY_MS);
+        });
+        expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(0);
+        for (const path of paths) expect(existsSync(path)).toBe(true);
+      });
+
+      it('keeps a 30-hour-old cwd crumb of a live long session', () => {
+        const paths = roots().map((root) => {
+          crumb(root, 'session-by-ppid', `${process.pid}.txt`, 'sess-live', 60_000);
+          return crumb(root, 'session-by-cwd', '-repo.txt', 'sess-live', 30 * 60 * 60 * 1000);
+        });
+        expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(0);
+        for (const path of paths) expect(existsSync(path)).toBe(true);
+      });
+
+      it('deletes an old cwd crumb whose fresh ppid crumb names a different session', () => {
+        const root = roots()[1]!;
+        crumb(root, 'session-by-ppid', `${process.pid}.txt`, 'sess-other', 60_000);
+        const old = crumb(root, 'session-by-cwd', '-repo.txt', 'sess-old', 30 * DAY_MS);
+        expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(1);
+        expect(existsSync(old)).toBe(false);
+      });
+
+      it('collects the cwd crumb just past the window and keeps it just inside', () => {
+        const inside = crumb(tmpDir, 'session-by-cwd', '-a.txt', 's1', 6.9 * DAY_MS);
+        const outside = crumb(tmpDir, 'session-by-cwd', '-b.txt', 's2', 7.1 * DAY_MS);
+        expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(1);
+        expect(existsSync(inside)).toBe(true);
+        expect(existsSync(outside)).toBe(false);
+      });
+
+      it("collects a writer's session id crumb by the same window and live ppid rule", () => {
+        const root = roots()[1]!;
+        crumb(root, 'session-by-ppid', `${process.pid}.txt`, 'sess-live', 60_000);
+        const live = crumb(root, 'session-by-id', 'sess-live.txt', 'sess-live', 30 * DAY_MS);
+        const recent = crumb(root, 'session-by-id', 'sess-recent.txt', 'sess-recent', 6.9 * DAY_MS);
+        const idle = crumb(root, 'session-by-id', 'sess-idle.txt', 'sess-idle', 7.1 * DAY_MS);
+        expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(1);
+        expect(existsSync(live)).toBe(true);
+        expect(existsSync(recent)).toBe(true);
+        expect(existsSync(idle)).toBe(false);
+      });
     });
 
     it('skips files that are not <pid>.txt', () => {

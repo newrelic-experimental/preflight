@@ -22,6 +22,8 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { SESSION_ID_RE } from '../hooks/self-report.js';
+import { isSyntheticSessionId } from '../hooks/synthetic-session-id.js';
 import { localDateKey } from '../lib/date.js';
 import { commitUrlFromRemote, repoNameFromRemote } from '../lib/git-remote.js';
 import { amendRecord, type ReplayTimelineEntry, type ToolCallRecord } from '../storage/types.js';
@@ -35,8 +37,11 @@ import { isAwaitingLatePost } from './session-tracker.js';
 import type { EstimatedModelUsage, UnpricedModelUsage } from './cost-tracker.js';
 import { CallUsageBook } from './call-usage.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
+import { parsePrRepo } from './pr-ref.js';
 import { resolvePricingDetail } from './pricing-overlay.js';
+import { readShell, type ShellReading } from './shell-lexer.js';
 import { QualityProxyTracker } from './quality-proxy-tracker.js';
+import { TaskDetector } from './task-detector.js';
 import { ToolSelectionScorer, toToolSelectionSummary } from './tool-selection-scorer.js';
 
 /** Matches SessionTracker's own cap so session files stay bounded. */
@@ -90,6 +95,8 @@ export interface LocalSessionAggregatorOptions {
    * starts at 0 as before.
    */
   readonly persistedCostBaseline?: (sessionId: string) => PersistedCostBaseline | null;
+  /** Tasks this session's file already records, so a restarted process adds to them instead of starting from 0. */
+  readonly persistedTaskCount?: (sessionId: string) => number;
 }
 
 export interface LocalSessionRollup {
@@ -116,6 +123,8 @@ export interface LocalSessionRollup {
   records: ToolCallRecord[];
   /** Per-session quality tracker, so raw counts survive into the summary. */
   quality: QualityProxyTracker;
+  /** Per-session task boundaries, so a saved `taskCount` is this session's alone. */
+  tasks: TaskDetector;
   modelBreakdown: Map<string, ModelBreakdownTally>;
   costUsd: number;
   /** All-in cost by local-day key (`localDateKey(usage.timestamp)`); same key
@@ -130,13 +139,17 @@ export interface LocalSessionRollup {
   /** Set once the persisted baseline has been folded in — see recordTokenUsage. */
   costBaselineApplied: boolean;
   /**
-   * The cost quadruple as of the last `toSummaries()` call, i.e. what this
-   * aggregator has already offered to the session file. A later baseline fold
+   * The cost quadruple as of the last `markSaved()` call, i.e. what this
+   * aggregator has already put in the session file. A later baseline fold
    * subtracts it, because the file may be this aggregator's own checkpoint.
    */
   lastEmittedCost: EmittedCost | null;
   tokensInput: number;
   tokensOutput: number;
+  tokensThinking: number;
+  selfReportCount: number;
+  /** Holds something no confirmed save has written yet. */
+  unsaved: boolean;
   tokensCacheRead: number;
   tokensCacheCreation: number;
   cacheSavingsUsd: number;
@@ -146,119 +159,6 @@ export interface LocalSessionRollup {
   successCount: number;
 }
 
-/** A command with its heredoc bodies stripped (see `stripHeredocs`). */
-export interface StrippedHeredocs {
-  readonly text: string;
-  /** True when a heredoc never reached its terminator line, so every line
-   *  after its `<<` was dropped. Heredocs that agents write close, so this
-   *  usually means a `<<` that bash doesn't read as a heredoc was taken for
-   *  one, such as `$((1<<N))`, and the text left is not what bash ran. */
-  readonly unclosed: boolean;
-  /** True when reading quotes changes which lines are kept, as when a `<<`
-   *  sits in quoted text. Which lines bash ran then rests on a quote reading
-   *  the scan can get wrong (`$'it\'s'`), so `text` may not be what ran. */
-  readonly readingsDiffer: boolean;
-}
-
-// `<<` or `<<-` and its delimiter word, but not the `<<<` of a here-string.
-const HEREDOC_START_RE = /(?<!<)<<(?!<)(-?)\s*(?:'([^']+)'|"([^"]+)"|\\?([A-Za-z_][A-Za-z0-9_]*))/y;
-
-// Characters after which a `#` starts a comment, as in `splitShellChain`.
-const COMMENT_AFTER_RE = /[\s;&|(<>]/;
-
-/**
- * Strips heredoc bodies from a shell command so its *text* is not mistaken for
- * its *actions*. Agents routinely pipe scripts inline (`python3 - <<'PY' ...`),
- * and a body that merely mentions git words made the command classify as a real
- * `push`/`log` and made a `cd` inside the script hijack repo attribution.
- *
- * The line introducing the heredoc is kept — `git commit -F- <<'MSG'` is still
- * a commit.
- *
- * The first reading takes every `<<` for a heredoc, because a misread quote
- * (`$'it\'s'`) could otherwise hide a real one. When one of its heredocs never
- * closes, a second reading that knows quotes, `$( … )` and `#` comments
- * replaces it if that reading's quotes balance and all of its heredocs close,
- * so a `<<` in quoted text (`--body "see <<X"`) drops no lines. Both readings
- * always run, because a quoted `<<` that a real heredoc's terminator closes
- * leaves the first reading closed but missing lines; `readingsDiffer` reports
- * that.
- */
-export function stripHeredocs(command: string): StrippedHeredocs {
-  if (!command.includes('<<')) return { text: command, unclosed: false, readingsDiffer: false };
-  const blind = scanHeredocs(command, false);
-  const quoted = scanHeredocs(command, true);
-  const { text, unclosed } = blind.unclosed && quoted.balanced && !quoted.unclosed ? quoted : blind;
-  return { text, unclosed, readingsDiffer: blind.text !== quoted.text };
-}
-
-/** The text of `stripHeredocs`. */
-export function stripHeredocBodies(command: string): string {
-  return stripHeredocs(command).text;
-}
-
-/** `stripHeredocs`' scan. With `readQuotes` false, quotes, parentheses and
- *  `#` are plain text. `balanced` is false when a quote or group is left open. */
-function scanHeredocs(
-  command: string,
-  readQuotes: boolean,
-): { readonly text: string; readonly unclosed: boolean; readonly balanced: boolean } {
-  const kept: string[] = [];
-  const pending: { tag: string; stripTabs: boolean }[] = [];
-  // Open quotes and `(`/`$(` groups, innermost last, carried across lines.
-  const open: string[] = [];
-
-  for (const line of command.split('\n')) {
-    if (pending.length > 0) {
-      const current = pending[0];
-      // bash ends a heredoc only on a line that is exactly its delimiter;
-      // `<<-` strips leading tabs, not spaces. A trailing `\r` is a CRLF line end.
-      const candidate = (current.stripTabs ? line.replace(/^\t+/, '') : line).replace(/\r$/, '');
-      if (candidate === current.tag) pending.shift();
-      continue;
-    }
-
-    kept.push(line);
-    let wordStart = true;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      const inner = open.at(-1);
-      if (inner === "'") {
-        if (ch === "'") open.pop();
-        continue;
-      }
-      if (readQuotes && ch === '\\') {
-        i++;
-        wordStart = false;
-        continue;
-      }
-      if (inner === '"') {
-        if (ch === '"') {
-          open.pop();
-        } else if (line.startsWith('$(', i)) {
-          open.push('(');
-          i++;
-        }
-        continue;
-      }
-      if (readQuotes) {
-        if (ch === '#' && wordStart) break;
-        if (ch === "'" || ch === '"' || ch === '(') open.push(ch);
-        else if (ch === ')' && inner === '(') open.pop();
-      }
-      wordStart = COMMENT_AFTER_RE.test(ch);
-      if (ch !== '<') continue;
-      HEREDOC_START_RE.lastIndex = i;
-      const match = HEREDOC_START_RE.exec(line);
-      if (!match) continue;
-      pending.push({ tag: match[2] ?? match[3] ?? match[4], stripTabs: match[1] === '-' });
-      i = HEREDOC_START_RE.lastIndex - 1;
-    }
-  }
-
-  return { text: kept.join('\n'), unclosed: pending.length > 0, balanced: open.length === 0 };
-}
-
 /**
  * Directory a git command actually acts on. Work is often driven from one
  * workspace but targeted at another repo (`git -C <path>`, or `cd <path> &&
@@ -266,10 +166,9 @@ function scanHeredocs(
  * driving repo instead of the one being changed.
  */
 export function gitCommandTargetDir(
-  rawCommand: string,
+  { text: command }: ShellReading,
   cwd: string | null | undefined,
 ): string | null {
-  const command = stripHeredocBodies(rawCommand);
   const dashC = /(?:^|[|&;]\s*)git\s+(?:-c\s+\S+\s+)*-C\s+(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(
     command,
   );
@@ -337,18 +236,16 @@ export class LocalSessionAggregator {
   /** Repo dirs targeted by git commands but never entered as a cwd. */
   private readonly gitTargetDirs = new Set<string>();
   private readonly persistedCostBaseline: LocalSessionAggregatorOptions['persistedCostBaseline'];
+  private readonly persistedTaskCount: LocalSessionAggregatorOptions['persistedTaskCount'];
 
   constructor(options: LocalSessionAggregatorOptions = {}) {
     this.persistedCostBaseline = options.persistedCostBaseline;
+    this.persistedTaskCount = options.persistedTaskCount;
   }
 
   private static isReal(sessionId: string | null | undefined): sessionId is string {
-    if (typeof sessionId !== 'string' || sessionId.length === 0) return false;
-    return (
-      !sessionId.startsWith('local-') &&
-      !sessionId.startsWith('proxy-') &&
-      !sessionId.startsWith('pending-')
-    );
+    if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) return false;
+    return sessionId !== 'unknown' && !isSyntheticSessionId(sessionId);
   }
 
   private ensure(sessionId: string, timestamp: number): LocalSessionRollup {
@@ -367,6 +264,7 @@ export class LocalSessionAggregator {
         timeline: [],
         records: [],
         quality: new QualityProxyTracker(),
+        tasks: new TaskDetector(),
         modelBreakdown: new Map(),
         costUsd: 0,
         costByDayUsd: new Map(),
@@ -377,6 +275,9 @@ export class LocalSessionAggregator {
         lastEmittedCost: null,
         tokensInput: 0,
         tokensOutput: 0,
+        tokensThinking: 0,
+        selfReportCount: 0,
+        unsaved: true,
         tokensCacheRead: 0,
         tokensCacheCreation: 0,
         cacheSavingsUsd: 0,
@@ -385,11 +286,27 @@ export class LocalSessionAggregator {
         estimated: new CallUsageBook(),
         successCount: 0,
       };
+      const saved = this.persistedTaskCount?.(sessionId) ?? 0;
+      if (saved > 0) applyTaskSeed(rollup.tasks, saved);
       this.sessions.set(sessionId, rollup);
     }
+    rollup.unsaved = true;
     if (timestamp < rollup.startTime) rollup.startTime = timestamp;
     if (timestamp > rollup.endTime) rollup.endTime = timestamp;
     return rollup;
+  }
+
+  startTask(sessionId: string | null, timestamp: number): void {
+    if (sessionId) this.sessions.get(sessionId)?.tasks.startTaskIfNone(timestamp);
+  }
+
+  markTaskBoundary(sessionId: string | null, timestamp: number): void {
+    if (sessionId) this.sessions.get(sessionId)?.tasks.markBoundary(timestamp);
+  }
+
+  taskCountOf(sessionId: string): number | null {
+    const rollup = this.sessions.get(sessionId);
+    return rollup ? taskCountOf(rollup.tasks) : null;
   }
 
   recordsOf(sessionId: string): readonly ToolCallRecord[] {
@@ -398,7 +315,7 @@ export class LocalSessionAggregator {
 
   /**
    * A rollup's summary for a session whose file has calls, without what another process may count:
-   * a timeout, whose post may land elsewhere, and a call another process marked counted.
+   * a timeout, whose post may land elsewhere, and a call whose id is in `countedIds`.
    */
   withoutCallsOtherProcessesMayCount(
     summary: Record<string, unknown>,
@@ -423,6 +340,23 @@ export class LocalSessionAggregator {
     };
   }
 
+  isUnsaved(sessionId: string): boolean {
+    return this.sessions.get(sessionId)?.unsaved === true;
+  }
+
+  /** Records that the store wrote this session's file with what the rollup holds now. */
+  markSaved(sessionId: string): void {
+    const rollup = this.sessions.get(sessionId);
+    if (!rollup) return;
+    rollup.lastEmittedCost = {
+      costUsd: rollup.costUsd,
+      subagentCostUsd: rollup.subagentCostUsd,
+      costByDayUsd: new Map(rollup.costByDayUsd),
+      subagentCostByDayUsd: new Map(rollup.subagentCostByDayUsd),
+    };
+    rollup.unsaved = false;
+  }
+
   amendToolCall(record: ToolCallRecord): void {
     const rollup = record.sessionId ? this.sessions.get(record.sessionId) : undefined;
     if (!rollup) return;
@@ -431,6 +365,7 @@ export class LocalSessionAggregator {
     const entry = rollup.timeline[index];
     if (previous?.success !== false || !entry) return;
     if (record.success) rollup.successCount += 1;
+    rollup.unsaved = true;
     rollup.records[index] = amendRecord(previous, record);
     const { errorType: _replaced, ...rest } = entry;
     rollup.timeline[index] = {
@@ -457,9 +392,11 @@ export class LocalSessionAggregator {
     platform?: string | null;
     agentId?: unknown;
     createdPrNumber?: unknown;
+    createdPrRepo?: unknown;
     mcpPrNumber?: unknown;
     mcpPrRepo?: unknown;
     runInBackground?: unknown;
+    toolUseId?: unknown;
   }): void {
     if (!LocalSessionAggregator.isReal(record.sessionId)) return;
     const timestamp = record.timestamp ?? Date.now();
@@ -480,7 +417,10 @@ export class LocalSessionAggregator {
     // cwd never names, so without this the repo would be invisible to commit
     // hydration — the whole point of driving other repos from one workspace.
     if (typeof record.command === 'string' && /(?:^|[|&;]\s*)(?:cd\s|git\s)/.test(record.command)) {
-      const target = gitCommandTargetDir(record.command, record.cwd as string | undefined);
+      const target = gitCommandTargetDir(
+        readShell(record.command),
+        record.cwd as string | undefined,
+      );
       if (target) this.gitTargetDirs.add(target);
     }
     // Matches TaskDetector's Read-vs-Write/Edit split (task-detector.ts) —
@@ -502,8 +442,10 @@ export class LocalSessionAggregator {
     // SessionTracker caps its own timeline so a long session can't grow the
     // session file without bound. Keeps the most recent entries.
     if (rollup.timeline.length >= MAX_TIMELINE_ENTRIES) rollup.timeline.shift();
+    const createdPrRepo = parsePrRepo(record.createdPrRepo);
     rollup.timeline.push({
       timestamp,
+      ...(typeof record.toolUseId === 'string' && { toolUseId: record.toolUseId }),
       toolName: tool,
       durationMs: record.durationMs ?? null,
       success: record.success !== false,
@@ -518,6 +460,7 @@ export class LocalSessionAggregator {
       ...(typeof record.createdPrNumber === 'string' && {
         createdPrNumber: record.createdPrNumber,
       }),
+      ...(createdPrRepo !== undefined && { createdPrRepo }),
       ...(typeof record.mcpPrNumber === 'string' && { mcpPrNumber: record.mcpPrNumber }),
       ...(typeof record.mcpPrRepo === 'string' && { mcpPrRepo: record.mcpPrRepo }),
       ...(record.runInBackground === true && { runInBackground: true }),
@@ -527,6 +470,7 @@ export class LocalSessionAggregator {
     // rehydrated panel shows exactly what the live one would have shown.
     const fullRecord = record as unknown as ToolCallRecord;
     rollup.quality.recordToolCall(fullRecord);
+    rollup.tasks.recordToolCall({ ...fullRecord, timestamp });
     if (rollup.records.length >= MAX_TIMELINE_ENTRIES) rollup.records.shift();
     rollup.records.push(fullRecord);
   }
@@ -550,11 +494,14 @@ export class LocalSessionAggregator {
        * trackers. Absent for parent-transcript token events.
        */
       agentId?: string;
+      platform?: string;
+      selfReported?: boolean;
     },
   ): void {
     if (!LocalSessionAggregator.isReal(sessionId)) return;
     const timestamp = usage.timestamp ?? Date.now();
     const rollup = this.ensure(sessionId, timestamp);
+    if (rollup.platform === null && usage.platform) rollup.platform = usage.platform;
     // Seed from disk on this session's first usage, not at rollup creation: an
     // unscoped process creates a rollup from a session's first drained hook
     // event, which happens before that session's own engine has written
@@ -582,6 +529,8 @@ export class LocalSessionAggregator {
     }
     rollup.tokensInput += usage.inputTokens ?? 0;
     rollup.tokensOutput += usage.outputTokens ?? 0;
+    if (usage.agentId === undefined) rollup.tokensThinking += usage.thinkingTokens ?? 0;
+    if (usage.selfReported) rollup.selfReportCount += 1;
     rollup.tokensCacheRead += usage.cacheReadTokens ?? 0;
     rollup.tokensCacheCreation += usage.cacheCreationTokens ?? 0;
     rollup.cacheSavingsUsd += usage.cacheSavingsUsd ?? 0;
@@ -710,6 +659,12 @@ export class LocalSessionAggregator {
     outcome: string;
     repoResolver: RepoNameResolver;
     toolSelectionScorer: ToolSelectionScorer;
+    /**
+     * Re-runs the agent attribution join on each record before tool-selection
+     * scoring. By save time `SubagentWatcher` has tailed far more transcript
+     * than at hook intake, so more records resolve to their subagent.
+     */
+    backfillRecord?: (record: ToolCallRecord) => ToolCallRecord;
     savesSession?: (sessionId: string) => boolean;
   }): Array<Record<string, unknown>> {
     const out: Array<Record<string, unknown>> = [];
@@ -723,16 +678,11 @@ export class LocalSessionAggregator {
           estimatedCostUsd: rollup.costUsd,
           tokensInput: rollup.tokensInput,
           tokensOutput: rollup.tokensOutput,
+          selfReportCount: rollup.selfReportCount,
         })
       )
         continue;
       const models = [...rollup.models];
-      rollup.lastEmittedCost = {
-        costUsd: rollup.costUsd,
-        subagentCostUsd: rollup.subagentCostUsd,
-        costByDayUsd: new Map(rollup.costByDayUsd),
-        subagentCostByDayUsd: new Map(rollup.subagentCostByDayUsd),
-      };
       out.push({
         sessionId: rollup.sessionId,
         sessionName: null,
@@ -755,7 +705,13 @@ export class LocalSessionAggregator {
         qualityProxy: rollup.quality.getRawCounts(),
         toolSelectionMetrics:
           rollup.records.length > 0
-            ? toToolSelectionSummary(context.toolSelectionScorer.scoreSession(rollup.records))
+            ? toToolSelectionSummary(
+                context.toolSelectionScorer.scoreSession(
+                  context.backfillRecord
+                    ? rollup.records.map(context.backfillRecord)
+                    : rollup.records,
+                ),
+              )
             : null,
         linesAdded: 0,
         linesRemoved: 0,
@@ -783,13 +739,14 @@ export class LocalSessionAggregator {
         ...callUsageFields(rollup),
         tokensInput: rollup.tokensInput,
         tokensOutput: rollup.tokensOutput,
-        tokensThinking: 0,
+        tokensThinking: rollup.tokensThinking,
+        ...(rollup.selfReportCount > 0 && { selfReportCount: rollup.selfReportCount }),
         tokensCacheRead: rollup.tokensCacheRead,
         tokensCacheCreation: rollup.tokensCacheCreation,
         cacheSavingsUsd: rollup.cacheSavingsUsd,
         efficiencyScore: null,
         antiPatterns: [],
-        taskCount: 0,
+        taskCount: taskCountOf(rollup.tasks),
         taskSuccessRate: null,
         toolSuccessRate:
           rollup.toolCallCount > 0 ? rollup.successCount / rollup.toolCallCount : null,
@@ -804,6 +761,25 @@ export class LocalSessionAggregator {
     }
     return out;
   }
+}
+
+function applyTaskSeed(tasks: TaskDetector, taskCount: number): void {
+  tasks.seedFromPersisted({
+    filesRead: [],
+    filesModified: [],
+    linesAdded: 0,
+    linesRemoved: 0,
+    testsRun: 0,
+    testsPassed: 0,
+    buildRun: 0,
+    buildPassed: 0,
+    agentSpawns: 0,
+    taskCount,
+  });
+}
+
+function taskCountOf(tasks: TaskDetector): number {
+  return tasks.getMetrics().totalTasksCompleted;
 }
 
 /**

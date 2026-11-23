@@ -19,7 +19,7 @@ import {
   mergeSummaries,
   sessionSummaryToDriftRecord,
 } from './session-store.js';
-import type { FullSessionSummary } from './session-store.js';
+import type { BuildSessionSummarySources, FullSessionSummary } from './session-store.js';
 import type { SessionTracker } from '../metrics/session-tracker.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
 import { buildCostTrackerSeed } from '../metrics/cost-tracker-seed.js';
@@ -434,6 +434,50 @@ describe('buildSessionSummary anti-patterns', () => {
     ]);
   });
 
+  it('scores tool selection with each call attributed by backfillRecord', () => {
+    const [task] = mockTaskDetector.getMetrics().completedTasks;
+    const readTaskDetector = {
+      getCurrentTask: () => null,
+      getMetrics: () => ({
+        ...mockTaskDetector.getMetrics(),
+        completedTasks: [
+          {
+            ...task,
+            toolCalls: ['toolu_a', 'toolu_b', 'toolu_c'].map((toolUseId, i) => ({
+              id: `r${i}`,
+              sessionId: 'ap-session',
+              toolName: 'Read',
+              toolUseId,
+              timestamp: 1_700_000_001_000 + i * 1000,
+              durationMs: 20,
+              success: true,
+              filePath: '/src/shared.ts',
+            })),
+          },
+        ],
+      }),
+    };
+    const agentByToolUse = new Map([
+      ['toolu_a', 'agent-1'],
+      ['toolu_b', 'agent-2'],
+      ['toolu_c', 'agent-3'],
+    ]);
+    const build = (backfillRecord?: BuildSessionSummarySources['backfillRecord']) =>
+      buildSessionSummary({
+        sessionTracker: mockSessionTracker as unknown as SessionTracker,
+        taskDetector: readTaskDetector as unknown as TaskDetector,
+        toolSelectionScorer: new ToolSelectionScorer(),
+        developer: 'alice',
+        ...(backfillRecord && { backfillRecord }),
+      }).toolSelectionMetrics;
+
+    expect(build()).toMatchObject({ totalCalls: 3, redundantReadCount: 1 });
+    expect(build((r) => ({ ...r, agentId: agentByToolUse.get(r.toolUseId ?? '') }))).toMatchObject({
+      totalCalls: 3,
+      redundantReadCount: 0,
+    });
+  });
+
   it('keeps one row per incident when multiple incidents share a type', () => {
     const mockAntiPatternDetector = {
       analyze: () => ({
@@ -683,6 +727,53 @@ describe('SessionStore', () => {
     const saved = store.loadSession('chat-after')!;
     expect(saved.estimatedCostUsd).toBeCloseTo(0.0288, 4);
     expect(saved.toolCallCount).toBe(12);
+  });
+
+  it('merges a self-reported summary with no tool calls into a recorded session', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    store.saveSession(makeSummary({ sessionId: 'reported', startTime, toolCallCount: 12 }));
+
+    store.saveSession(
+      makeSummary({
+        sessionId: 'reported',
+        startTime,
+        toolCallCount: 0,
+        toolBreakdown: {},
+        tokensInput: 99_000,
+        selfReportCount: 1,
+      }),
+    );
+
+    expect(store.loadSession('reported')).toMatchObject({ toolCallCount: 12, tokensInput: 99_000 });
+  });
+
+  it('writes the first file of a session that holds only a self-report', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const idle = {
+      toolCallCount: 0,
+      toolBreakdown: {},
+      estimatedCostUsd: 0,
+      tokensInput: 0,
+      tokensOutput: 0,
+      tokensThinking: 0,
+    };
+
+    const saved = store.saveSession(
+      makeSummary({ ...idle, sessionId: 'reported-only', selfReportCount: 1 }),
+    );
+
+    expect(saved).not.toBeNull();
+  });
+
+  it('keeps the larger selfReportCount', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    store.saveSession(makeSummary({ sessionId: 'counted', startTime, selfReportCount: 2 }));
+
+    store.saveSession(makeSummary({ sessionId: 'counted', startTime, selfReportCount: 1 }));
+
+    expect(store.loadSession('counted')?.selfReportCount).toBe(2);
   });
 
   it('does not create a file for a session that recorded no usage', () => {
@@ -1719,6 +1810,36 @@ describe('buildSessionSummary', () => {
     expect(merged.sessionIntent).toBe('the original prompt');
   });
 
+  it("mergeSummaries keeps an owner's completed against later saves", () => {
+    const endTime = 2_000;
+    const owner = makeSummary({ outcome: 'completed', endTime });
+    for (const later of [
+      makeSummary({ outcome: 'in progress', endTime }),
+      makeSummary({ outcome: 'completed', observerCompletedAt: 1_000, endTime }),
+    ]) {
+      expect(mergeSummaries(owner, later)).toMatchObject({
+        outcome: 'completed',
+        observerCompletedAt: undefined,
+      });
+    }
+  });
+
+  it("mergeSummaries keeps an observer's completed over an earlier in-progress save", () => {
+    const merged = mergeSummaries(
+      makeSummary({ outcome: 'in progress' }),
+      makeSummary({ outcome: 'completed', observerCompletedAt: 1_000 }),
+    );
+    expect(merged).toMatchObject({ outcome: 'completed', observerCompletedAt: 1_000 });
+  });
+
+  it("mergeSummaries lets a later in-progress save replace an observer's completed", () => {
+    const merged = mergeSummaries(
+      makeSummary({ outcome: 'completed', observerCompletedAt: 1_000 }),
+      makeSummary({ outcome: 'in progress' }),
+    );
+    expect(merged).toMatchObject({ outcome: 'in progress', observerCompletedAt: undefined });
+  });
+
   it('mergeSummaries keeps a real platform label against an incoming generic-mcp checkpoint', () => {
     const existing = makeSummary({ platform: 'claude-code' });
     const incoming = makeSummary({ platform: 'generic-mcp' });
@@ -2318,6 +2439,69 @@ describe('buildSessionSummary', () => {
     });
     const merged = mergeSummaries(existing, incoming);
     expect(merged.timeline?.map((e) => e.timestamp)).toEqual([100, 200, 300]);
+  });
+
+  it('mergeSummaries keeps distinct calls sharing a millisecond and tool when they carry a toolUseId', () => {
+    const call = (toolUseId: string) => ({
+      timestamp: 100,
+      toolName: 'Read',
+      toolUseId,
+      durationMs: 5,
+      success: true,
+    });
+    const existing = makeSummary({ timeline: [call('a'), call('b')] });
+    const incoming = makeSummary({ timeline: [call('b'), call('c')] });
+    const merged = mergeSummaries(existing, incoming);
+    expect(merged.timeline?.map((e) => e.toolUseId)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('keeps same-millisecond calls with distinct ids across a reload through a new SessionStore', () => {
+    const startTime = new Date('2026-04-15T10:00:00Z').getTime();
+    const call = (toolUseId: string) => ({
+      timestamp: startTime + 100,
+      toolName: 'Read',
+      toolUseId,
+      durationMs: 5,
+      success: true,
+    });
+    new SessionStore({ storagePath: tmpDir }).saveSession(
+      makeSummary({ sessionId: 'reload-ids', startTime, timeline: [call('a'), call('b')] }),
+    );
+
+    const resumed = new SessionStore({ storagePath: tmpDir });
+    resumed.saveSession(makeSummary({ sessionId: 'reload-ids', startTime, timeline: [] }));
+
+    expect(resumed.loadSession('reload-ids')!.timeline?.map((e) => e.toolUseId)).toEqual([
+      'a',
+      'b',
+    ]);
+  });
+
+  it('mergeSummaries still collapses id-less entries by timestamp and tool', () => {
+    const legacy = { timestamp: 100, toolName: 'Read', durationMs: 5, success: true };
+    const merged = mergeSummaries(
+      makeSummary({ timeline: [legacy] }),
+      makeSummary({ timeline: [{ ...legacy, durationMs: 9 }] }),
+    );
+    expect(merged.timeline).toHaveLength(1);
+  });
+
+  it('mergeSummaries treats an empty toolUseId as no id, so entries at different times both survive', () => {
+    const entry = { toolName: 'Read', toolUseId: '', durationMs: 5, success: true };
+    const merged = mergeSummaries(
+      makeSummary({ timeline: [{ ...entry, timestamp: 100 }] }),
+      makeSummary({ timeline: [{ ...entry, timestamp: 200 }] }),
+    );
+    expect(merged.timeline?.map((e) => e.timestamp)).toEqual([100, 200]);
+  });
+
+  it('mergeSummaries replaces a legacy entry with the id-bearing entry for the same call', () => {
+    const legacy = { timestamp: 100, toolName: 'Read', durationMs: 5, success: true };
+    const merged = mergeSummaries(
+      makeSummary({ timeline: [legacy] }),
+      makeSummary({ timeline: [{ ...legacy, toolUseId: 'a' }] }),
+    );
+    expect(merged.timeline?.map((e) => e.toolUseId)).toEqual(['a']);
   });
 
   it('mergeSummaries caps a unioned timeline at MAX_TIMELINE_ENTRIES, keeping the newest entries', () => {
@@ -3361,6 +3545,7 @@ describe('buildSessionSummary timeline', () => {
     expect(summary.timeline![2]!.toolName).toBe('Bash');
     expect(summary.timeline![2]!.command).toBe('npm test');
     expect(summary.timeline![2]!.isTestCommand).toBe(true);
+    expect(summary.timeline!.map((e) => e.toolUseId)).toEqual(['tu1', 'tu2', 'tu3']);
   });
 
   it('returns undefined timeline when no tool calls are present', () => {
@@ -3521,6 +3706,7 @@ describe('buildSessionSummary timeline', () => {
                 success: true,
                 command: 'gh pr create --fill',
                 createdPrNumber: '42',
+                createdPrRepo: 'acme/app',
                 runInBackground: true,
               },
               {
@@ -3547,7 +3733,10 @@ describe('buildSessionSummary timeline', () => {
     });
 
     expect(summary.timeline).toHaveLength(4);
-    expect(summary.timeline![2]!.createdPrNumber).toBe('42');
+    expect(summary.timeline![2]).toMatchObject({
+      createdPrNumber: '42',
+      createdPrRepo: 'acme/app',
+    });
     expect(summary.timeline![3]).toMatchObject({ mcpPrNumber: '42', mcpPrRepo: 'acme/app' });
     expect(summary.timeline![0]!.mcpPrNumber).toBeUndefined();
     expect(summary.timeline![0]!.mcpPrRepo).toBeUndefined();
@@ -3557,6 +3746,10 @@ describe('buildSessionSummary timeline', () => {
     store.saveSession(summary);
     const reloaded = store.loadSession(summary.sessionId);
     expect(reloaded!.timeline![3]).toMatchObject({ mcpPrNumber: '42', mcpPrRepo: 'acme/app' });
+    expect(reloaded!.timeline![2]).toMatchObject({
+      createdPrNumber: '42',
+      createdPrRepo: 'acme/app',
+    });
     expect(summary.timeline![0]!.createdPrNumber).toBeUndefined();
     expect(summary.timeline![2]!.runInBackground).toBe(true);
     expect(summary.timeline![0]!.runInBackground).toBeUndefined();
@@ -3615,6 +3808,33 @@ describe('SessionStore deserialization', () => {
     const session = store.loadSession('pr-num');
     expect(session!.timeline![0]!.createdPrNumber).toBe('42');
     expect(session!.timeline![1]!.createdPrNumber).toBeUndefined();
+  });
+
+  it('keeps a well-formed createdPrRepo on timeline entries, lowercased, and drops anything else', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const raw = JSON.stringify({
+      sessionId: 'pr-repo',
+      startTime: 1000,
+      endTime: 2000,
+      durationMs: 1000,
+      toolCallCount: 4,
+      developer: 'alice',
+      timeline: [
+        { timestamp: 1100, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 'Acme/App' },
+        { timestamp: 1200, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 'acme/app?x=1' },
+        { timestamp: 1300, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 'a/b/c' },
+        { timestamp: 1400, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 7 },
+      ],
+    });
+    writeFileSync(join(tmpDir, 'sessions', '2026-01-01_pr-repo.json'), raw + '\n');
+
+    const session = store.loadSession('pr-repo');
+    expect(session!.timeline!.map((e) => e.createdPrRepo)).toEqual([
+      'acme/app',
+      undefined,
+      undefined,
+      undefined,
+    ]);
   });
 
   it('keeps a GitHub MCP PR target on timeline entries and drops a malformed one', () => {
@@ -4032,6 +4252,85 @@ describe('saveSession cross-process merge', () => {
     expect(loaded?.toolBreakdown).toEqual({ Bash: 9 });
   });
 
+  it("lets a resumed session's newer checkpoint replace a stale completed outcome", () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = 'cccc1111-2222-4333-8444-555566667777';
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        outcome: 'completed',
+        endTime: 1000,
+        toolCallCount: 5,
+        toolBreakdown: { Bash: 5 },
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        outcome: 'in progress',
+        endTime: 2000,
+        toolCallCount: 9,
+        toolBreakdown: { Bash: 9 },
+      }),
+    );
+    expect(store.loadSession(id)?.outcome).toBe('in progress');
+  });
+
+  it("lets a chat-only resume's newer checkpoint replace a stale completed outcome", () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = 'eeee1111-2222-4333-8444-555566667777';
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        outcome: 'completed',
+        endTime: 1000,
+        toolCallCount: 5,
+        toolBreakdown: { Bash: 5 },
+      }),
+    );
+    store.saveSession(
+      makeSummary({
+        sessionId: id,
+        outcome: 'in progress',
+        endTime: 2000,
+        toolCallCount: 5,
+        toolBreakdown: { Bash: 5 },
+      }),
+    );
+    expect(store.loadSession(id)?.outcome).toBe('in progress');
+  });
+
+  it.each([
+    ['equal endTime', 2000, 9, 'in progress'],
+    ['older endTime', 1500, 9, 'in progress'],
+    ['an unknown outcome', 3000, 9, 'unknown'],
+  ])(
+    'keeps a completed outcome against a non-completed write with %s',
+    (_label, endTime, calls, outcome) => {
+      const store = new SessionStore({ storagePath: tmpDir });
+      const id = 'dddd1111-2222-4333-8444-555566667777';
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          outcome: 'completed',
+          endTime: 2000,
+          toolCallCount: 5,
+          toolBreakdown: { Bash: 5 },
+        }),
+      );
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          outcome,
+          endTime,
+          toolCallCount: calls,
+          toolBreakdown: { Bash: calls },
+        }),
+      );
+      expect(store.loadSession(id)?.outcome).toBe('completed');
+    },
+  );
+
   it('unions per-model breakdowns contributed by different processes', () => {
     const store = new SessionStore({ storagePath: tmpDir });
     const id = 'bbbb1111-2222-4333-8444-555566667777';
@@ -4431,6 +4730,97 @@ describe('attribution field', () => {
     expect(roundTripped.attribution?.buckets.skill).toEqual({
       unslop: { costUsd: 0.03, tokens: 165, count: 2, durationMs: 4000 },
     });
+  });
+
+  it('round-trips breakdownUsd and drops a malformed one while keeping the bucket', () => {
+    const attributionWith = (breakdownUsd: unknown): unknown => ({
+      buckets: {
+        skill: {
+          unslop: { costUsd: 0.03, tokens: 165, count: 2, durationMs: 4000, breakdownUsd },
+        },
+      },
+      highContextCostUsd: 0,
+      apiDurationMs: null,
+    });
+    const parse = (breakdownUsd: unknown) =>
+      deserializeFullSessionSummary(
+        JSON.parse(
+          JSON.stringify({ ...makeSummary(), attribution: attributionWith(breakdownUsd) }),
+        ) as Parameters<typeof deserializeFullSessionSummary>[0],
+      ).attribution?.buckets.skill?.unslop;
+
+    expect(
+      parse({ inputUsd: 0.01, outputUsd: 0.02, cacheReadUsd: 0.003, cacheCreationUsd: 0 })
+        ?.breakdownUsd,
+    ).toEqual({ inputUsd: 0.01, outputUsd: 0.02, cacheReadUsd: 0.003, cacheCreationUsd: 0 });
+
+    const malformed = parse({ inputUsd: 0.01, outputUsd: 'nope' });
+    expect(malformed?.costUsd).toBe(0.03);
+    expect(malformed?.breakdownUsd).toBeUndefined();
+  });
+
+  it("merge keeps the one side's breakdownUsd when the other side has none", () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = `merge-breakdown-usd-${Date.now()}`;
+    const bucket = (extra: object) => ({
+      costUsd: 0.05,
+      tokens: 40,
+      count: 6,
+      durationMs: 300,
+      ...extra,
+    });
+    const save = (extra: object) =>
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          attribution: {
+            buckets: { skill: { unslop: bucket(extra) } },
+            highContextCostUsd: 0,
+            apiDurationMs: null,
+          },
+        }),
+      );
+
+    save({
+      breakdownUsd: { inputUsd: 0.01, outputUsd: 0.02, cacheReadUsd: 0, cacheCreationUsd: 0 },
+    });
+    save({});
+
+    expect(store.loadSession(id)?.attribution?.buckets.skill?.unslop.breakdownUsd).toEqual({
+      inputUsd: 0.01,
+      outputUsd: 0.02,
+      cacheReadUsd: 0,
+      cacheCreationUsd: 0,
+    });
+  });
+
+  it('merge drops breakdownUsd when the side with the larger costUsd has none', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const id = `merge-breakdown-usd-older-${Date.now()}`;
+    const save = (bucket: object) =>
+      store.saveSession(
+        makeSummary({
+          sessionId: id,
+          attribution: {
+            buckets: { skill: { unslop: bucket as never } },
+            highContextCostUsd: 0,
+            apiDurationMs: null,
+          },
+        }),
+      );
+
+    save({ costUsd: 5, tokens: 500, count: 5, durationMs: 1 });
+    save({
+      costUsd: 2,
+      tokens: 200,
+      count: 2,
+      durationMs: 1,
+      breakdownUsd: { inputUsd: 1, outputUsd: 1, cacheReadUsd: 0, cacheCreationUsd: 0 },
+    });
+
+    const merged = store.loadSession(id)?.attribution?.buckets.skill?.unslop;
+    expect(merged?.costUsd).toBe(5);
+    expect(merged?.breakdownUsd).toBeUndefined();
   });
 
   it('drops a malformed breakdown but keeps the bucket', () => {

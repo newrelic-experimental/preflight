@@ -6,6 +6,7 @@ import { appendToHookBuffer, DRAIN_SEAL as SEAL } from './hook-buffer.js';
 import { LocalStore } from './local-store.js';
 import { formatClaimName } from './drain-claims.js';
 import { HookEventProcessor } from '../hooks/event-processor.js';
+import { SessionTracker } from '../metrics/session-tracker.js';
 import type { HookEvent, ToolCallRecord } from './types.js';
 
 const mockHooks: {
@@ -165,6 +166,17 @@ function refuseUnlinkOf(...tools: string[]): void {
     if (tools.some((tool) => text.includes(`"tool":"${tool}"`))) throw failing('EPERM');
   };
   mockHooks.unlink = refuse;
+}
+
+function refuseAdoptionOf(claim: string, times: number): void {
+  const real = jest.requireActual<typeof fs>('node:fs');
+  let refusals = 0;
+  const refuse = (from: fs.PathLike, to: fs.PathLike): void => {
+    mockHooks.rename = refuse;
+    if (String(from) === claim && refusals++ < times) throw failing('EPERM');
+    real.renameSync(from, to);
+  };
+  mockHooks.rename = refuse;
 }
 
 function gaveUpWarnings(): unknown[] {
@@ -628,6 +640,32 @@ describe('concurrent drainers of one buffer', () => {
     expect([...outcomes.values()]).toEqual(['other:A:paired', 'other:X:timeout']);
   });
 
+  it("keeps another session's pre held at the swap out of the adopted session's count", () => {
+    const tracker = new SessionTracker('pending-1700000000000', 10);
+    const pending = new LocalStore(dir);
+    const processor = new HookEventProcessor({
+      store: pending,
+      drainAllSessions: true,
+      pollIntervalMs: 3_600_000,
+      onRecord: (record) => tracker.recordToolCall(record),
+      onRecordAmend: (record) => tracker.amendToolCall(record),
+    });
+    const now = Date.now();
+    writeClaim(REAL_PID, now - 2_000, line('X', 'pre', 'other'), 'other');
+    writeClaim(REAL_PID, now - 1_000, line('X', 'post', 'other'), 'other');
+    refuseUnlinkOf('X');
+
+    processor.start();
+    processor.replaceStore(new LocalStore(dir, SESSION), false);
+    tracker.adoptSessionId(SESSION);
+    mockHooks.unlink = null;
+    appendToHookBuffer(bufferPath, line('A', 'pre'));
+    appendToHookBuffer(bufferPath, line('A'));
+    processor.stop();
+
+    expect(tracker.getMetrics().toolCallCountByTool).toEqual({ A: 1 });
+  });
+
   it('keeps two adopted claims oldest first when the first take fails', () => {
     const now = Date.now();
     writeClaim(DEAD_PID, now - 20_000, line('A', 'pre'));
@@ -644,6 +682,60 @@ describe('concurrent drainers of one buffer', () => {
 
     expect(tools(polls.flat())).toEqual(['A:pre', 'B:pre', 'B']);
     expect(leftovers()).toEqual([]);
+  });
+
+  it('returns nothing after a claim it cannot adopt, so a post never precedes its pre', () => {
+    const claim = writeClaim(DEAD_PID, Date.now() - 10_000, line('A', 'pre'));
+    fs.writeFileSync(bufferPath, line('B', 'pre') + line('A'));
+    refuseAdoptionOf(claim, 1);
+
+    const store = new LocalStore(dir, SESSION);
+    const firstPoll = store.drainBuffer();
+    const secondPoll = store.drainBuffer();
+
+    expect(tools(firstPoll)).toEqual([]);
+    expect(tools(secondPoll)).toEqual(['A:pre', 'B:pre', 'A']);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it('takes the claims older than one it cannot adopt and holds the rest', () => {
+    const now = Date.now();
+    writeClaim(DEAD_PID, now - 20_000, line('A', 'pre'));
+    const stuck = writeClaim(DEAD_PID - 1, now - 10_000, line('B', 'pre'));
+    writeClaim(DEAD_PID - 2, now - 5_000, line('C', 'pre'));
+    fs.writeFileSync(bufferPath, line('B'));
+    refuseAdoptionOf(stuck, 1);
+
+    const store = new LocalStore(dir, SESSION);
+
+    expect(tools(store.drainBuffer())).toEqual(['A:pre']);
+    expect(tools(store.drainBuffer())).toEqual(['B:pre', 'C:pre', 'B']);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it('holds the buffer behind a claim it cannot adopt for 50 polls, then warns once and drains it', () => {
+    const claim = writeClaim(DEAD_PID, Date.now() - 10_000, line('A', 'pre'));
+    fs.writeFileSync(bufferPath, line('B', 'pre'));
+    refuseAdoptionOf(claim, Number.POSITIVE_INFINITY);
+    const store = new LocalStore(dir, SESSION);
+
+    for (let poll = 1; poll <= 50; poll++) expect(store.drainBuffer()).toEqual([]);
+    expect(gaveUpWarnings()).toEqual([]);
+
+    expect(tools(store.drainBuffer())).toEqual(['B:pre']);
+    for (let poll = 1; poll <= 5; poll++) expect(store.drainBuffer()).toEqual([]);
+    expect(gaveUpWarnings()).toEqual([expect.objectContaining({ claim })]);
+    expect(fs.existsSync(claim)).toBe(true);
+  });
+
+  it('drains the buffer past a claim it cannot adopt on the final drain', () => {
+    const claim = writeClaim(DEAD_PID, Date.now() - 10_000, line('A', 'pre'));
+    fs.writeFileSync(bufferPath, line('B', 'pre'));
+    refuseAdoptionOf(claim, Number.POSITIVE_INFINITY);
+    const store = new LocalStore(dir, SESSION);
+    store.giveUpHeldOrder();
+
+    expect(tools(store.drainBuffer())).toEqual(['B:pre']);
   });
 
   it("takes its own leftover claims of other sessions' buffers after it switches to a scoped drain", () => {
@@ -835,7 +927,7 @@ describe('hook writes racing a drain', () => {
     const drainer = new LocalStore(dir, SESSION);
     let duringWrite: HookEvent[] = [];
     mockHooks.write = (text) => {
-      if (text !== line('B')) return;
+      if (!text.includes('"B"')) return;
       mockHooks.write = null;
       duringWrite = drainer.drainBuffer();
     };
@@ -870,7 +962,7 @@ describe('hook writes racing a drain', () => {
     fs.writeFileSync(resolve(dir, `active-${SESSION}.pid`), String(DEAD_PID));
     const store = new LocalStore(dir, SESSION);
     mockHooks.write = (text) => {
-      if (text !== line('B')) return;
+      if (!text.includes('"B"')) return;
       mockHooks.write = null;
       expect(store.gcOrphanBuffers(new Set()).archived).toBe(1);
     };
@@ -948,6 +1040,21 @@ describe('drain seals', () => {
     mockHooks.shortWrite = null;
 
     expect(tools(new LocalStore(dir, SESSION).drainBuffer()).sort()).toEqual(['A', 'B', 'C']);
+  });
+
+  it('keeps the next line when the end of a torn line fails to write', () => {
+    appendToHookBuffer(bufferPath, line('A'));
+    mockHooks.shortWrite = (text) => (text.includes('"B"') ? 10 : null);
+    mockHooks.write = (text) => {
+      if (text !== '\x1e\n') return;
+      mockHooks.write = null;
+      throw failing('ENOSPC');
+    };
+
+    expect(() => appendToHookBuffer(bufferPath, line('B'))).toThrow(/ENOSPC/);
+    appendToHookBuffer(bufferPath, line('C'));
+
+    expect(tools(new LocalStore(dir, SESSION).drainBuffer())).toEqual(['A', 'C']);
   });
 
   it('keeps the legacy migration file when an append cannot land', () => {

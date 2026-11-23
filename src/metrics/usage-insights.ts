@@ -1,5 +1,12 @@
 import type { FullSessionSummary } from '../storage/session-store.js';
-import type { AttributionBucket, TokenBreakdown } from '../storage/types.js';
+import type { AttributionBucket, TokenBreakdown, UsdBreakdown } from '../storage/types.js';
+import { localEndOfDay, localStartOfDay } from '../lib/date.js';
+import {
+  lastActivityMs,
+  lastDaysWindow,
+  windowedSessions,
+  type ActivityWindow,
+} from '../storage/session-window.js';
 
 /**
  * "What's contributing to your spend": independent characteristics of the
@@ -22,6 +29,8 @@ export interface UsageShareRow {
   readonly sharePct: number;
   /** Summed across every contributing bucket that had one; absent when none did. */
   readonly breakdown?: TokenBreakdown;
+  /** Dollars per `breakdown` category; absent when any contributing bucket with spend predates it, since a partial sum would understate the row. */
+  readonly breakdownUsd?: UsdBreakdown;
 }
 
 export interface UsageInsight extends UsageShareRow {
@@ -65,18 +74,19 @@ export interface UsageInsightsReport {
   readonly attributionRatePct: number | null;
 }
 
-export interface UsageInsightsOptions {
-  readonly nowMs: number;
-  readonly windowDays: number;
-  /** Overrides the `nowMs - windowDays * DAY_MS` session-filter cutoff, e.g. for a calendar-day window. `windowDays` still reports as given. */
-  readonly cutoffMs?: number;
-}
+/**
+ * Both windows keep every session with activity inside them and count only
+ * its in-window share of cost and tokens. `rolling` (the default) is the last
+ * `windowDays` local calendar days; `today` is the local calendar day of `nowMs`.
+ */
+export type UsageInsightsOptions =
+  | { readonly selection?: 'rolling'; readonly nowMs: number; readonly windowDays: number }
+  | { readonly selection: 'today'; readonly nowMs: number };
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const LONG_SESSION_MS = 8 * 60 * 60 * 1000;
 /** A session counts as "subagent-heavy" once subagent cost reaches this share of its total. */
 const SUBAGENT_HEAVY_SHARE = 0.25;
@@ -153,9 +163,39 @@ interface RowAccum {
     cacheReadTokens: number;
     cacheCreationTokens: number;
   };
+  breakdownUsd?: {
+    inputUsd: number;
+    outputUsd: number;
+    cacheReadUsd: number;
+    cacheCreationUsd: number;
+  };
+  /** A bucket with spend had no dollar split, so `breakdownUsd` would understate the row. */
+  usdIncomplete?: true;
 }
 
-function addBreakdown(existing: RowAccum, bucket: AttributionBucket): void {
+function addBreakdownUsd(existing: RowAccum, bucket: AttributionBucket, weight: number): void {
+  if (!bucket.breakdownUsd) {
+    if (bucket.costUsd > 0) existing.usdIncomplete = true;
+    return;
+  }
+  const u = existing.breakdownUsd ?? {
+    inputUsd: 0,
+    outputUsd: 0,
+    cacheReadUsd: 0,
+    cacheCreationUsd: 0,
+  };
+  u.inputUsd += bucket.breakdownUsd.inputUsd * weight;
+  u.outputUsd += bucket.breakdownUsd.outputUsd * weight;
+  u.cacheReadUsd += bucket.breakdownUsd.cacheReadUsd * weight;
+  u.cacheCreationUsd += bucket.breakdownUsd.cacheCreationUsd * weight;
+  existing.breakdownUsd = u;
+}
+
+function scaleTokens(tokens: number, weight: number): number {
+  return Math.round(tokens * weight);
+}
+
+function addBreakdown(existing: RowAccum, bucket: AttributionBucket, weight: number): void {
   if (!bucket.breakdown) return;
   const b = existing.breakdown ?? {
     inputTokens: 0,
@@ -163,29 +203,29 @@ function addBreakdown(existing: RowAccum, bucket: AttributionBucket): void {
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
   };
-  b.inputTokens += bucket.breakdown.inputTokens;
-  b.outputTokens += bucket.breakdown.outputTokens;
-  b.cacheReadTokens += bucket.breakdown.cacheReadTokens;
-  b.cacheCreationTokens += bucket.breakdown.cacheCreationTokens;
+  b.inputTokens += scaleTokens(bucket.breakdown.inputTokens, weight);
+  b.outputTokens += scaleTokens(bucket.breakdown.outputTokens, weight);
+  b.cacheReadTokens += scaleTokens(bucket.breakdown.cacheReadTokens, weight);
+  b.cacheCreationTokens += scaleTokens(bucket.breakdown.cacheCreationTokens, weight);
   existing.breakdown = b;
 }
 
-function addToAccum(map: Map<string, RowAccum>, key: string, bucket: AttributionBucket): void {
-  const existing = map.get(key);
-  if (existing) {
-    existing.costUsd += bucket.costUsd;
-    existing.tokens += bucket.tokens;
-    existing.count += bucket.count;
-    addBreakdown(existing, bucket);
-  } else {
-    const created: RowAccum = {
-      costUsd: bucket.costUsd,
-      tokens: bucket.tokens,
-      count: bucket.count,
-    };
-    addBreakdown(created, bucket);
-    map.set(key, created);
+function addToAccum(
+  map: Map<string, RowAccum>,
+  key: string,
+  bucket: AttributionBucket,
+  weight: number,
+): void {
+  let acc = map.get(key);
+  if (!acc) {
+    acc = { costUsd: 0, tokens: 0, count: 0 };
+    map.set(key, acc);
   }
+  acc.costUsd += bucket.costUsd * weight;
+  acc.tokens += scaleTokens(bucket.tokens, weight);
+  acc.count += bucket.count;
+  addBreakdown(acc, bucket, weight);
+  addBreakdownUsd(acc, bucket, weight);
 }
 
 /** Builds one share table (skills/subagents/plugins) from an accumulated per-key map: sorted by cost descending, capped to {@link TABLE_CAP}. */
@@ -198,6 +238,7 @@ function shareTable(rows: Map<string, RowAccum>, totalCostUsd: number): UsageSha
       count: acc.count,
       sharePct: sharePct(acc.costUsd, totalCostUsd),
       ...(acc.breakdown ? { breakdown: acc.breakdown } : {}),
+      ...(acc.breakdownUsd && !acc.usdIncomplete ? { breakdownUsd: acc.breakdownUsd } : {}),
     }))
     .sort((a, b) => b.costUsd - a.costUsd)
     .slice(0, TABLE_CAP);
@@ -246,12 +287,20 @@ function makeInsight(
 // computeUsageInsights
 // ---------------------------------------------------------------------------
 
+/** The span of time a report covers. */
+export function usageInsightsWindow(opts: UsageInsightsOptions): ActivityWindow {
+  if (opts.selection === 'today') {
+    const startMs = localStartOfDay(opts.nowMs);
+    return { startMs, endMs: localEndOfDay(startMs) };
+  }
+  return lastDaysWindow(opts.nowMs, opts.windowDays);
+}
+
 export function computeUsageInsights(
   sessions: readonly FullSessionSummary[],
   opts: UsageInsightsOptions,
 ): UsageInsightsReport {
-  const cutoffMs = opts.cutoffMs ?? opts.nowMs - opts.windowDays * DAY_MS;
-  const windowSessions = sessions.filter((s) => s.startTime >= cutoffMs);
+  const windowSessions = windowedSessions(sessions, usageInsightsWindow(opts));
 
   let totalCostUsd = 0;
   let totalTokens = 0;
@@ -284,10 +333,15 @@ export function computeUsageInsights(
   // One per-session pass: every table and insight below is built from the
   // accumulators this loop fills, rather than re-scanning `windowSessions`
   // once per characteristic.
-  for (const s of windowSessions) {
-    const cost = s.estimatedCostUsd ?? 0;
+  for (const {
+    session: s,
+    share: { weight },
+  } of windowSessions) {
+    const lifetimeCost = s.estimatedCostUsd ?? 0;
+    const cost = lifetimeCost * weight;
     totalCostUsd += cost;
-    const tokens = sessionTotalTokens(s);
+    const lifetimeTokens = sessionTotalTokens(s);
+    const tokens = scaleTokens(lifetimeTokens, weight);
     totalTokens += tokens;
 
     const buckets = s.attribution?.buckets;
@@ -295,34 +349,34 @@ export function computeUsageInsights(
       anyAttribution = true;
       let toolCostSum = 0;
       for (const bucket of Object.values(buckets?.tool ?? {})) toolCostSum += bucket.costUsd;
-      attributedCostUsd += toolCostSum;
+      attributedCostUsd += toolCostSum * weight;
     }
 
     for (const [key, bucket] of Object.entries(buckets?.skill ?? {})) {
-      addToAccum(skillsAccum, key, bucket);
+      addToAccum(skillsAccum, key, bucket, weight);
       const prefix = pluginPrefixOf(key);
       if (prefix) {
-        addToAccum(pluginsAccum, prefix, bucket);
+        addToAccum(pluginsAccum, prefix, bucket, weight);
         pluginSessionIds.add(s.sessionId);
       }
     }
     for (const [key, bucket] of Object.entries(buckets?.subagent ?? {})) {
-      addToAccum(subagentsAccum, key, bucket);
+      addToAccum(subagentsAccum, key, bucket, weight);
       const prefix = pluginPrefixOf(key);
       if (prefix) {
-        addToAccum(pluginsAccum, prefix, bucket);
+        addToAccum(pluginsAccum, prefix, bucket, weight);
         pluginSessionIds.add(s.sessionId);
       }
     }
 
     const highContext = s.attribution?.highContextCostUsd ?? 0;
     if (highContext > 0) {
-      highContextCostUsd += highContext;
+      highContextCostUsd += highContext * weight;
       highContextTokens += tokens;
       highContextSessions += 1;
     }
 
-    if (cost > 0 && s.subagentCostUsd >= SUBAGENT_HEAVY_SHARE * cost) {
+    if (lifetimeCost > 0 && s.subagentCostUsd >= SUBAGENT_HEAVY_SHARE * lifetimeCost) {
       subagentHeavyCostUsd += cost;
       subagentHeavyTokens += tokens;
       subagentHeavySessions += 1;
@@ -345,9 +399,9 @@ export function computeUsageInsights(
         sessionName: s.sessionName,
         runs,
         tokens,
-        tokensPerRun: Math.round(tokens / runs),
+        tokensPerRun: Math.round(lifetimeTokens / runs),
         costUsd: cost,
-        lastRunMs: lastScheduleWakeupMs(s) ?? s.endTime ?? s.startTime,
+        lastRunMs: lastScheduleWakeupMs(s) ?? lastActivityMs(s),
       });
     }
   }
@@ -399,7 +453,7 @@ export function computeUsageInsights(
     .sort((a, b) => b.sharePct - a.sharePct);
 
   return {
-    windowDays: opts.windowDays,
+    windowDays: opts.selection === 'today' ? 1 : opts.windowDays,
     sessionCount: windowSessions.length,
     totalCostUsd,
     totalTokens,

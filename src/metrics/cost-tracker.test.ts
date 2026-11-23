@@ -22,12 +22,13 @@ afterEach(() => {
 // Test helpers
 // ---------------------------------------------------------------------------
 
+let nextToolUseId = 0;
 function makeRecord(overrides?: Partial<ToolCallRecord>): ToolCallRecord {
   return {
     id: 'rec-001',
     sessionId: 'sess-001',
     toolName: 'Read',
-    toolUseId: 'toolu_001',
+    toolUseId: `toolu_${++nextToolUseId}`,
     timestamp: Date.now(),
     durationMs: 50,
     success: true,
@@ -1322,6 +1323,27 @@ describe('subagent token support', () => {
     expect(metrics.subagentCostUsd).toBe(0);
   });
 
+  it('subagentByAgentType carries per-category dollars priced per call, across models', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 10_000, cacheReadTokens: 100_000, totalTokens: 10_000 }),
+      'claude-haiku-4-5',
+      { agentId: 'agent-1', agentType: 'Explore' },
+    );
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 10_000, cacheReadTokens: 100_000, totalTokens: 10_000 }),
+      'claude-opus-4-5',
+      { agentId: 'agent-2', agentType: 'Explore' },
+    );
+
+    const usd = tracker.getMetrics().subagentByAgentType['Explore']!.breakdownUsd!;
+
+    expect(usd.inputUsd).toBeCloseTo(0.06, 10);
+    expect(usd.cacheReadUsd).toBeCloseTo(0.06, 10);
+    expect(usd.outputUsd).toBe(0);
+    expect(usd.cacheCreationUsd).toBe(0);
+  });
+
   it('ctx.agentId + ctx.agentType set → cost/tokens/count accumulate in subagentByAgentType[agentType]', () => {
     const tracker = new CostTracker();
     tracker.recordTokenUsage(
@@ -1550,6 +1572,77 @@ describe('subagent token support', () => {
     expect(runDays![expectedDayKey]).toBeGreaterThan(0);
   });
 
+  it("getTokensForWorkflowRun() sums each subagent's latest turn, matching the run rollup basis", () => {
+    const tracker = new CostTracker();
+    const turn = (agentId: string, runId: string, usage: ReturnType<typeof makeUsage>) =>
+      tracker.recordTokenUsage(usage, 'claude-sonnet-4', { workflowRunId: runId, agentId });
+    turn(
+      'a1',
+      'wf_a',
+      makeUsage({
+        inputTokens: 2,
+        outputTokens: 53,
+        cacheCreationTokens: 29_925,
+        totalTokens: 29_980,
+      }),
+    );
+    turn(
+      'a1',
+      'wf_a',
+      makeUsage({
+        inputTokens: 2,
+        outputTokens: 37,
+        cacheReadTokens: 35_852,
+        cacheCreationTokens: 4_045,
+        totalTokens: 39_936,
+      }),
+    );
+    turn(
+      'a2',
+      'wf_a',
+      makeUsage({
+        inputTokens: 2,
+        outputTokens: 102,
+        cacheCreationTokens: 35_850,
+        totalTokens: 35_954,
+      }),
+    );
+    turn(
+      'a2',
+      'wf_a',
+      makeUsage({
+        inputTokens: 2,
+        outputTokens: 11,
+        cacheReadTokens: 35_850,
+        cacheCreationTokens: 4_074,
+        totalTokens: 39_937,
+      }),
+    );
+    turn('b1', 'wf_b', makeUsage({ inputTokens: 70, outputTokens: 30, totalTokens: 100 }));
+
+    expect(tracker.getTokensForWorkflowRun('wf_a')).toBe(79_873);
+    expect(tracker.getTokensForWorkflowRun('wf_b')).toBe(100);
+    expect(tracker.getTokensForWorkflowRun('wf_unknown')).toBe(0);
+  });
+
+  it('getTokensForWorkflowRun() reports 0 for a run restored from a checkpoint, even after live turns', () => {
+    const tracker = new CostTracker();
+    tracker.seedFromPersisted(
+      makeSeed({
+        totalCostUsd: 1,
+        dayCostUsd: 1,
+        costByWorkflowRunId: { wf_resumed: { '2026-08-14': 1 } },
+      }),
+    );
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 }),
+      'claude-sonnet-4',
+      { workflowRunId: 'wf_resumed' },
+    );
+
+    expect(tracker.getTokensForWorkflowRun('wf_resumed')).toBe(0);
+  });
+
   it('getSubagentMetrics() returns correct subagent/parent split and share percentage', () => {
     const tracker = new CostTracker();
 
@@ -1625,6 +1718,44 @@ describe('seedFromPersisted()', () => {
     expect(metrics.totalCacheCreationTokens).toBe(3_409_635);
     expect(metrics.costByModel['claude-sonnet-5']).toBeCloseTo(56.02, 4);
     expect(tracker.getCostForDay(localDateKey())).toBeCloseTo(56.02, 4);
+  });
+
+  it('books seeded estimates on their own days once, and an exact report takes them off', () => {
+    const tracker = new CostTracker();
+    const today = localDateKey();
+    const yesterday = localDateKey(Date.now() - 24 * 60 * 60 * 1000);
+    tracker.seedFromPersisted(
+      makeSeed({
+        totalCostUsd: 5,
+        parentCostUsd: 5,
+        dayCostUsd: 3,
+        byteEstimates: {
+          costUsd: 2,
+          inputTokens: 0,
+          outputTokens: 0,
+          costByModel: {},
+          costByDayUsd: { [today]: 1, [yesterday]: 1 },
+        },
+      }),
+    );
+    expect(tracker.getCostForDay(today)).toBeCloseTo(3, 9);
+    expect(tracker.getCostForDay(yesterday)).toBeCloseTo(1, 9);
+
+    tracker.recordTokenUsage(
+      {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        thinkingTokens: 0,
+        totalTokens: 0,
+      },
+      'claude-sonnet-5',
+      { replacesEstimates: true },
+    );
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBeCloseTo(3, 9);
+    expect(tracker.getCostForDay(today)).toBeCloseTo(2, 9);
+    expect(tracker.getCostForDay(yesterday)).toBe(0);
   });
 
   it('seeds unpricedByModel additively on top of live counts', () => {

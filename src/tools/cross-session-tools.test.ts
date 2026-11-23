@@ -41,6 +41,7 @@ import {
   toFiniteNumber,
   registerCrossSessionTools,
   getNerdgraphUrl,
+  GET_DIGEST_PREVIEW_TOOL,
 } from './cross-session-tools.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
@@ -982,6 +983,17 @@ describe('Cross-session tool handlers', () => {
     }
   });
 
+  it('names the tool when accountId is empty', async () => {
+    const result = await handleGetTeamSummary({
+      teamId: 'my-team',
+      accountId: '',
+      nrApiKey: 'test-key',
+    });
+    expect(result.isError).toBe(true);
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.error).toBe('nr_observe_get_team_summary needs accountId');
+  });
+
   it('rejects non-numeric accountId', async () => {
     const result = await handleGetTeamSummary({
       teamId: 'my-team',
@@ -1442,6 +1454,7 @@ describe('registerCrossSessionTools()', () => {
       'nr_observe_get_claudemd_impact',
       'nr_observe_get_collaboration_profile',
       'nr_observe_get_cost_per_outcome',
+      'nr_observe_get_digest_preview',
       'nr_observe_get_model_recommendation',
       'nr_observe_get_personal_insights',
       'nr_observe_get_platform_comparison',
@@ -1528,6 +1541,7 @@ describe('registerCrossSessionTools()', () => {
       'nr_observe_get_claudemd_impact',
       'nr_observe_get_collaboration_profile',
       'nr_observe_get_cost_per_outcome',
+      'nr_observe_get_digest_preview',
       'nr_observe_get_model_recommendation',
       'nr_observe_get_personal_insights',
       'nr_observe_get_platform_comparison',
@@ -1540,5 +1554,11 @@ describe('registerCrossSessionTools()', () => {
       'nr_observe_subscribe_digest',
       'nr_observe_unsubscribe_digest',
     ]);
+  });
+});
+
+describe('GET_DIGEST_PREVIEW_TOOL', () => {
+  it('is annotated read-only, so MCP clients do not treat the preview as a write', () => {
+    expect(GET_DIGEST_PREVIEW_TOOL.annotations.readOnlyHint).toBe(true);
   });
 });

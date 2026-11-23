@@ -4,6 +4,7 @@ import type {
   PlatformSessionMetadata,
   NormalizedToolCall,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 // Maps Zed's real built-in agent tool names (confirmed via
 // https://zed.dev/docs/ai/tools.html) to the normalized Claude Code tool
@@ -133,7 +134,7 @@ export class ZedAdapter implements PlatformAdapter {
     return (
       process.env.ZED_SESSION_ID !== undefined ||
       process.env.ZED_EXTENSION_API_VERSION !== undefined ||
-      process.env.MCP_CLIENT === 'zed' ||
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'zed' ||
       process.env.ZED_ITEM_ID !== undefined
     );
   }

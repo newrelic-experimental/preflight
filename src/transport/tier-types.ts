@@ -33,6 +33,7 @@ export const KNOWN_EVENT_TYPES = [
   'AiRetryAlert',
   'AiTurnCost',
   'AiSkillRun',
+  'AiWorkUnit',
   'AiContextSnapshot',
   'AiBudgetWarning',
   'AiAuditEvent',
@@ -56,6 +57,7 @@ export const EVENT_TYPE_SENSITIVITY: Readonly<Record<KnownEventType, EventSensit
   AiRetryAlert: 'safe-shared',
   AiTurnCost: 'safe-shared',
   AiSkillRun: 'safe-shared',
+  AiWorkUnit: 'safe-shared',
   AiContextSnapshot: 'safe-shared',
   AiBudgetWarning: 'safe-shared',
   AiObservabilityHealth: 'safe-shared',
@@ -91,7 +93,7 @@ export const WILDCARD_EVENT_TYPE = '*';
  * `TierLocalWriter`, JSONL append).
  */
 export type TierDestination =
-  | { readonly type: 'nr'; readonly licenseKey: string; readonly accountId: string }
+  | { readonly type: 'nr'; readonly licenseKey: string; readonly accountId?: string }
   | { readonly type: 'local'; readonly path: string };
 
 /** A tier after `validateTiers()` has checked and normalized it. */
@@ -100,6 +102,40 @@ export interface ResolvedTier {
   readonly destination: TierDestination;
   /** Either `['*']` or a de-duplicated list of `KNOWN_EVENT_TYPES` members. */
   readonly eventTypes: readonly string[];
+}
+
+/**
+ * A tier as an operator sees it: where it delivers and which events it takes.
+ * Carries no credentials, so it is safe to log and to return from tools.
+ */
+export interface TierSummary {
+  readonly name: string;
+  readonly type: 'nr' | 'local';
+  /** The account ID configured for this `nr` tier. Display only: the license key selects the account. */
+  readonly accountId?: string;
+  /** The directory a `local` tier writes to. */
+  readonly path?: string;
+  /** Whether this tier carries metrics, logs, OTLP and send-health. */
+  readonly primary: boolean;
+  readonly eventTypes: readonly string[];
+}
+
+/** The primary tier is the first `nr` tier in array order, as in `NrIngestManager`. */
+export function primaryTierName(tiers: readonly ResolvedTier[]): string | null {
+  return tiers.find((t) => t.destination.type === 'nr')?.name ?? null;
+}
+
+export function summarizeTiers(tiers: readonly ResolvedTier[]): readonly TierSummary[] {
+  const primaryName = primaryTierName(tiers);
+  return tiers.map((t) => ({
+    name: t.name,
+    type: t.destination.type,
+    ...(t.destination.type === 'nr'
+      ? t.destination.accountId !== undefined && { accountId: t.destination.accountId }
+      : { path: t.destination.path }),
+    primary: t.name === primaryName,
+    eventTypes: t.eventTypes,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -146,7 +182,7 @@ function validateDestination(
   if (!isRecord(raw)) {
     throw new Error(
       `Tier "${tierName}" is missing a destination object. ` +
-        `Expected { "type": "nr", "licenseKey": "...", "accountId": "..." } or { "type": "local", "path": "..." }.`,
+        `Expected { "type": "nr", "licenseKey": "..." } or { "type": "local", "path": "..." }.`,
     );
   }
 
@@ -172,6 +208,8 @@ function validateDestination(
     } else {
       licenseKey = raw.licenseKey;
     }
+    // Optional: the license key selects the account, so the ID is for display only.
+    if (raw.accountId === undefined) return { type: 'nr', licenseKey };
     if (typeof raw.accountId !== 'string' || !/^\d{1,12}$/.test(raw.accountId)) {
       throw new Error(
         `Tier "${tierName}" destination.accountId must be 1–12 decimal digits (as a JSON string).`,

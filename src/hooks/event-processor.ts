@@ -17,7 +17,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createLogger } from '../core/index.js';
-import { normalizeAgentType } from '../lib/agent-id.js';
+import { normalizeAgentId, normalizeAgentType } from '../lib/agent-id.js';
 import { createDefaultRegistry, GENERIC_MCP_PLATFORM_NAME } from '../platforms/index.js';
 import type { PlatformAdapter } from '../platforms/types.js';
 import type { LocalStore } from '../storage/local-store.js';
@@ -28,6 +28,7 @@ import type {
   PermissionRequestHookEvent,
   PermissionDeniedHookEvent,
   TokenHookEvent,
+  SelfReportHookEvent,
   SubagentTokenHookEvent,
   ObservabilityHealthHookEvent,
   ApiFailureHookEvent,
@@ -42,6 +43,8 @@ import type {
   WorkflowRunEvent,
 } from '../storage/types.js';
 import { DedupRingRegistry } from './dedup-ring.js';
+import { clampToken, MODEL_RE, reportKey } from './self-report.js';
+import { isMintedToolUseId } from './minted-tool-use-ids.js';
 import { parseToolSpecificFields } from './tool-parsers.js';
 
 const logger = createLogger('event-processor');
@@ -72,13 +75,18 @@ export interface HookEventProcessorOptions {
    * live session.
    */
   drainAllSessions?: boolean;
+  admitRecord?: (record: ToolCallRecord) => ToolCallRecord | null;
   onRecord: (record: ToolCallRecord) => void;
+  /** Fires for every pre event as it is processed, before its record exists; errors swallowed. */
+  onPreToolUse?: (event: PreHookEvent) => void;
   onRecordAmend?: (record: ToolCallRecord) => void;
   onTokenEvent?: (event: TokenEvent) => void;
+  onSelfReport?: (event: SelfReportHookEvent) => void;
   /**
-   * Fires for every paired ToolCallRecord whose `toolName === 'Agent'` —
-   * feeds WorkflowRunTracker without altering the existing onRecord pipeline.
-   * Invoked AFTER onRecord; errors are logged and swallowed.
+   * Fires for every ToolCallRecord whose `toolName === 'Agent'` that
+   * `admitRecord` admits, and again for the late post of a counted call it
+   * admitted. Feeds WorkflowRunTracker without altering the existing onRecord
+   * pipeline. Invoked AFTER onRecord; errors are logged and swallowed.
    */
   onWorkflowAgent?: (record: ToolCallRecord) => void;
   /** Fires for every `mode: 'subagent_token'` line; errors swallowed. */
@@ -219,20 +227,34 @@ function numAttr(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
 }
 
+function tokenCount(v: unknown): number {
+  return clampToken(numAttr(v));
+}
+
+const MAX_REPORT_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_REPORT_SKEW_MS = 5 * 60 * 1000;
+
+function reportTimestamp(t: unknown, now: number): number {
+  return typeof t === 'number' && t >= now - MAX_REPORT_AGE_MS && t <= now + MAX_REPORT_SKEW_MS
+    ? t
+    : now;
+}
+
 /**
  * The attribution fields every record shape carries. Pre wins over post for
  * `transcriptPath`, `permissionMode`, `cwd`, `agentId`, `agentType`, and
  * `platform`: the collector stamps both, and pre is the event that observed
  * the call start. The collector copies the
- * envelope's `agent_type` raw, so it passes `normalizeAgentType()` here like
- * every other type source; an invalid value counts as absent, which leaves it
- * for `backfillAgentType()` to fill.
+ * envelope's `agent_id` and `agent_type` raw, so they pass `normalizeAgentId()`
+ * and `normalizeAgentType()` here like every other id and type source; an
+ * invalid value counts as absent, which leaves it for `backfillAgentId()` /
+ * `backfillAgentType()` to fill.
  */
 function attributionFields(pre: PreHookEvent | undefined, post?: PostHookEvent) {
   const transcriptPath = pre?.transcriptPath ?? post?.transcriptPath;
   const permissionMode = pre?.permissionMode ?? post?.permissionMode;
   const cwd = pre?.cwd ?? post?.cwd;
-  const agentId = pre?.agentId ?? post?.agentId;
+  const agentId = normalizeAgentId(pre?.agentId) ?? normalizeAgentId(post?.agentId);
   const agentType = normalizeAgentType(pre?.agentType) ?? normalizeAgentType(post?.agentType);
   const platform = pre?.platform ?? post?.platform;
   return {
@@ -360,6 +382,7 @@ interface CountedUnpaired {
   readonly recordId: string;
   readonly recordToolUseId: string;
   readonly matchUntil: number;
+  readonly admitted: boolean;
 }
 
 function findOldestFallbackKey(
@@ -370,7 +393,7 @@ function findOldestFallbackKey(
   let oldestTimestamp = Infinity;
   for (const [k, { event: pre, matchUntil }] of entries) {
     if (
-      k.startsWith(`${pre.tool}:`) &&
+      (pre.toolUseId === undefined || isMintedToolUseId(pre.toolUseId)) &&
       pre.tool.toLowerCase() === post.tool.toLowerCase() &&
       (pre.sessionId ?? post.sessionId) === (post.sessionId ?? pre.sessionId) &&
       (matchUntil === undefined || post.timestamp <= matchUntil) &&
@@ -388,9 +411,12 @@ export class HookEventProcessor {
   private readonly pollIntervalMs: number;
   private readonly orphanTimeoutMs: number;
   private drainAllSessions: boolean;
+  private readonly admitRecord: (record: ToolCallRecord) => ToolCallRecord | null;
   private readonly onRecord: (record: ToolCallRecord) => void;
+  private readonly onPreToolUse: ((event: PreHookEvent) => void) | null;
   private readonly onRecordAmend: ((record: ToolCallRecord) => void) | null;
   private readonly onTokenEvent: ((event: TokenEvent) => void) | null;
+  private readonly onSelfReport: ((event: SelfReportHookEvent) => void) | null;
   private readonly onWorkflowAgent: ((record: ToolCallRecord) => void) | null;
   private readonly onSubagentTurn: ((turn: SubagentTurnEvent) => void) | null;
   private readonly onObservabilityHealth: ((event: ObservabilityHealthFrame) => void) | null;
@@ -466,9 +492,12 @@ export class HookEventProcessor {
     this.orphanTimeoutMs = options.orphanTimeoutMs ?? DEFAULT_ORPHAN_TIMEOUT_MS;
     this.drainAllSessions = options.drainAllSessions ?? false;
     this.maxPendingEvents = options.maxPendingEvents ?? DEFAULT_MAX_PENDING;
+    this.admitRecord = options.admitRecord ?? ((record) => record);
     this.onRecord = options.onRecord;
+    this.onPreToolUse = options.onPreToolUse ?? null;
     this.onRecordAmend = options.onRecordAmend ?? null;
     this.onTokenEvent = options.onTokenEvent ?? null;
+    this.onSelfReport = options.onSelfReport ?? null;
     this.onWorkflowAgent = options.onWorkflowAgent ?? null;
     this.onSubagentTurn = options.onSubagentTurn ?? null;
     this.onObservabilityHealth = options.onObservabilityHealth ?? null;
@@ -658,6 +687,8 @@ export class HookEventProcessor {
       try {
         if (event.mode === 'token') {
           this.handleTokenEvent(event);
+        } else if (event.mode === 'self_report') {
+          this.handleSelfReportEvent(event);
         } else if (event.mode === 'pre') {
           this.handlePreEvent(event);
         } else if (event.mode === 'post') {
@@ -749,6 +780,14 @@ export class HookEventProcessor {
       }
     }
     this.pending.set(this.pairingKey(event), { event, phase: 'awaiting_post' });
+    try {
+      this.onPreToolUse?.(event);
+    } catch (err) {
+      logger.warn('onPreToolUse callback failed', {
+        tool: event.tool,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   private handlePermissionRequestEvent(event: PermissionRequestHookEvent): void {
@@ -840,7 +879,7 @@ export class HookEventProcessor {
       };
       if (counted) {
         this.emitAmend(record);
-        this.emitWorkflowAgent(record);
+        if (counted.admitted) this.emitWorkflowAgent(record);
         return;
       }
       this.emitRecord(record);
@@ -848,24 +887,50 @@ export class HookEventProcessor {
       // Orphaned post — no matching pre; use post-event's toolInput if present.
       // There's no pre-event timestamp to build a wall-clock delta from, but
       // a native duration_ms (if the platform sent one) is still real data —
-      // no reason to discard it just because pairing failed.
+      // no reason to discard it just because pairing failed. The post fires
+      // when the call ends, so the call started one native duration earlier.
       logger.debug('Orphaned post event — no matching pre', { tool: event.tool, key });
       const toolFields = parseToolSpecificFields(event.tool, event.toolInput, event.toolOutput);
+      const nativeDurationMs =
+        typeof event.nativeDurationMs === 'number' && Number.isFinite(event.nativeDurationMs)
+          ? event.nativeDurationMs
+          : null;
       const record: ToolCallRecord = {
         id: randomUUID(),
         sessionId: event.sessionId ?? null,
         toolName: event.tool,
         toolUseId: event.toolUseId ?? key,
-        timestamp: event.timestamp,
-        durationMs:
-          typeof event.nativeDurationMs === 'number' && Number.isFinite(event.nativeDurationMs)
-            ? event.nativeDurationMs
-            : null,
+        timestamp: event.timestamp - (nativeDurationMs ?? 0),
+        durationMs: nativeDurationMs,
         ...outcomeFields(event),
         ...attributionFields(undefined, event),
         ...toolFields,
       };
       this.emitRecord(record);
+    }
+  }
+
+  private handleSelfReportEvent(event: SelfReportHookEvent): void {
+    if (!this.onSelfReport) return;
+    const { sessionId, reportId, model } = event;
+    if (typeof sessionId !== 'string' || typeof reportId !== 'string') return;
+    if (typeof model !== 'string' || !MODEL_RE.test(model)) return;
+    const report = {
+      ...event,
+      timestamp: reportTimestamp(event.timestamp, Date.now()),
+      inputTokens: tokenCount(event.inputTokens),
+      outputTokens: tokenCount(event.outputTokens),
+      thinkingTokens: tokenCount(event.thinkingTokens),
+      cacheReadTokens: tokenCount(event.cacheReadTokens),
+      cacheCreationTokens: tokenCount(event.cacheCreationTokens),
+    };
+    if (this.tokenDedupRegistry.hasAndAdd(sessionId, reportKey(report))) return;
+    try {
+      this.onSelfReport(report);
+    } catch (err) {
+      logger.warn('onSelfReport callback failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -944,8 +1009,7 @@ export class HookEventProcessor {
           ? 'hook_blocked'
           : 'timeout';
     const id = randomUUID();
-    if (errorType !== 'hook_blocked') this.rememberCountedUnpaired(key, entry, id, toolUseId);
-    this.emitRecord({
+    const record = this.admit({
       id,
       sessionId: event.sessionId ?? null,
       toolName: event.tool,
@@ -957,6 +1021,10 @@ export class HookEventProcessor {
       ...attributionFields(event),
       ...toolFields,
     });
+    if (errorType !== 'hook_blocked') {
+      this.rememberCountedUnpaired(key, entry, id, toolUseId, record !== null);
+    }
+    if (record) this.emitAdmitted(record);
   }
 
   private rememberCountedUnpaired(
@@ -964,6 +1032,7 @@ export class HookEventProcessor {
     entry: PendingEntry,
     recordId: string,
     recordToolUseId: string,
+    admitted: boolean,
   ): void {
     const { tool, timestamp, sessionId, toolUseId } = entry.event;
     this.countedUnpaired.delete(key);
@@ -972,11 +1041,16 @@ export class HookEventProcessor {
       if (oldest !== undefined) this.countedUnpaired.delete(oldest);
     }
     if (toolUseId === key && sessionId) this.unpersistedCountedIds.set(key, sessionId);
+    const matchUntil = timestamp + this.pendingTtlMs(entry) + FALLBACK_LATE_POST_WINDOW_MS;
+    if (toolUseId !== undefined && isMintedToolUseId(toolUseId)) {
+      this.store.countMintedToolUseId(sessionId, toolUseId, matchUntil);
+    }
     this.countedUnpaired.set(key, {
       event: { mode: 'pre', tool, timestamp, sessionId, toolUseId },
       recordId,
       recordToolUseId,
-      matchUntil: timestamp + this.pendingTtlMs(entry) + FALLBACK_LATE_POST_WINDOW_MS,
+      matchUntil,
+      admitted,
     });
   }
 
@@ -1293,7 +1367,28 @@ export class HookEventProcessor {
     }
   }
 
-  private emitRecord(record: ToolCallRecord): void {
+  replayRecord(record: ToolCallRecord): void {
+    this.emitAdmitted(record);
+  }
+
+  private admit(drained: ToolCallRecord): ToolCallRecord | null {
+    try {
+      return this.admitRecord(drained);
+    } catch (err) {
+      logger.warn('admitRecord callback failed', {
+        recordId: drained.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
+  private emitRecord(drained: ToolCallRecord): void {
+    const record = this.admit(drained);
+    if (record) this.emitAdmitted(record);
+  }
+
+  private emitAdmitted(record: ToolCallRecord): void {
     try {
       this.onRecord(record);
     } catch (err) {

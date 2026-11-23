@@ -7,6 +7,7 @@ import { redactSensitive } from './config.js';
 import { classifyBash } from './hooks/bash-classifier.js';
 import { processHook, redact } from './hooks/collector-script.js';
 import { parseToolSpecificFields } from './hooks/tool-parsers.js';
+import { REDACTION_PATTERNS } from './redaction-patterns.js';
 
 const AWS_KEY = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
 
@@ -45,6 +46,8 @@ const KEEPS_COMMAND: Row[] = [
   ['# set --token "a\nrm -rf /tmp/x ; echo "b', '--token "a'],
   ["it's --password 'abc ; rm -rf /tmp/x ; echo 'x"],
   [`curl --token "${'a '.repeat(2100)}" ; rm -rf /tmp/x`],
+  ['curl -u user:pass x;rm -rf /tmp/x', '-u user:pass'],
+  ["curl -u 'a b' x && rm -rf /tmp/x", "-u 'a b'"],
 ];
 
 const REDACTS: Row[] = [
@@ -105,6 +108,43 @@ const REDACTS: Row[] = [
   ['cp -p a b'],
   ['some-cli --token \\\n  --verbose'],
   ['some-cli --token \\\n--verbose'],
+  ['curl -u user:pass https://example.com', '-u user:pass'],
+  ['curl -uuser:pass https://example.com', '-uuser:pass'],
+  ['curl --user user:pass https://example.com', '--user user:pass'],
+  ['curl --user=user:pass https://example.com', '--user=user:pass'],
+  ["curl -u 'user:p a s s' https://example.com", "-u 'user:p a s s'"],
+  ['curl --user "user:p a s s" https://example.com', '--user "user:p a s s"'],
+  ['curl -t secret https://example.com', '-t secret'],
+  ['curl -tsecret https://example.com', '-tsecret'],
+  ['curl -sSu user:pass https://example.com', 'u user:pass'],
+  ['curl -U proxy:pass -x http://proxy https://example.com', '-U proxy:pass'],
+  ['curl --proxy-user proxy:pass https://example.com', '--proxy-user proxy:pass'],
+  ['curl -s https://a.example.com && curl -u user:pass x', '-u user:pass'],
+  ['curl -u \\\n  user:pass x', '-u \\\n  user:pass'],
+  [JSON.stringify('curl -u user:pass x\nls'), '-u user:pass'],
+  ['curl -XPUT -d @body.json https://example.com'],
+  ['curl -T upload.txt https://example.com'],
+  ['curl --upload-file upload.txt https://example.com'],
+  ['curl -o -t.txt https://example.com'],
+  ['curl -s https://example.com\nsort -t , -k2 data.csv'],
+  ['docker run -u 1000 node'],
+  ['tmux attach -t main'],
+  [JSON.stringify('cd /tmp\ncurl -u user:pass x'), '-u user:pass'],
+  [JSON.stringify('set -e\n\tcurl -sSu me:hunter2 x'), 'u me:hunter2'],
+  ['\x1b[32mcurl -u me:hunter2 x', '-u me:hunter2'],
+  [JSON.stringify('cd /tmp\nmysql -phunter2'), '-phunter2'],
+  [JSON.stringify('set -e\n\tmysql -phunter2 db'), '-phunter2'],
+  ['\x1b[32mmysql -phunter2 db', '-phunter2'],
+  ['libcurl -u user:pass x'],
+  ['pymysql -psecret'],
+  ['curl -"u" me:hunter2 x', 'u" me:hunter2'],
+  ["curl -s'u' me:hunter2 x", "u' me:hunter2"],
+  ['curl -o"" -t.txt https://example.com'],
+  [JSON.stringify('\x1b[32mcurl -u me:hunter2 x'), '-u me:hunter2'],
+  [JSON.stringify('\x1b[1mmysql -phunter2 db'), '-phunter2'],
+  [JSON.stringify('\fcurl -u me:hunter2 x'), '-u me:hunter2'],
+  [JSON.stringify('curl -"u" me:hunter2 x'), 'u\\" me:hunter2'],
+  [JSON.stringify('curl -u"" me:hunter2 x'), '-u\\"\\" me:hunter2'],
 ];
 
 const cases = (rows: Row[]): [string, Row][] =>
@@ -130,13 +170,14 @@ describe('secret arguments', () => {
       process.env = { ...env };
     });
 
-    function store(command: string): Record<string, unknown> {
+    function save(command: string): { toolInput: Record<string, unknown>; inputContent?: string } {
       const hook = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } };
       processHook(JSON.stringify({ ...hook, session_id: 'sess-1', cwd: '/projects/test' }));
       const lines = readFileSync(join(dir, 'buffer.jsonl'), 'utf8').trim().split('\n');
-      return (JSON.parse(lines[lines.length - 1]) as { toolInput: Record<string, unknown> })
-        .toolInput;
+      return JSON.parse(lines[lines.length - 1]) as ReturnType<typeof save>;
     }
+
+    const store = (command: string): Record<string, unknown> => save(command).toolInput;
 
     it.each(cases(KEEPS_COMMAND))('stores %s and keeps it destructive', (_title, row) => {
       const toolInput = store(row[0]);
@@ -146,6 +187,26 @@ describe('secret arguments', () => {
 
     it.each(cases(REDACTS))('stores %s', (_title, row) => {
       expect(store(row[0]).command).toBe(stored(row));
+    });
+
+    it.each([
+      ['cd /tmp\ncurl -u me:hunter2 x', '{"command":"cd /tmp\\ncurl [REDACTED] x"}'],
+      ['cd /tmp\nmysql -phunter2', '{"command":"cd /tmp\\nmysql [REDACTED]"}'],
+    ])('records the content of %j with its password redacted', (command, content) => {
+      process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+      expect(save(command).inputContent).toBe(content);
+    });
+
+    const SPLIT = `echo ${'x'.repeat(1_048_554)} `;
+    const WHOLE = `echo ${'x'.repeat(1_048_571)}`;
+
+    it.each([
+      ['redactSensitive()', (command: string) => redactSensitive(command)],
+      ['processHook()', (command: string) => store(command).command],
+    ])('%s drops only a word that the 1 MB cut splits', (_path, save) => {
+      expect(save(`${SPLIT}ghp_${'B'.repeat(36)} tail`)).toBe(SPLIT);
+      expect(save(`${WHOLE} rm -rf /tmp/x`)).toBe(WHOLE);
+      expect(save('B'.repeat(1_048_577))).toBe('');
     });
   });
 });
@@ -192,7 +253,7 @@ function shellWord(rand: Rand): string {
 const FLAGS = [
   'curl --token |npm run deploy -- --password |deploy --api-key |deploy --client-secret ',
   '|deploy --db-password |tool --a-b-c-d-token |keytool -password |curl --token=|tool --api_key=',
-  '|deploy --client-secret=|env API_KEY=|export TOKEN=|mysql -u root -p',
+  '|deploy --client-secret=|env API_KEY=|export TOKEN=|mysql -u root -p|curl -u |curl -t ',
 ]
   .join('')
   .split('|');
@@ -228,4 +289,86 @@ describe('secret argument redaction over random shell words', () => {
       expect(failures).toEqual([]);
     },
   );
+});
+
+// The reviewer's shapes. The secret is the digits in each Q…Z, after a flag, a mysql -p, a header
+// or NAME=, in an optional wrapper, after a prefix that may leave a quote open.
+const SECRETS = [
+  'm',
+  '"m"',
+  "'m'",
+  '"m m"',
+  "'m m'",
+  'm\\ m',
+  '"m\\"m"',
+  "$'m\\'m'",
+  'm"m"',
+  '\\\nm',
+  '\\\r\nm',
+  '"m \\\n m"',
+  "'m\nm'",
+  '"m\nm"',
+  `'m'"m"`,
+  '"m\\\\m"',
+  "$'m\\nm'",
+  '-H "X-Api-Key: m"',
+  '-H "X-Api-Key: m m"',
+  "-H 'X-Auth-Token: m m'",
+];
+const ARGUMENTS = [
+  'curl --token ',
+  'tool --api-key=',
+  'mysql -u root -p',
+  'curl ',
+  'env API_KEY=',
+  'TOKEN=',
+  'TOKEN=\n',
+  'TOKEN:\r\n',
+  '  TOKEN =\r\n  ',
+  'PASSWORD\n= ',
+  'deploy --client-secret=',
+  'psql --db-password ',
+  'curl -sSu ',
+  'curl --user=',
+];
+const PREFIXES = [
+  '',
+  "# Don't paste this key\n",
+  "Bob's box: ",
+  "echo o'clock && ",
+  'ls\r\n',
+  "cat <<'EOF' > n.txt\nDon't copy\nEOF\n",
+  'echo "it\'s fine" && ',
+  'npm run x \\\n  ',
+];
+const ENDS = [';', ' ; ', '|', ' && ', '&&', '\n', '\r\n', ' ', ' & '];
+
+function reviewerCommand(rand: Rand): string {
+  const secret = pick(rand, SECRETS).replace(/m/g, () => `Q${marker(rand)}Z`);
+  const body = `${pick(rand, ARGUMENTS)}${secret} x`;
+  const json = `bash -c \\"${JSON.stringify(body).slice(1, -1)}\\"`;
+  const wrapped = pick(rand, [body, body, `echo $(${body})`, `bash -c "${body}"`, json]);
+  return `${pick(rand, PREFIXES)}${wrapped}${pick(rand, ENDS)}rm -rf /tmp/x`;
+}
+
+describe('secret argument redaction against the earlier NAME=\\S+ rule', () => {
+  const EARLIER = [
+    /(?<![a-zA-Z])(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-zA-Z])[\s]*[=:]\s*\S+/gi,
+    ...REDACTION_PATTERNS,
+  ];
+  const digits = (text: string): number => text.replace(/\D/g, '').length;
+
+  it.each([
+    ['redactSensitive()', redactSensitive],
+    ["the collector's redact()", redact],
+  ])('%s never stores a secret digit more than the earlier rules did', (_path, redactor) => {
+    const rand = parkMiller(7166);
+    const worse: { command: string; stored: string; earlier: string }[] = [];
+    for (let n = 0; n < 4000; n++) {
+      const input = n % 2 === 0 ? reviewerCommand(rand) : command(rand);
+      const [stored, earlier] = [redactor(input), redactSensitive(input, EARLIER)];
+      if (digits(stored) > digits(earlier)) worse.push({ command: input, stored, earlier });
+    }
+    expect(worse).toEqual([]);
+  });
 });
