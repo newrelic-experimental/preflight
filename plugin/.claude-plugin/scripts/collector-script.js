@@ -1651,7 +1651,7 @@ function processHook(raw, cliEvent) {
   const agyCliEvent = hookEventFromArg(cliEvent);
   const isAntigravityPost = isAntigravityShape && (agyCliEvent === "PostToolUse" || agyCliEvent !== "PreToolUse" && (data.error !== void 0 || data.toolCall === void 0));
   const isAntigravityPre = isAntigravityShape && !isAntigravityPost;
-  const agyToolUseId = typeof data.stepIdx === "number" ? { toolUseId: String(data.stepIdx) } : {};
+  const agyToolUseId = typeof data.stepIdx === "number" ? { toolUseId: sessionId ? `${sessionId}:${data.stepIdx}` : String(data.stepIdx) } : {};
   let event;
   let selfReportCall;
   if (eventName === "pretooluse") {
