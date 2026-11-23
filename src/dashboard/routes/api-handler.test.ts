@@ -2861,6 +2861,7 @@ describe('api-handler GET /api/usage-insights', () => {
             tokensCacheRead: 0,
             tokensCacheCreation: 0,
             toolBreakdown: {},
+            antiPatterns: [],
           },
         ],
       } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
@@ -2934,6 +2935,7 @@ describe('api-handler GET /api/usage-insights', () => {
               tokensCacheRead: 0,
               tokensCacheCreation: 0,
               toolBreakdown: {},
+              antiPatterns: [],
             },
             {
               ...beforeMidnight,
@@ -2945,6 +2947,7 @@ describe('api-handler GET /api/usage-insights', () => {
               tokensCacheRead: 0,
               tokensCacheCreation: 0,
               toolBreakdown: {},
+              antiPatterns: [],
             },
           ];
         },
