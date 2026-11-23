@@ -586,13 +586,19 @@ var STALE_CWD_BREADCRUMB_MS = 7 * 24 * 60 * 60 * 1e3;
 function breadcrumbRoot(storagePath, writer) {
   return resolve2(storagePath, BREADCRUMBS_DIR, writer);
 }
-function breadcrumbWriter(env) {
+function isClaudeCodeHook(env, sessionId) {
+  const claudeSessionId = env.CLAUDE_CODE_SESSION_ID;
+  if (claudeSessionId !== void 0 && sessionId !== void 0 && claudeSessionId !== sessionId)
+    return false;
+  return CLAUDE_CODE_ENV_SIGNALS.some((key) => env[key] !== void 0);
+}
+function breadcrumbWriter(env, sessionId) {
   for (const key of ENGINE_ENV_KEYS) {
     const name = canonicalPlatformName(env[key]);
     if (name === "generic-mcp") return UNATTRIBUTED_BREADCRUMB_WRITER;
     if (name !== void 0) return name;
   }
-  return CLAUDE_CODE_ENV_SIGNALS.some((key) => env[key] !== void 0) ? CLAUDE_CODE_PLATFORM_NAME : UNATTRIBUTED_BREADCRUMB_WRITER;
+  return isClaudeCodeHook(env, sessionId) ? CLAUDE_CODE_PLATFORM_NAME : UNATTRIBUTED_BREADCRUMB_WRITER;
 }
 
 // src/storage/hook-buffer.ts
@@ -1302,14 +1308,12 @@ var HOOK_EVENT_PLATFORM = {
   pre_mcp_tool_use: "windsurf",
   post_mcp_tool_use: "windsurf"
 };
-function detectStampPlatform() {
+function detectStampPlatform(sessionId) {
   for (const key of ENGINE_ENV_KEYS) {
     const name = canonicalPlatformName(process.env[key]);
     if (name !== void 0) return name;
   }
-  if (CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== void 0)) {
-    return CLAUDE_CODE_PLATFORM_NAME;
-  }
+  if (isClaudeCodeHook(process.env, sessionId)) return CLAUDE_CODE_PLATFORM_NAME;
   return (process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM) || void 0;
 }
 var MAX_REDACT_BYTES = 1048576;
@@ -1738,7 +1742,7 @@ function processHook(raw, cliEvent) {
   }
   const sessionId = data.session_id ?? data.conversation_id ?? data.trajectory_id ?? data.conversationId;
   if (typeof data.session_id === "string" && data.session_id.length > 0) {
-    const writer = breadcrumbWriter(process.env);
+    const writer = breadcrumbWriter(process.env, data.session_id);
     const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
     if (writer === UNATTRIBUTED_BREADCRUMB_WRITER) {
       const unknownNames = ENGINE_ENV_KEYS.filter(
@@ -2090,7 +2094,7 @@ function processHook(raw, cliEvent) {
   if (data.transcript_path) event.transcriptPath = data.transcript_path;
   if (data.permission_mode) event.permissionMode = data.permission_mode;
   if (sessionId) event.sessionId = sessionId;
-  const stampedPlatform = HOOK_EVENT_PLATFORM[eventName ?? ""] ?? detectStampPlatform();
+  const stampedPlatform = HOOK_EVENT_PLATFORM[eventName ?? ""] ?? detectStampPlatform(sessionId);
   if (stampedPlatform) event.platform = stampedPlatform;
   const selfReport = selfReportCall && stampedPlatform && hookSelfReportLine(selfReportCall, sessionId, timestamp, stampedPlatform);
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
