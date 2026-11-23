@@ -1825,6 +1825,18 @@ describe('LocalStore', () => {
         expect(existsSync(inside)).toBe(true);
         expect(existsSync(outside)).toBe(false);
       });
+
+      it("collects a writer's session id crumb by the same window and live ppid rule", () => {
+        const root = roots()[1]!;
+        crumb(root, 'session-by-ppid', `${process.pid}.txt`, 'sess-live', 60_000);
+        const live = crumb(root, 'session-by-id', 'sess-live.txt', 'sess-live', 30 * DAY_MS);
+        const recent = crumb(root, 'session-by-id', 'sess-recent.txt', 'sess-recent', 6.9 * DAY_MS);
+        const idle = crumb(root, 'session-by-id', 'sess-idle.txt', 'sess-idle', 7.1 * DAY_MS);
+        expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(1);
+        expect(existsSync(live)).toBe(true);
+        expect(existsSync(recent)).toBe(true);
+        expect(existsSync(idle)).toBe(false);
+      });
     });
 
     it('skips files that are not <pid>.txt', () => {

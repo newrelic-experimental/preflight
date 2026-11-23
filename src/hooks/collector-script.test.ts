@@ -3009,6 +3009,15 @@ describe('collector-script', () => {
     it('files a Claude Code hook under claude-code and in the untagged layout older servers read', () => {
       process.env.CLAUDECODE = '1';
       processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      const sessionCrumb = resolve(
+        tmpDir,
+        'breadcrumbs',
+        'claude-code',
+        'session-by-id',
+        'sess-claude.txt',
+      );
+      expect(readFileSync(sessionCrumb, 'utf-8')).toBe('sess-claude');
+      expect(existsSync(resolve(tmpDir, 'session-by-id'))).toBe(false);
       expect(readFileSync(crumbs('claude-code').ppid, 'utf-8')).toBe('sess-claude');
       expect(readFileSync(crumbs('claude-code').cwd, 'utf-8')).toBe('sess-claude');
       const legacyPpid = resolve(tmpDir, 'session-by-ppid', `${process.ppid}.txt`);
@@ -3030,6 +3039,32 @@ describe('collector-script', () => {
         if (reads.length > 0 && writer !== 'copilot-sdk') expect(reads).toContain(writer);
       },
     );
+
+    it('keeps another engine off a session whose ppid breadcrumbs are gone and whose tagged cwd breadcrumb a newer session replaced', () => {
+      const kiroStartedAt = Date.now() - 60_000;
+      process.env.CLAUDECODE = '1';
+      processHook(makePreToolUse({ session_id: 'sess-cc1', cwd: '/projects/test' }));
+      rmSync(resolve(tmpDir, 'session-by-ppid'), { recursive: true });
+      rmSync(dirname(crumbs('claude-code').ppid), { recursive: true });
+      writeFileSync(crumbs('claude-code').cwd, 'sess-cc2');
+      const kiro = sessionBreadcrumbs(tmpDir, ['kiro', 'unattributed'], kiroStartedAt);
+      expect(kiro.cwd('/projects/test')).toBeNull();
+    });
+
+    it("refreshes a session's id crumb on every hook and never files a malformed id", () => {
+      process.env.CLAUDECODE = '1';
+      const idDir = resolve(tmpDir, 'breadcrumbs', 'claude-code', 'session-by-id');
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      const old = new Date(Date.now() - 60_000);
+      utimesSync(resolve(idDir, 'sess-claude.txt'), old, old);
+      processHook(makePreToolUse({ session_id: 'sess-claude', cwd: '/projects/test' }));
+      expect(statSync(resolve(idDir, 'sess-claude.txt')).mtimeMs).toBeGreaterThan(
+        Date.now() - 5_000,
+      );
+      processHook(makePreToolUse({ session_id: '../escape', cwd: '/projects/test' }));
+      expect(readdirSync(idDir)).toEqual(['sess-claude.txt']);
+      expect(existsSync(resolve(idDir, '..', 'escape.txt'))).toBe(false);
+    });
 
     it('files a hook under the engine its command names, over an inherited Claude Code env', () => {
       process.env.CLAUDECODE = '1';
@@ -3567,7 +3602,7 @@ describe('collector-script', () => {
       const event = events[0]!;
       expect(event.mode).toBe('pre');
       expect(event.tool).toBe('run_command');
-      expect(event.toolUseId).toBe('19');
+      expect(event.toolUseId).toBe('agy-conv-001:19');
       expect(event.sessionId).toBe('agy-conv-001');
     });
 
@@ -3586,7 +3621,7 @@ describe('collector-script', () => {
       const event = events[0]!;
       expect(event.mode).toBe('post');
       expect(event.tool).toBe('run_command');
-      expect(event.toolUseId).toBe('19');
+      expect(event.toolUseId).toBe('agy-conv-001:19');
       expect(event.success).toBe(true);
     });
 
@@ -3599,6 +3634,44 @@ describe('collector-script', () => {
       const event = events[0]!;
       expect(event.success).toBe(false);
       expect(event.error).toBe('exit status 1');
+    });
+
+    it('pairs each conversation’s step with its own pre when one engine drains two conversations at the same step', () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      const records: ToolCallRecord[] = [];
+      const store = new LocalStore(tmpDir);
+      const engine = new HookEventProcessor({
+        store,
+        drainAllSessions: true,
+        onRecord: (r) => records.push(r),
+      });
+      const call = (conversationId: string, name: string) => ({
+        conversationId,
+        stepIdx: 3,
+        toolCall: { name, args: {} },
+      });
+
+      processHook(makeAntigravityPreToolUse(call('agy-conv-a', 'view_file')), 'PreToolUse');
+      processHook(makeAntigravityPreToolUse(call('agy-conv-b', 'run_command')), 'PreToolUse');
+      engine.processEvents(store.drainAllBuffers());
+      processHook(makeAntigravityPostToolUse(call('agy-conv-a', 'view_file')), 'PostToolUse');
+      processHook(makeAntigravityPostToolUse(call('agy-conv-b', 'run_command')), 'PostToolUse');
+      engine.processEvents(store.drainAllBuffers());
+
+      expect(records.map((r) => [r.sessionId, r.toolName, r.success]).sort()).toEqual([
+        ['agy-conv-a', 'view_file', true],
+        ['agy-conv-b', 'run_command', true],
+      ]);
+      expect(engine.pendingCount).toBe(0);
+    });
+
+    it('uses the bare stepIdx as the toolUseId when the payload has no conversationId', () => {
+      delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
+      process.env.NEW_RELIC_AI_MCP_STORAGE_PATH = tmpDir;
+      processHook(makeAntigravityPreToolUse({ conversationId: undefined }), 'PreToolUse');
+
+      expect(readBufferLines('unknown')[0]!.toolUseId).toBe('19');
     });
 
     it('gives both events one minted toolUseId when stepIdx is not a number', () => {
