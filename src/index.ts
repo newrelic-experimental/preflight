@@ -359,6 +359,8 @@ export function getPendingConfirmationCapMs(): number {
 }
 
 const RETENTION_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+// Matches the per-session record cap of the rollups the held calls also sit in.
+const MAX_HELD_STEPS_PER_SESSION = 10_000;
 
 export interface RetentionSweepDeps {
   readonly storagePath: string;
@@ -2326,6 +2328,30 @@ async function main(): Promise<void> {
       }
     };
 
+    const isForThisEngine = (sessionId: string | null | undefined): boolean =>
+      isForThisProcess({
+        stdio: options.stdio === true,
+        sessionId: sessionId ?? null,
+        ownSessionId: sessionTraceId,
+      });
+    // A pending engine treats every named session as foreign, though one is its
+    // own. What the process-wide trackers would take from each session waits
+    // here in arrival order, and adoption replays the adopted session's steps,
+    // so its calls, token reports and prompt and Stop boundaries reach those
+    // trackers in the order they happened.
+    const heldUntilAdoption = new Map<string, Array<() => void>>();
+    const holdForAdoption = (sessionId: string | null | undefined, step: () => void): void => {
+      if (!sessionId || !sessionTraceId.startsWith('pending-')) return;
+      const steps = heldUntilAdoption.get(sessionId) ?? [];
+      if (steps.length >= MAX_HELD_STEPS_PER_SESSION) steps.shift();
+      steps.push(step);
+      heldUntilAdoption.set(sessionId, steps);
+    };
+    const runOrHold = (sessionId: string | null | undefined, step: () => void): void => {
+      if (isForThisEngine(sessionId)) step();
+      else holdForAdoption(sessionId, step);
+    };
+
     const recordForEverySession = (incomingRecord: ToolCallRecord): ToolCallRecord => {
       // Attributed before any consumer (notably auditTrail below) sees the
       // record, so audit/security events carry agentId and agentType.
@@ -2385,13 +2411,9 @@ async function main(): Promise<void> {
       },
       admitRecord: (incomingRecord) => {
         const rawRecord = recordForEverySession(incomingRecord);
-        return isForThisProcess({
-          stdio: options.stdio === true,
-          sessionId: rawRecord.sessionId ?? null,
-          ownSessionId: sessionTraceId,
-        })
-          ? rawRecord
-          : null;
+        if (isForThisEngine(rawRecord.sessionId)) return rawRecord;
+        holdForAdoption(rawRecord.sessionId, () => eventProcessor!.replayRecord(rawRecord));
+        return null;
       },
       onRecord: (rawRecord) => {
         if (!config || !taskDetector) {
@@ -2591,17 +2613,13 @@ async function main(): Promise<void> {
         // another session's tokens (drained while the id is still provisional)
         // are priced for that session's rollup only. --local owns no single
         // session and keeps folding everything.
-        const isOwnEvent = isForThisProcess({
-          stdio: options.stdio === true,
-          sessionId: tokenEvent.sessionId ?? null,
-          ownSessionId: sessionTraceId,
+        const isOwnEvent = isForThisEngine(tokenEvent.sessionId);
+        const openRun = skillActivationTracker.openRun(tokenEvent.sessionId);
+        runOrHold(tokenEvent.sessionId, () => {
+          const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent, openRun);
+          skillRunLedger.recordClosedTurn(closedTurn);
+          if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
         });
-        const closedTurn = turnCostAttributor.recordTokenEvent(
-          tokenEvent,
-          skillActivationTracker.openRun(tokenEvent.sessionId),
-        );
-        skillRunLedger.recordClosedTurn(closedTurn);
-        if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
         seedLocalTrackersFromFile(tokenEvent.sessionId);
         const usage = tokenUsageFromTokenEvent(tokenEvent);
         let breakdown: CostBreakdown;
@@ -2882,14 +2900,18 @@ async function main(): Promise<void> {
           frame.slashCommand ?? null,
           frame.timestamp,
         );
-        if (slashRun) turnCostAttributor.recordSkillRun(frame.sessionId, slashRun);
-        taskDetector!.startTaskIfNone(frame.timestamp);
+        runOrHold(frame.sessionId, () => {
+          if (slashRun) turnCostAttributor.recordSkillRun(frame.sessionId, slashRun);
+          taskDetector!.startTaskIfNone(frame.timestamp);
+        });
         localSessionAggregator.startTask(frame.sessionId, frame.timestamp);
       },
       onStop: (frame) => {
         skillRunLedger.recordStop(frame.sessionId, frame.timestamp);
-        turnTracker.finalizeTurnAt(frame.timestamp);
-        taskDetector!.markBoundary(frame.timestamp);
+        runOrHold(frame.sessionId, () => {
+          turnTracker.finalizeTurnAt(frame.timestamp);
+          taskDetector!.markBoundary(frame.timestamp);
+        });
         localSessionAggregator.markTaskBoundary(frame.sessionId, frame.timestamp);
       },
     });
@@ -3354,7 +3376,8 @@ async function main(): Promise<void> {
       // this session's events going forward. Its final drain routes tokens by
       // realId, and runs before the tracker adopts realId, so adoptSessionId()
       // replays what it drains.
-      eventProcessor!.replayRecords(localSessionAggregator.recordsOf(realId));
+      for (const step of heldUntilAdoption.get(realId) ?? []) step();
+      heldUntilAdoption.delete(realId);
       sessionTraceId = realId;
       // Keep this above replaceStore. Its halt() runs a final drain-all on the old
       // store, which must stay drain-all so the adopter gets the no-session buffer.

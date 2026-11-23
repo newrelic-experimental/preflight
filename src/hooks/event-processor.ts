@@ -81,9 +81,10 @@ export interface HookEventProcessorOptions {
   onTokenEvent?: (event: TokenEvent) => void;
   onSelfReport?: (event: SelfReportHookEvent) => void;
   /**
-   * Fires for every paired ToolCallRecord whose `toolName === 'Agent'` —
-   * feeds WorkflowRunTracker without altering the existing onRecord pipeline.
-   * Invoked AFTER onRecord; errors are logged and swallowed.
+   * Fires for every ToolCallRecord whose `toolName === 'Agent'` that
+   * `admitRecord` admits, and again for the late post of a counted call it
+   * admitted. Feeds WorkflowRunTracker without altering the existing onRecord
+   * pipeline. Invoked AFTER onRecord; errors are logged and swallowed.
    */
   onWorkflowAgent?: (record: ToolCallRecord) => void;
   /** Fires for every `mode: 'subagent_token'` line; errors swallowed. */
@@ -379,6 +380,7 @@ interface CountedUnpaired {
   readonly recordId: string;
   readonly recordToolUseId: string;
   readonly matchUntil: number;
+  readonly admitted: boolean;
 }
 
 function findOldestFallbackKey(
@@ -865,7 +867,7 @@ export class HookEventProcessor {
       };
       if (counted) {
         this.emitAmend(record);
-        this.emitWorkflowAgent(record);
+        if (counted.admitted) this.emitWorkflowAgent(record);
         return;
       }
       this.emitRecord(record);
@@ -995,8 +997,7 @@ export class HookEventProcessor {
           ? 'hook_blocked'
           : 'timeout';
     const id = randomUUID();
-    if (errorType !== 'hook_blocked') this.rememberCountedUnpaired(key, entry, id, toolUseId);
-    this.emitRecord({
+    const record = this.admit({
       id,
       sessionId: event.sessionId ?? null,
       toolName: event.tool,
@@ -1008,6 +1009,10 @@ export class HookEventProcessor {
       ...attributionFields(event),
       ...toolFields,
     });
+    if (errorType !== 'hook_blocked') {
+      this.rememberCountedUnpaired(key, entry, id, toolUseId, record !== null);
+    }
+    if (record) this.emitAdmitted(record);
   }
 
   private rememberCountedUnpaired(
@@ -1015,6 +1020,7 @@ export class HookEventProcessor {
     entry: PendingEntry,
     recordId: string,
     recordToolUseId: string,
+    admitted: boolean,
   ): void {
     const { tool, timestamp, sessionId, toolUseId } = entry.event;
     this.countedUnpaired.delete(key);
@@ -1032,6 +1038,7 @@ export class HookEventProcessor {
       recordId,
       recordToolUseId,
       matchUntil,
+      admitted,
     });
   }
 
@@ -1348,21 +1355,24 @@ export class HookEventProcessor {
     }
   }
 
-  replayRecords(records: readonly ToolCallRecord[]): void {
-    for (const record of records) this.emitAdmitted(record);
+  replayRecord(record: ToolCallRecord): void {
+    this.emitAdmitted(record);
   }
 
-  private emitRecord(drained: ToolCallRecord): void {
-    let record: ToolCallRecord | null;
+  private admit(drained: ToolCallRecord): ToolCallRecord | null {
     try {
-      record = this.admitRecord(drained);
+      return this.admitRecord(drained);
     } catch (err) {
       logger.warn('admitRecord callback failed', {
         recordId: drained.id,
         error: err instanceof Error ? err.message : String(err),
       });
-      return;
+      return null;
     }
+  }
+
+  private emitRecord(drained: ToolCallRecord): void {
+    const record = this.admit(drained);
     if (record) this.emitAdmitted(record);
   }
 

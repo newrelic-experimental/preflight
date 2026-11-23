@@ -1952,6 +1952,86 @@ describe('stdio integration', () => {
       });
     });
 
+    describe('its turns and tasks when it adopts after its own calls, tokens and boundaries', () => {
+      const own = 'own-real-session';
+      const base = Date.now() - 120_000;
+      const line = (storage: string, frame: object) =>
+        appendToHookBuffer(
+          resolve(storage, `buffer-${own}.jsonl`),
+          JSON.stringify({ sessionId: own, ...frame }) + '\n',
+        );
+      const burst = (storage: string, tool: string, at: number, inputTokens: number) => {
+        writeCall(storage, own, `toolu_${tool}`, { tool, timestamp: at, success: true });
+        line(storage, {
+          mode: 'token',
+          timestamp: at + 1_000,
+          messageId: `msg_${tool}`,
+          inputTokens,
+          outputTokens: 0,
+          model: 'claude-sonnet-5',
+        });
+      };
+      let turns: Array<{ toolNames: string[]; inputTokens: number }>;
+      let completedTasks: unknown[];
+      let skills: string[];
+
+      beforeAll(async () => {
+        const storage = makeStorage();
+        const client = await startEngine(storage);
+        const ownBuffer = resolve(storage, `buffer-${own}.jsonl`);
+        line(storage, { mode: 'user_prompt_submit', timestamp: base, slashCommand: 'own-skill' });
+        appendToHookBuffer(
+          resolve(storage, 'buffer-other-real-session.jsonl'),
+          JSON.stringify({
+            mode: 'user_prompt_submit',
+            sessionId: 'other-real-session',
+            timestamp: base,
+            slashCommand: 'other-skill',
+          }) + '\n',
+        );
+        burst(storage, 'Read', base + 100, 1_000);
+        line(storage, { mode: 'stop', timestamp: base + 1_500 });
+        line(storage, { mode: 'user_prompt_submit', timestamp: base + 10_000 });
+        burst(storage, 'Bash', base + 10_100, 2_000);
+        line(storage, { mode: 'stop', timestamp: base + 11_500 });
+        await waitFor(
+          () =>
+            !existsSync(ownBuffer) &&
+            !existsSync(resolve(storage, 'buffer-other-real-session.jsonl')),
+        );
+        const heartbeat = resolve(storage, `active-${own}.pid`);
+        writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), own);
+        await waitFor(() => existsSync(heartbeat));
+        burst(storage, 'Grep', base + 20_100, 3_000);
+        burst(storage, 'Glob', base + 30_100, 4_000);
+        await waitFor(() => !existsSync(ownBuffer));
+        const costPerTool = await toolResult(client, 'nr_observe_get_cost_per_tool');
+        turns = costPerTool.turns as typeof turns;
+        skills = Object.keys(costPerTool.costBySkill as object);
+        completedTasks = (await toolResult(client, 'nr_observe_get_cost_breakdown'))
+          .by_task as unknown[];
+        await client.close();
+        await waitFor(() => !existsSync(heartbeat));
+      }, 30000);
+
+      it('prices each burst with its own token report', () => {
+        expect(turns.map((t) => [t.toolNames, t.inputTokens])).toEqual([
+          [['Read'], 1_000],
+          [['Bash'], 2_000],
+          [['Grep'], 3_000],
+          [['Glob'], 4_000],
+        ]);
+      });
+
+      it('closes a task at each of its own Stops from before adoption', () => {
+        expect(completedTasks).toHaveLength(2);
+      });
+
+      it("counts its own slash-command run and not the other session's", () => {
+        expect(skills).toEqual(['own-skill']);
+      });
+    });
+
     it('times each of its own calls once when it adopts its session mid-stream', async () => {
       const storage = makeStorage();
       const client = await startEngine(storage);
