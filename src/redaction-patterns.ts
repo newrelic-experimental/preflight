@@ -237,7 +237,7 @@ function pushValue(spans: number[], spanStart: number, from: number, end: number
 }
 
 const HEADER = new RegExp(
-  String.raw`((?:-H|--header)(?:[\s=]|${CONTINUATION}){1,8}(\\"|"|')?)(?:x-)?(?:api-?key|auth-token|access-token)(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})`,
+  String.raw`((?:-H|--header)(?:[\s=]|${CONTINUATION}){1,8}(\\"|"|')?)(?:(?:x-)?(?:api-?key|auth-token|access-token)(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|authorization[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
   'gi',
 );
 
@@ -384,6 +384,36 @@ const curlCredentials: Redact = (text, match, quote, spans) => {
   });
 };
 
+interface PasswordOption {
+  readonly flags: readonly string[];
+  // The value may also share the flag's word (-phunter2, -p=hunter2).
+  readonly joined: boolean;
+  // Options end at the first operand, the command the tool wraps, and these options take the next
+  // word as their value.
+  readonly wrapperOptions?: readonly string[];
+}
+
+// The password is the word after the flag, unless that word is the next option.
+const passwordValue =
+  ({ flags, joined, wrapperOptions }: PasswordOption): Redact =>
+  (text, match, quote, spans) => {
+    let pending = -1;
+    let skipNext = false;
+    let wrapped = false;
+    return commandWords(text, match, quote, (from, end) => {
+      const word = text.slice(from, end);
+      if (pending >= 0 && word[0] !== '-') spans.push(pending, end);
+      else if (wrapped || skipNext) skipNext = false;
+      else if (flags.includes(word)) pending = from;
+      else if (joined && flags.some((flag) => word.startsWith(flag))) spans.push(from, end);
+      else if (wrapperOptions !== undefined) {
+        wrapped = word[0] !== '-';
+        skipNext = wrapperOptions.includes(word);
+      }
+      if (pending !== from) pending = -1;
+    });
+  };
+
 type RedactionRule = RegExp | ArgumentRule;
 
 const RULES: readonly RedactionRule[] = [
@@ -393,6 +423,12 @@ const RULES: readonly RedactionRule[] = [
   { start: FLAG, redact: wordValue },
   { start: MYSQL, redact: mysqlPasswords },
   { start: CURL, redact: curlCredentials },
+  { start: /docker[ \t]+login\b/g, redact: passwordValue({ flags: ['-p'], joined: true }) },
+  {
+    start: /sshpass\b/g,
+    redact: passwordValue({ flags: ['-p'], joined: true, wrapperOptions: ['-f', '-d', '-P'] }),
+  },
+  { start: /redis-cli\b/g, redact: passwordValue({ flags: ['-a', '--pass'], joined: false }) },
 ];
 
 /** Whether a match starting at `index` counts. A match that does not resumes one character later. */
