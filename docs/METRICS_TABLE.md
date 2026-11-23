@@ -523,9 +523,9 @@ Source: `src/transport/nr-ingest.ts` — `observabilityHealthToNrEvent()`
 
 #### `AiRetryAlert`
 
-**What it is:** A warning that your assistant seems stuck, either repeating nearly identical calls to the same tool or failing repeatedly with it across its last few calls, with an estimate of the tokens wasted. Use it to catch thrashing loops early.
+**What it is:** A warning that your assistant seems stuck, either repeating a failed call to the same tool exactly or failing repeatedly with it across its last few calls, with an estimate of the tokens wasted. Use it to catch thrashing loops early.
 
-Emitted when `RetryDetector` flags a thrashing pattern in a tool's recent calls: they are highly similar (default similarity 0.8 or more), or every one of them failed. The defaults are at least 3 occurrences within a window of 5 calls.
+Emitted when `RetryDetector` flags a tool's recent calls as retries. It takes the first failed call and the calls after it, and flags them when every one failed or every one repeats the failed call's input exactly. Calls before the first failure never count. The defaults are at least 3 such calls within a window of 5 calls.
 
 | Field           | Type   | Description                                                                                                                                                                        |
 | --------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
