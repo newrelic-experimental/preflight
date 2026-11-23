@@ -746,7 +746,14 @@ describe('AiCodingTask emission in cloud mode', () => {
     try {
       await waitForBoot(child, BOOT_TIMEOUT_MS);
       await initialize(child);
-      await delay(2_500);
+      // The watcher writes this cursor once a poll has read the earlier
+      // subagent, so by then it knows the directory.
+      const cursor = resolve(storage, `.subagent-pos-${session}-a0000000000000001`);
+      const deadline = Date.now() + TOOLS_CALL_TIMEOUT_MS;
+      while (!existsSync(cursor)) {
+        if (Date.now() > deadline) throw new Error('the subagent watcher never polled');
+        await delay(50);
+      }
       seedToolCalls(session, 1, 'Skill');
       append({
         mode: 'pre',
