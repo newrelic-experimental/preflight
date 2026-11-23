@@ -3,6 +3,7 @@ import type { AttributionBucket, TokenBreakdown, UsdBreakdown } from '../storage
 import { localEndOfDay, localStartOfDay } from '../lib/date.js';
 import {
   lastActivityMs,
+  lastDaysWindow,
   windowedSessions,
   type ActivityWindow,
 } from '../storage/session-window.js';
@@ -76,7 +77,7 @@ export interface UsageInsightsReport {
 /**
  * Both windows keep every session with activity inside them and count only
  * its in-window share of cost and tokens. `rolling` (the default) is the last
- * `windowDays` days; `today` is the local calendar day of `nowMs`.
+ * `windowDays` local calendar days; `today` is the local calendar day of `nowMs`.
  */
 export type UsageInsightsOptions =
   | { readonly selection?: 'rolling'; readonly nowMs: number; readonly windowDays: number }
@@ -86,7 +87,6 @@ export type UsageInsightsOptions =
 // Constants
 // ---------------------------------------------------------------------------
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const LONG_SESSION_MS = 8 * 60 * 60 * 1000;
 /** A session counts as "subagent-heavy" once subagent cost reaches this share of its total. */
 const SUBAGENT_HEAVY_SHARE = 0.25;
@@ -293,7 +293,7 @@ export function usageInsightsWindow(opts: UsageInsightsOptions): ActivityWindow 
     const startMs = localStartOfDay(opts.nowMs);
     return { startMs, endMs: localEndOfDay(startMs) };
   }
-  return { startMs: opts.nowMs - opts.windowDays * DAY_MS, endMs: Infinity };
+  return lastDaysWindow(opts.nowMs, opts.windowDays);
 }
 
 export function computeUsageInsights(

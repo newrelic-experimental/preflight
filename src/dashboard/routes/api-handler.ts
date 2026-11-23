@@ -97,7 +97,11 @@ import type {
   PersistedAntiPattern,
   SessionFileInfo,
 } from '../../storage/session-store.js';
-import { loadSessionsActiveIn, type WindowedSession } from '../../storage/session-window.js';
+import {
+  lastDaysWindow,
+  loadSessionsActiveIn,
+  type WindowedSession,
+} from '../../storage/session-window.js';
 import {
   hasRecordedUsage,
   toPersistedAntiPatterns,
@@ -739,33 +743,20 @@ function mergeSkillCostEntry(
   };
 }
 
+function scaled<T extends { readonly [K in keyof T]: number }>(values: T, weight: number): T {
+  const entries = Object.entries(values) as Array<[string, number]>;
+  return Object.fromEntries(entries.map(([k, v]) => [k, v * weight])) as T;
+}
+
 // A bucket keeps no day split, so a window's share of it scales every number.
+// Counts stay fractional until the window's sum is rounded once.
 function scaleBucket(bucket: AttributionBucket, weight: number): AttributionBucket {
   if (weight === 1) return bucket;
-  const round = (n: number): number => Math.round(n * weight);
-  const b = bucket.breakdown;
-  const usd = bucket.breakdownUsd;
+  const { breakdown, breakdownUsd, ...totals } = bucket;
   return {
-    costUsd: bucket.costUsd * weight,
-    tokens: round(bucket.tokens),
-    count: round(bucket.count),
-    durationMs: round(bucket.durationMs),
-    ...(b && {
-      breakdown: {
-        inputTokens: round(b.inputTokens),
-        outputTokens: round(b.outputTokens),
-        cacheReadTokens: round(b.cacheReadTokens),
-        cacheCreationTokens: round(b.cacheCreationTokens),
-      },
-    }),
-    ...(usd && {
-      breakdownUsd: {
-        inputUsd: usd.inputUsd * weight,
-        outputUsd: usd.outputUsd * weight,
-        cacheReadUsd: usd.cacheReadUsd * weight,
-        cacheCreationUsd: usd.cacheCreationUsd * weight,
-      },
-    }),
+    ...scaled(totals, weight),
+    ...(breakdown && { breakdown: scaled(breakdown, weight) }),
+    ...(breakdownUsd && { breakdownUsd: scaled(breakdownUsd, weight) }),
   };
 }
 
@@ -794,6 +785,22 @@ function foldSessionAttributionBuckets(
     costBySkill[skill] = mergeSkillCostEntry(costBySkill[skill], scaleBucket(raw, weight));
   }
   return attributedCost;
+}
+
+function roundCounts<T extends ToolTypeCostEntry & { readonly totalDurationMs?: number }>(
+  entries: Record<string, T>,
+): Record<string, T> {
+  const round = (e: T): T => ({
+    ...e,
+    callCount: Math.round(e.callCount),
+    inputTokens: Math.round(e.inputTokens),
+    outputTokens: Math.round(e.outputTokens),
+    cacheReadTokens: Math.round(e.cacheReadTokens),
+    cacheCreationTokens: Math.round(e.cacheCreationTokens),
+    tokens: Math.round(e.tokens),
+    ...(e.totalDurationMs !== undefined && { totalDurationMs: Math.round(e.totalDurationMs) }),
+  });
+  return Object.fromEntries(Object.entries(entries).map(([key, e]) => [key, round(e)]));
 }
 
 interface WindowedCostPerToolResponse {
@@ -836,8 +843,8 @@ function buildWindowedCostPerTool(
   }
   return {
     turns: [],
-    costByToolType,
-    costBySkill,
+    costByToolType: roundCounts(costByToolType),
+    costBySkill: roundCounts(costBySkill),
     totalAttributedCost,
     attributionRate: totalCost > 0 ? totalAttributedCost / totalCost : 0,
     attributedSessionCount,
@@ -2688,10 +2695,10 @@ export function createApiHandler(
       if (!store?.loadAllSessions) return unavailable(res, 'sessionStore.loadAllSessions');
       const parsedDays = parseInt(daysParam, 10);
       const windowDays = Number.isNaN(parsedDays) ? 7 : Math.min(Math.max(parsedDays, 1), 90);
-      const sessions = loadSessionsActiveIn((o) => store.loadAllSessions?.(o) ?? [], {
-        startMs: Date.now() - windowDays * 86_400_000,
-        endMs: Infinity,
-      });
+      const sessions = loadSessionsActiveIn(
+        (o) => store.loadAllSessions?.(o) ?? [],
+        lastDaysWindow(Date.now(), windowDays),
+      );
       jsonOk(res, buildWindowedCostPerTool(sessions));
       return;
     }

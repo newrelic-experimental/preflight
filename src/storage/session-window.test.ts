@@ -1,4 +1,5 @@
 import { localDateKey, localEndOfDay, localStartOfDay } from '../lib/date.js';
+import { todayCostOfSummary } from '../metrics/cost-tracker-seed.js';
 import type { FullSessionSummary } from './session-store.js';
 import { windowShare, windowedSessions, type ActivityWindow } from './session-window.js';
 import type { ReplayTimelineEntry } from './types.js';
@@ -46,6 +47,7 @@ describe('windowShare', () => {
     const share = windowShare(
       source({
         startTime: prior + 9 * HOUR_MS,
+        toolCallCount: 2,
         estimatedCostUsd: 10,
         costByDayUsd: { [localDateKey(prior)]: 7, [localDateKey(DAY)]: 3 },
         timeline: [
@@ -65,6 +67,7 @@ describe('windowShare', () => {
     const share = windowShare(
       source({
         startTime: DAY + 10 * 60_000,
+        toolCallCount: 2,
         estimatedCostUsd: 1,
         costByDayUsd: { [localDateKey(prior)]: 0.4, [localDateKey(DAY)]: 0.6 },
         timeline: calls(9, 10),
@@ -103,6 +106,34 @@ describe('windowShare', () => {
     expect(windowShare(s, fromNoon).costUsd).toBe(8);
     expect(windowShare(s, { startMs: nextDay, endMs: Infinity }).costUsd).toBe(2);
     expect(windowShare(s, { startMs: DAY, endMs: nextDay }).costUsd).toBe(8);
+  });
+
+  it('scales the call count by the cost share when the timeline dropped calls', () => {
+    const prior = localStartOfDay(DAY - 12 * HOUR_MS);
+    const share = windowShare(
+      source({
+        startTime: prior + 9 * HOUR_MS,
+        toolCallCount: 100,
+        estimatedCostUsd: 2,
+        costByDayUsd: { [localDateKey(prior)]: 1, [localDateKey(DAY)]: 1 },
+        timeline: calls(9, 10),
+      }),
+      { startMs: DAY, endMs: Infinity },
+    );
+    expect(share).toEqual({ weight: 0.5, costUsd: 1, toolCalls: 50 });
+  });
+
+  it('claims no cost from a summary with no day map, calls, subagent cost or timeline, as Spend Today does', () => {
+    const today = { startMs: DAY, endMs: localEndOfDay(DAY) };
+    const legacy = source({ toolCallCount: 0, timeline: [], estimatedCostUsd: 2 });
+    const inToday = { ...legacy, startTime: at(1), endTime: at(2) };
+    const acrossMidnight = { ...legacy, startTime: DAY - HOUR_MS, endTime: at(1) };
+    for (const s of [inToday, acrossMidnight]) {
+      expect(windowShare(s, today)).toEqual({ weight: 0, costUsd: 0, toolCalls: 0 });
+      expect(todayCostOfSummary(s, localDateKey(DAY), at(12)).costUsd).toBe(0);
+    }
+    const withDayMap = { ...inToday, costByDayUsd: { [localDateKey(DAY)]: 2 } };
+    expect(windowShare(withDayMap, today).costUsd).toBe(2);
   });
 
   it('counts nothing for a session that ended before the window or started after it', () => {
@@ -145,6 +176,7 @@ describe('windowedSessions', () => {
       sessionId: 'chatted-only',
       ...source({
         startTime: prior + 9 * HOUR_MS,
+        toolCallCount: 1,
         costByDayUsd: { [localDateKey(prior)]: 5, [localDateKey(DAY)]: 3 },
         timeline: [
           { timestamp: prior + 9 * HOUR_MS, toolName: 'Read', durationMs: null, success: true },

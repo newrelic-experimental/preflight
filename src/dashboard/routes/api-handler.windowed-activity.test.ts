@@ -5,8 +5,11 @@ import * as path from 'node:path';
 
 import { createApiHandler } from './api-handler.js';
 import { localDateKey, localStartOfDay } from '../../lib/date.js';
-import { ZERO_QUALITY_PROXY_COUNTS } from '../../metrics/quality-proxy-tracker.js';
-import { SessionStore, type FullSessionSummary } from '../../storage/session-store.js';
+import {
+  SessionStore,
+  deserializeFullSessionSummary,
+  type FullSessionSummary,
+} from '../../storage/session-store.js';
 import type { ReplayTimelineEntry } from '../../storage/types.js';
 
 const DAY_MS = 86_400_000;
@@ -25,55 +28,11 @@ function calls(at: number, n: number): ReplayTimelineEntry[] {
   }));
 }
 
+// The load path's parser fills every field a test leaves out.
 function makeSummary(overrides: Partial<FullSessionSummary>): FullSessionSummary {
-  return {
-    sessionId: 'sess',
-    sessionName: 'p',
-    sessionNameSource: null,
-    sessionIntent: null,
-    repoName: null,
-    startTime: 0,
-    endTime: 0,
-    durationMs: 0,
-    toolCallCount: 0,
-    developer: 'alice',
-    model: 'claude-sonnet-4-20250514',
-    toolBreakdown: {},
-    skillBreakdown: {},
-    filesRead: [],
-    filesModified: [],
-    linesAdded: 0,
-    linesRemoved: 0,
-    bashCommandCount: 0,
-    testRunCount: 0,
-    testPassCount: 0,
-    buildRunCount: 0,
-    buildPassCount: 0,
-    estimatedCostUsd: 0,
-    subagentCostUsd: 0,
-    tokensInput: 0,
-    tokensOutput: 0,
-    tokensThinking: 0,
-    tokensCacheRead: 0,
-    tokensCacheCreation: 0,
-    cacheSavingsUsd: 0,
-    efficiencyScore: null,
-    toolSelectionMetrics: null,
-    modelBreakdown: {},
-    costByWorkflowRunId: {},
-    qualityProxy: { ...ZERO_QUALITY_PROXY_COUNTS },
-    antiPatterns: [],
-    taskCount: 0,
-    taskSuccessRate: null,
-    toolSuccessRate: null,
-    contextCompressions: 0,
-    agentSpawns: 0,
-    userMessages: 0,
-    assistantMessages: 0,
-    userCorrections: 0,
-    outcome: 'completed',
-    ...overrides,
-  };
+  return deserializeFullSessionSummary({ sessionId: 'sess', ...overrides } as Parameters<
+    typeof deserializeFullSessionSummary
+  >[0]);
 }
 
 async function get(store: SessionStore, url: string): Promise<Record<string, unknown>> {
@@ -197,5 +156,41 @@ describe('windowed dashboard views and resumed sessions', () => {
     expect(read.callCount).toBe(1);
     expect(read.tokens).toBe(100);
     expect(result.attributionRate).toBeCloseTo(0.5 / 3, 10);
+  });
+
+  it('rounds counts once, after summing every session’s share', async () => {
+    const [started, resumed] = [noonDaysAgo(20), noonDaysAgo(2)];
+    const breakdown = {
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 1,
+      cacheCreationTokens: 1,
+    };
+    const bucket = { costUsd: 1, tokens: 1, count: 1, durationMs: 1, breakdown };
+    // Each session has $0.30 of its $1 in the window, so its buckets scale by 0.3.
+    for (let i = 0; i < 10; i++) {
+      store.saveSession(
+        makeSummary({
+          sessionId: `resumed-${i}`,
+          startTime: started,
+          endTime: resumed + HOUR_MS,
+          toolCallCount: 1,
+          estimatedCostUsd: 1,
+          costByDayUsd: { [localDateKey(started)]: 0.7, [localDateKey(resumed)]: 0.3 },
+          timeline: calls(resumed, 1),
+          attribution: {
+            buckets: { tool: { Grep: bucket }, skill: { review: bucket } },
+            highContextCostUsd: 0,
+            apiDurationMs: null,
+          },
+        }),
+      );
+    }
+    const result = await get(store, '/api/cost-per-tool?days=7');
+    const grep = (result.costByToolType as Record<string, Record<string, number>>).Grep;
+    expect(grep).toMatchObject({ callCount: 3, tokens: 3, inputTokens: 3, outputTokens: 3 });
+    expect(grep).toMatchObject({ cacheReadTokens: 3, cacheCreationTokens: 3 });
+    const review = (result.costBySkill as Record<string, Record<string, number>>).review;
+    expect(review).toMatchObject({ callCount: 3, tokens: 3, totalDurationMs: 3 });
   });
 });

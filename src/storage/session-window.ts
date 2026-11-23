@@ -1,5 +1,10 @@
 import { localEndOfDay } from '../lib/date.js';
-import type { FullSessionSummary, LoadSessionsOptions } from './session-store.js';
+import {
+  hasAttributableActivity,
+  type AttributableActivity,
+  type FullSessionSummary,
+  type LoadSessionsOptions,
+} from './session-store.js';
 
 const DAY_MS = 86_400_000;
 
@@ -18,14 +23,24 @@ type WindowSource = Pick<
   | 'estimatedCostUsd'
   | 'costByDayUsd'
   | 'timeline'
->;
+> &
+  AttributableActivity;
 
 /** The part of one session's activity that falls inside a window. */
 export interface WindowShare {
   /** Share of the session's cost in the window, in [0, 1]. Scales any total kept without a day split. */
   readonly weight: number;
   readonly costUsd: number;
+  /** Timeline calls in the window, or `toolCallCount * weight` when the timeline dropped calls. */
   readonly toolCalls: number;
+}
+
+/** The last `days` local calendar days, today included, as History counts them. */
+export function lastDaysWindow(nowMs: number, days: number): ActivityWindow {
+  const start = new Date(nowMs);
+  start.setDate(start.getDate() - (days - 1));
+  start.setHours(0, 0, 0, 0);
+  return { startMs: start.getTime(), endMs: Infinity };
 }
 
 export interface WindowedSession {
@@ -52,9 +67,14 @@ function dayStartOfKey(key: string): number {
  * Splits a session's cost and tool calls at the window's edges. Cost comes
  * from the per-day map, and a day the window cuts is split by its tool calls,
  * or by elapsed time when it has none. A session without the map splits its
- * whole cost the same way.
+ * whole cost the same way, unless it has no calls, subagent cost or timeline.
+ * Then its cost may be a resumed transcript read in one pass, so no window
+ * claims it, as in `todayCostOfSummary`.
  */
 export function windowShare(s: WindowSource, w: ActivityWindow): WindowShare {
+  if (s.costByDayUsd === undefined && !hasAttributableActivity(s)) {
+    return { weight: 0, costUsd: 0, toolCalls: 0 };
+  }
   const start = s.startTime;
   const last = lastActivityMs(s);
   const lifetimeUsd = Math.max(0, s.estimatedCostUsd ?? 0);
@@ -98,7 +118,7 @@ export function windowShare(s: WindowSource, w: ActivityWindow): WindowShare {
   const weight =
     lifetimeUsd > 0 ? Math.min(1, costUsd / lifetimeUsd) : shareIn(-Infinity, Infinity);
   const toolCalls =
-    timeline.length > 0
+    timeline.length >= s.toolCallCount
       ? timeline.filter((t) => inWindow(t.timestamp)).length
       : s.toolCallCount * weight;
   return { weight, costUsd, toolCalls };

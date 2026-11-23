@@ -241,6 +241,13 @@ describe('computeUsageInsights', () => {
       expect(report.totalTokens).toBe(100);
     });
 
+    it('without costByDayUsd or any calls, subagent cost or timeline, counts none of its cost today', () => {
+      const unattributable = { toolCallCount: 0, timeline: [], estimatedCostUsd: 4 };
+      const report = today([makeSummary({ ...unattributable, startTime: TODAY_START - 1000 })]);
+      expect(report.totalCostUsd).toBe(0);
+      expect(report.totalTokens).toBe(0);
+    });
+
     it.each([0, null])(
       'counts an unpriced session (estimatedCostUsd %p) that overlaps today, with pro-rated tokens',
       (estimatedCostUsd) => {
