@@ -213,7 +213,7 @@ function truncate(value: string, maxLen: number): string {
 // that start past the cap are replaced unread by the truncation marker; redaction can shorten what
 // comes before them, so the marker can land inside the cap. Each string costs at least its length
 // plus its two quotes. Values and keys each count toward their own cap, because serialization visits
-// each kind in order.
+// each kind in order. Keys that redact to the same text are numbered so no entry is dropped.
 function recordedContent(value: unknown, maxLen: number): string {
   const redactUpTo = (): ((text: string) => string) => {
     let left = maxLen;
@@ -231,7 +231,16 @@ function recordedContent(value: unknown, maxLen: number): string {
       : JSON.stringify(value, (_key, v: unknown) => {
           if (typeof v === 'string') return redactValue(v);
           if (v === null || typeof v !== 'object' || Array.isArray(v)) return v;
-          return Object.fromEntries(Object.entries(v).map(([k, x]) => [redactKey(k), x]));
+          const keys = new Set<string>();
+          return Object.fromEntries(
+            Object.entries(v).map(([k, x]) => {
+              const base = redactKey(k);
+              let key = base;
+              for (let n = 2; keys.has(key); n++) key = `${base} (${n})`;
+              keys.add(key);
+              return [key, x];
+            }),
+          );
         });
   return truncate(content, maxLen);
 }

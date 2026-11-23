@@ -1337,7 +1337,16 @@ function recordedContent(value, maxLen) {
   const content = typeof value === "string" ? redactValue(value) : JSON.stringify(value, (_key, v) => {
     if (typeof v === "string") return redactValue(v);
     if (v === null || typeof v !== "object" || Array.isArray(v)) return v;
-    return Object.fromEntries(Object.entries(v).map(([k, x]) => [redactKey(k), x]));
+    const keys = /* @__PURE__ */ new Set();
+    return Object.fromEntries(
+      Object.entries(v).map(([k, x]) => {
+        const base = redactKey(k);
+        let key = base;
+        for (let n = 2; keys.has(key); n++) key = `${base} (${n})`;
+        keys.add(key);
+        return [key, x];
+      })
+    );
   });
   return truncate(content, maxLen);
 }

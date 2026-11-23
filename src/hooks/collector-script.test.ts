@@ -1638,6 +1638,28 @@ describe('collector-script', () => {
         );
       });
 
+      it('numbers keys that redact to the same text so no entry is lost', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+
+        processHook(
+          makePostToolUse({
+            tool_response: {
+              'curl -u a:b': 1,
+              'curl -u c:d': 2,
+              'curl [REDACTED] (2)': 3,
+              'curl -u e:f': 4,
+            },
+          }),
+        );
+
+        expect(JSON.parse(readBufferEvents()[0]!.outputContent as string)).toEqual({
+          'curl [REDACTED]': 1,
+          'curl [REDACTED] (2)': 2,
+          'curl [REDACTED] (2) (2)': 3,
+          'curl [REDACTED] (3)': 4,
+        });
+      });
+
       it('keeps a value inside the cap when a later key is longer than the cap', () => {
         process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
         process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
