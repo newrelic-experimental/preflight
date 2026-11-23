@@ -1,5 +1,10 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { RetryDetector, normalizedLevenshteinSimilarity } from './retry-detector.js';
-import type { ToolCallRecord } from '../storage/types.js';
+import { HookEventProcessor } from '../hooks/event-processor.js';
+import { LocalStore } from '../storage/local-store.js';
+import type { HookEvent, ToolCallRecord } from '../storage/types.js';
 
 const stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 
@@ -630,5 +635,97 @@ describe('RetryDetector', () => {
     const detector = new RetryDetector();
     detector.emitMetrics(aggregator as never);
     expect(aggregator.record).not.toHaveBeenCalled();
+  });
+});
+
+describe('RetryDetector fed by HookEventProcessor', () => {
+  // Claude Code sends duration_ms on PostToolUse, so each record carries a
+  // permissionWaitMs that differs per call even when the input is identical.
+  function alertsFor(outcomes: readonly boolean[]): number {
+    const dir = mkdtempSync(join(tmpdir(), 'retry-detector-hooks-'));
+    try {
+      const store = new LocalStore(dir);
+      store.initialize();
+      const detector = new RetryDetector();
+      let alerts = 0;
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: (record) => {
+          if (detector.recordToolCall(record)) alerts++;
+        },
+      });
+      const toolInput = { command: 'npm test', description: 'Run tests' };
+      processor.processEvents(
+        outcomes.flatMap((success, i): HookEvent[] => {
+          const start = 10_000 + i * 5_000;
+          const nativeDurationMs = 800;
+          const end = start + nativeDurationMs + 100 + i * 26;
+          return [
+            {
+              mode: 'pre',
+              tool: 'Bash',
+              timestamp: start,
+              toolUseId: `tu-${i}`,
+              sessionId: 's',
+              inputSize: 40,
+              inputHash: 'a1b2c3d4e5f60718',
+              toolInput,
+            },
+            {
+              mode: 'post',
+              tool: 'Bash',
+              timestamp: end,
+              toolUseId: `tu-${i}`,
+              sessionId: 's',
+              success,
+              nativeDurationMs,
+              outputSize: 500,
+              ...(!success && { error: 'Command exited with non-zero status code 1' }),
+            },
+          ];
+        }),
+      );
+      return alerts;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it.each([
+    ['fail, fail, ok', [false, false, true]],
+    ['ok, fail, fail, ok', [true, false, false, true]],
+    ['fail, fail, fail', [false, false, false]],
+  ])('alerts once for an identical retry run: %s', (_label, outcomes) => {
+    expect(alertsFor(outcomes)).toBe(1);
+  });
+});
+
+describe('RetryDetector exact-match ignores per-call fields', () => {
+  it.each<[string, (i: number) => Partial<ToolCallRecord>]>([
+    ['permissionWaitMs', (i) => ({ permissionWaitMs: 100 + i * 26 })],
+    [
+      'activeSkill',
+      (i) => ({ activeSkill: { name: 'deploy', source: 'tool', runId: `run-${i}` } }),
+    ],
+    ['exitCode', (i) => ({ exitCode: i < 2 ? 1 : 0 })],
+    ['editSuccess', (i) => ({ editSuccess: i >= 2 })],
+    ['editMatched', (i) => ({ editMatched: i >= 2 })],
+    ['editErrorReason', (i) => (i < 2 ? { editErrorReason: 'no match' } : {})],
+    ['grepMatchCount', (i) => ({ grepMatchCount: i })],
+    ['grepResultLines', (i) => ({ grepResultLines: i })],
+    ['agentCompleted', (i) => ({ agentCompleted: i >= 2 })],
+    ['agentInterrupted', (i) => ({ agentInterrupted: i < 2 })],
+    ['agentResultLength', (i) => ({ agentResultLength: i * 10 })],
+    ['spawnedAgentId', (i) => ({ spawnedAgentId: `ag-${i}` })],
+    ['createdPrNumber', (i) => (i >= 2 ? { createdPrNumber: '42' } : {})],
+    ['createdPrRepo', (i) => (i >= 2 ? { createdPrRepo: 'acme/widgets' } : {})],
+  ])('counts fail, fail, ok with identical input when %s varies', (_label, perCall) => {
+    const detector = new RetryDetector();
+    const alerts = [false, false, true].map((success, i) =>
+      detector.recordToolCall(
+        makeRecord({ success, command: 'npm test', inputHash: 'a1b2c3d4e5f60718', ...perCall(i) }),
+      ),
+    );
+    expect(alerts.filter((a) => a !== null)).toHaveLength(1);
   });
 });
