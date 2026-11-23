@@ -153,6 +153,8 @@ const WRAPPERS: readonly ((script: string) => string)[] = [
   (s) => `eval ${quoted(`bash -c ${quoted(s)}`)}`,
   (s) => `bash -c ${quoted(`eval ${quoted(s)}`)}`,
   (s) => `sh -c ${quoted(`sh -c ${quoted(s)}`)}`,
+  (s) => `x=1 eval ${quoted(s)}`,
+  (s) => `if true; then bash -c ${quoted(s)}; fi`,
 ];
 
 function command(): string {

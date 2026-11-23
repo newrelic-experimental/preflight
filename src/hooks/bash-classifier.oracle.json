@@ -1,334 +1,367 @@
 [
-  ["sh -c 'true '\\'';(}'\\''# \"{\\\"# && true '\\''\\(\" '\\'''\\'';rm -rf ./x'", true],
-  ["# \nbash -c \"cat <<<{,}ita; {rm,-rf} ./x\"", true],
-  ["true \"$'\\') #'\"{\" #a$\ntrue  && x=\"&\n})\"it# | {rm,-rf} ./x", false],
   [
-    "sh -c \"(echo \\$'}\\$\\\\\\\"\\\\\\\\')# #|\\\\\\\"|;\n(echo \\\" a\\\"\\`echo a\\`){a,b} ##\\\\\\\\\nrm -rf ./x\"",
-    false
-  ],
-  ["eval 'bash -c '\\''(echo \\$\";\")itb2;rm -rf ./x'\\'''", false],
-  ["true  #\\\\{\"\nbash -c 'eval '\\''# ;&#\n{rm,-rf} ./x'\\'''", true],
-  ["# ||# \ncat <<EOF\n&\\'\"\n\"\\\"$\nEOF\neval '{rm,-rf,./x}'", true],
-  ["cat <<<#{a,b}\"()\"\"\" | cat <<<${#x}$'b2 | bash -c '{rm,-rf} ./x'", false],
-  ["cat <<-EOF\n(\\\\\nEOF\n# \neval \"{rm,-rf} ./x\"", true],
-  ["(echo ait\")\\\"it & sh -c \"sh -c '{rm,-rf,./x}'\"", false],
-  ["(echo #'\\'$'}')$'\ncat <<<it\"\\\\$\"$'' && {rm,-rf,./x}", false],
-  ["bash -c \"x=\\$'{\n|\\\\\\\"'\n(echo \\\"\\\") #''\n{rm,-rf,./x}\"", true],
-  ["sh -c 'sh -c \"# }\ncat <<-\\\\EOF\n\nEOF\n{rm,-rf} ./x\"'", true],
-  ["cat <<<\"#\";eval 'echo $(echo '\\''a'\\'')'\\'' && {rm,-rf,./x}'", false],
-  ["true {rm,-rf}' ${x}$';'&'; cat <<-\\EOF\n|;|\n\n\nEOF\nbash -c 'eval \"{rm,-rf,./x}\"'", true],
-  ["cat <<EOF\n\nEOF\n(echo {,}`echo a`)#${#x}\\&'\\;('; {rm,-rf,./x}", false],
-  [
-    "sh -c 'sh -c \"echo \\\\|it | cat <<-\\\\EOF\n} |\\\\'\\''\n&\\\\\\\\\nEOF\ncat <<<\\$'\\''\\$'\\'' #\\\\\\\\};\nrm -rf ./x\"'",
+    "eval 'bash -c '\\''true '\\''\\'\\'''\\'';(}'\\''\\'\\'''\\''# \"{\\\"# && true '\\''\\'\\'''\\''\\(\" '\\''\\'\\'''\\'''\\''\\'\\'''\\'';rm -rf ./x'\\'''",
     true
   ],
-  ["# {\nx={,}s$'\\'' #}\nsh -c '{rm,-rf} ./x'", true],
+  ["cat <<E.F\n#\\\\\\ \nE.F\ntrue \nsh -c 'sh -c \"cat <<<\\\\  ##\\\\\\\\\nrm -rf ./x\"'", true],
+  ["sh -c \"sh -c 'x=\\\"'\\\\''\\\" && rm -rf ./x'\"", true],
+  ["sh -c 'cat <<<{a,b};{rm,-rf} ./x'", true],
+  ["cat <<<{a,b}$'\"\\''; bash -c 'echo \") \" {,}'\\'' && {rm,-rf,./x}'", false],
   [
-    "x=$'''';sh -c \"sh -c '(echo s\\\"\\\"\\\"(\\\"(\\\")#\\$'\\\\''\\$)'\\\\''\\$'\\\\''\\\\\\\"#'\\\\'''\\\\''; rm -rf ./x'\"",
+    "if true; then bash -c 'echo ${x#a}'\\''}'\\''$'\\''\\'\\'' \\&${x#a};echo \"}\"(;\"'\\'''\\'''\\'' '\\'''\\'' a\n(echo '\\'''\\''$#)#$'\\''a \\\\;'\\''; {rm,-rf,./x}'; fi",
     false
   ],
-  ["true  && rm -rf ./x", true],
-  ["x=$'$a};' & x=\"&}\"\"\" # }\neval '{rm,-rf,./x}'", true],
-  ["eval \"bash -c \\\"x=''{,};rm -rf ./x\\\"\"", true],
-  ["true ; echo \"|\\' \"\"a '\\\\\" #\")\n{rm,-rf} ./x", true],
-  ["sh -c '# $\\\\\nrm -rf ./x'", true],
-  ["cat <<<# #\ncat <<<\" | cat <<<\\ {,}\\# #\nbash -c \"eval '{rm,-rf} ./x'\"", false],
+  ["true \"'\"|'\\' # & true  & (echo #\\\\$(echo a))s{,};rm -rf ./x", false],
+  ["# )\necho \"}{&\\\\\";bash -c 'eval '\\''true  | {rm,-rf,./x}'\\'''", true],
+  ["x=$'\"it & cat <<<#{a,b}; x=1 eval 'rm -rf ./x'", false],
+  ["eval 'cat <<'\\''EOF-1'\\''\n '\\''($\nEOF-1\n{rm,-rf} ./x'", true],
+  ["eval 'bash -c '\\''echo \"\"$'\\''\\'\\'''\\'' & {rm,-rf,./x}'\\'''", false],
+  ["if true; then bash -c 'cat <<\"E-F\"\n\nE-F\ncat <<EOF_2\n\nEOF_2\nrm -rf ./x'; fi", true],
+  ["sh -c 'sh -c \"cat <<\\\\EOF\n\nEOF\nx=\\\"&'\\''\\\\\\\"}\\\"\\\"it;{rm,-rf} ./x\"'", false],
+  ["x=$''#s | x=$''\"a\\'}\"\\;; eval \"cat <<<\\\"';;\\\\'{a,b} | {rm,-rf} ./x\"", false],
+  ["true $'\\'('{,} ##${#x};eval \"# ; \\$(\nx=\\\"|\\\"#{,} | {rm,-rf,./x}\"", false],
   [
-    "echo it{a,b} \"\"{,} | (echo '\\\"\"(')#\\;{rm,-rf}\"\"() \" | eval \"bash -c \\\"true \\\\\\$'''('\\\\\\\\\\\\\\$ '\\\\\\\\a' && {rm,-rf,./x}\\\"\"",
-    false
-  ],
-  [
-    "(echo \"\"#\"\\\\&);\")#'a\"\\\\&\\'\" #\\\\\\\"\ncat <<<\"\\\"#;\"$'\\''{rm,-rf} & true \"|\"\\& && sh -c 'sh -c \"rm -rf ./x\"'",
+    "sh -c \"sh -c 'true '\\\\''\n \\\\'\\\\'''\\\\''{\\\\'\\\\'' \\$'\\\\'''\\\\''#; {rm,-rf,./x}'\"",
     true
   ],
-  ["(echo {rm,-rf}\")#${x} | eval \"bash -c \\\"{rm,-rf} ./x\\\"\"", false],
-  ["cat <<<#$'' & bash -c \"eval '{rm,-rf,./x}'\"", false],
-  ["true \"}\\\\ \"\"' && echo \"a# \"\" $x #\\'\neval \"rm -rf ./x\"", true],
-  ["bash -c \"cat <<<b2a\\$';'; {rm,-rf} ./x\"", true],
-  ["eval \"bash -c \\\"# \n{rm,-rf} ./x\\\"\"", true],
+  ["echo \\'; true $'' & cat <<<#\"\\'#{\"\n{rm,-rf} ./x", false],
   [
-    "eval \"bash -c 'cat <<-\\\\EOF\n\n#\\\\\\\\\n\\\\\\\\'\\\\''\\\\\\\"(\nEOF\nrm -rf ./x'\"",
+    "eval 'bash -c '\\''cat <<\\EOF\n}(\\\\\nEOF\necho \")\\'\\''\\'\\'''\\''})\"\\'\\''\\'\\'''\\''\" ${x}$'\\''\\'\\'''\\''\n\\'\\''\\'\\'''\\'''\\''\\'\\'''\\'' && rm -rf ./x'\\'''",
+    false
+  ],
+  ["cat <<<$'' '(''#\\'\\\" && # (\"\nif true; then bash -c '# \n{rm,-rf,./x}'; fi", false],
+  [
+    "cat <<'EOF-1'\n)(\nEOF-1\n(echo b2##){rm,-rf}{,}{rm,-rf}; (echo ''$')}')##s #}(\n{rm,-rf} ./x",
+    false
+  ],
+  ["x=\\\";# \neval \"bash -c \\\"{rm,-rf} ./x\\\"\"", true],
+  ["if true; then bash -c '# \n{rm,-rf} ./x'; fi", true],
+  ["bash -c \"cat <<<{,}# #\nx=a #\n{rm,-rf,./x}\"", true],
+  ["x=\\;'\"\necho \" \\\\'\\\\\"';eval \"bash -c \\\"rm -rf ./x\\\"\"", false],
+  ["eval \"(echo \\\\;\\\\ ) #\\\\#''\\$' && cat <<'EOF-1'\n\nEOF-1\nrm -rf ./x\"", true],
+  ["true $'''\\a' \\;$'\n}\n'; sh -c \"sh -c '{rm,-rf,./x}'\"", true],
+  ["eval 'bash -c \"echo \\\" '\\''\\\\|'\\'' #\n{rm,-rf} ./x\"'", false],
+  [
+    "if true; then bash -c 'cat <<E-'\\''F'\\''\n\nE-F\necho $(echo '\\''a'\\'')$'\\''$('\\'' s\" $'\\''{(#'\\'''\\''{a,b}\\&; rm -rf ./x'; fi",
+    false
+  ],
+  ["eval \"cat <<<'b2; cat <<<# | rm -rf ./x\"", false],
+  ["cat <<\"E-F\"\n\nE-F\nif true; then bash -c 'rm -rf ./x'; fi", true],
+  ["(echo \"\\\"$ \"`echo a`) #$(echo 'a')'' #$'|\necho \"|a\"; true ' #\n' & rm -rf ./x", true],
+  ["sh -c 'x=$#\\&'\\''a$)'\\'' && cat <<'\\''EOF'\\''\n\n\\\"\\'\\''\nEOF\n{rm,-rf} ./x'", true],
+  ["#  ;'\ntrue \\' #$\"\"\"\necho it$'' \"\"\"{,}${#x} && x=1 eval \"rm -rf ./x\"", false],
+  ["sh -c 'sh -c '\\''cat <<<\"'\\''\\'\\'''\\'')\"\ntrue \n{rm,-rf,./x}'\\'''", true],
+  ["bash -c '# \"\n{rm,-rf,./x}'", true],
+  ["(echo {rm,-rf}{a,b}\")' #a{a\nif true; then bash -c \"{rm,-rf,./x}\"; fi", false],
+  ["x=${x} | if true; then bash -c 'rm -rf ./x'; fi", true],
+  ["x=$'s{,}\n{rm,-rf,./x}", false],
+  ["x=1 eval \"echo \\\\\\\" '' \\\"'\\\")\\\" && {rm,-rf} ./x\"", false],
+  [
+    "echo \\\\'\\ 's $''`echo a`\n(echo '')#{rm,-rf}b2{rm,-rf}\neval \"bash -c 'true \\$'\\\\'''\\\\''it && {rm,-rf} ./x'\"",
     true
   ],
+  ["x=\"'\\;' #$\\\\&'\ntrue  && x='\"\na\" & sh -c 'rm -rf ./x'", false],
+  ["echo {rm,-rf}\"a \\;#a '\\{#'#`echo a` | eval \"bash -c '{rm,-rf,./x}'\"", false],
+  ["# \\&|\ntrue  & cat <<<$'a\n'# && eval 'bash -c \"{rm,-rf,./x}\"'", true],
+  ["x=1 eval \"(echo \\\"}\\\\\\\"\\\")\\\\ #; rm -rf ./x\"", false],
+  ["(echo a\\|') #$'\\'';sh -c \"sh -c \\\"cat <<<\\\\\\$x; # \\\\\\\"\nrm -rf ./x\\\"\"", false],
+  ["x=';\\''$' #\\\\$(\neval \"{rm,-rf,./x}\"", true],
+  ["x=1 eval \"x=\\${x}'\\\\)\\\\\\\"}'\\\"\\\\'\\\" && x=# & {rm,-rf} ./x\"", true],
   [
-    "bash -c \"eval '(echo \\$'\\\\''\\\\'\\\\'''\\\\'')#\\$'\\\\'')\\\\'\\\\'''\\\\''\\\\& && # (\\\\\ntrue '\\\\''\\$'\\\\''\\\\'\\\\'''\\\\'''\\\\''\\$\\\\ '\\\\'' #\nrm -rf ./x'\"",
+    "(echo '{,}{a,b})\"$(echo \"a\")\"\\''';sh -c \"(echo {a,b}\\$(echo 'a'){rm,-rf}) #''\n{rm,-rf} ./x\"",
     false
   ],
   [
-    "cat <<<#$')$\n' & bash -c \"true '\\$\\\"\\\\\\\\\\\\'# \\\"\\\\\\\\\\\" #\nx=\\\\\\$\\\\# & {rm,-rf,./x}\"",
+    "(echo b2'a')#\" #\\\nsh -c \"echo '' #\\\"}\\\\'}|\\\" \\\"#(\\\\\\\\{\\\"{,}\\$'} ';rm -rf ./x\"",
     false
   ],
-  ["# \nx=#\nrm -rf ./x", true],
+  ["x=$'\\'' & x=1 eval 'rm -rf ./x'", true],
+  ["echo $'\\' #{,}$# ''\\'\ntrue ;true \neval \"bash -c '{rm,-rf,./x}'\"", true],
+  ["x=1 eval '(echo \"\"'\\''#)\") #\"\"# | true  ##a \ncat <<<#$'\\'' | {rm,-rf} ./x'", false],
   [
-    "bash -c \"echo as\\${#x} ''\\\\| \\$'\\\\\\\\}\\\\\\\\\\\\\\\\'it'\\\"\\\\\\\\' && true ;{rm,-rf} ./x\"",
-    true
-  ],
-  ["sh -c \"x=\\$'\\\\' '\\\"\\$\\\"(\\\"; true \\\"{rm,-rf}s #(a\n{rm,-rf,./x}\"", false],
-  [
-    "(echo {rm,-rf}#\\|) #\"a\\\\\"$#s;sh -c 'sh -c \"cat <<EOF_2\n \n\\\\\\\"\\\"\nEOF_2\ncat <<EOF_2\n\\\\'\\'''\\''\nEOF_2\n{rm,-rf,./x}\"'",
-    false
-  ],
-  [
-    "echo $x {rm,-rf}$'\n& ' {,}''\")\\\";';true  | eval 'cat <<'\\''EOF-1'\\''\n\n\nEOF-1\nrm -rf ./x'",
-    false
-  ],
-  ["x=$'\\\"\\}#' | x=\"a\" & bash -c '(echo \\ \\\"\"\n\n\")#it{,}\n{rm,-rf} ./x'", true],
-  ["true  | cat <<-\"E.F\"\n\nE.F\neval \"{rm,-rf} ./x\"", true],
-  ["x=$'\\'' #\ncat <<'EOF-1'\n\nEOF-1\neval 'bash -c '\\''x=$# && rm -rf ./x'\\'''", true],
-  ["cat <<\"E-F\"\n\nE-F\nrm -rf ./x", true],
-  ["x=b2;eval \"{rm,-rf} ./x\"", true],
-  ["bash -c \"cat <<<\\\"\\\"|\\$\\\"; rm -rf ./x\"", false],
-  ["true ; bash -c 'eval \"# )(\n(echo #)\\\\\\\\\nrm -rf ./x\"'", false],
-  ["cat <<<$'))\\\\&' & bash -c \"cat <<<\\\"\\\\'}\\\"\n{rm,-rf} ./x\"", true],
-  [
-    "echo '\\)' #$x\"a\"\necho $'{' | (echo \"\"\"\\\\ \"$'|\\\\'') #' | sh -c 'sh -c '\\''{rm,-rf,./x}'\\'''",
-    false
-  ],
-  ["bash -c \"(echo ')#\\\\\\$\\$')|a'''#\\$\\$\\\\' #\\\\ \\\\'(\nrm -rf ./x\"", true],
-  ["x={a,b}\"\";\"\"$'\\'\\' && echo \\  ${#x}\\'s $'; sh -c \"sh -c \\\"{rm,-rf,./x}\\\"\"", true],
-  ["eval 'bash -c '\\''cat <<\\EOF\n;#a\na|;\nEOF\ntrue ;{rm,-rf,./x}'\\'''", true],
-  ["echo \\|{a,b} #{\n{rm,-rf,./x}", true],
-  ["bash -c 'true \ncat <<'\\''EOF'\\''\na}\n (\nEOF\n(echo '\\'')$'\\''b2\nrm -rf ./x'", false],
-  [
-    "bash -c \"eval \\\"echo {a,b} '\\\\\\\\#\\\\\\\\\n'#\\\\\\$'{(}\\\\\\\\\\\\\\\\' {rm,-rf}{a,b} #a\\\\\\\\'\n# '\\\\\\\\'\ntrue \\\\\\$'\\\\\\\\'((\\\\\\\\\\\\\\\\'a \\\\\\\"&\\\\\\\"\\\\\\$x{a,b}; {rm,-rf} ./x\\\"\"",
-    true
-  ],
-  ["echo $'$'{,} \\;#\"'\" b2{a,b} | sh -c '{rm,-rf,./x}'", true],
-  ["sh -c '(echo \"#'\\''{$\"'\\''\\\"(&'\\''`echo a`)#{rm,-rf}{,}\"((\"\n{rm,-rf} ./x'", true],
-  ["x=$' | eval 'bash -c \"x=\\\"\\$}\\\\&\\\" & rm -rf ./x\"'", false],
-  [
-    "bash -c 'eval '\\''x=\\#\ncat <<E.F\n\nE.F\n(echo {rm,-rf}\\|$'\\''\\'\\'''\\'''\\''\\'\\'''\\''\\'\\''\\'\\'''\\''\\;'\\''\\'\\'''\\'')$'\\''\\'\\'''\\''$'\\''\\'\\'''\\''; {rm,-rf,./x}'\\'''",
-    false
-  ],
-  ["# #a;|\nbash -c \"eval 'rm -rf ./x'\"", true],
-  ["bash -c '(echo ${#x}'\\''\\'\\''$'\\'''\\'') #'\\''${'\\''$x# #(\n{rm,-rf} ./x'", true],
-  [
-    "eval '(echo $'\\''{a,b})#\"\" | cat <<-EOF\n (\nEOF\ncat <<-\\EOF\n\\\\|\n$'\\''\nEOF\n{rm,-rf,./x}'",
-    false
-  ],
-  ["cat <<<\"\"\"}\"{a,b} && x=${x#a};bash -c 'rm -rf ./x'", true],
-  ["# \\'\ncat <<<#;cat <<EOF_2\n\nEOF_2\nbash -c '{rm,-rf,./x}'", false],
-  ["true $(echo 'a') $' & # ;#}\\'\nx=''#$'\\''; sh -c 'sh -c \"{rm,-rf} ./x\"'", false],
-  ["true '}'\"'\"; sh -c 'sh -c '\\''{rm,-rf,./x}'\\'''", true],
-  ["x=\\\" | x='\\$'))a' & (echo ''|'){a,b}\"\\\"\\\\}{\" | {rm,-rf} ./x", false],
-  ["cat <<<{,}{a,b}; bash -c 'eval '\\''rm -rf ./x'\\'''", true],
-  [
-    "sh -c 'sh -c \"x='\\''&('\\''#;cat <<<\\$'\\''\\$'\\''{a,b}\\`echo a\\` & {rm,-rf,./x}\"'",
+    "bash -c 'eval '\\''x=a$'\\''\\'\\'''\\''#'\\''\\'\\'''\\'''\\''\\'\\'''\\''}'\\''\\'\\'''\\''$'\\''\\'\\'''\\'';\"a;'\\''\\'\\'''\\'' | rm -rf ./x'\\'''",
     true
   ],
   [
-    "x=#\nsh -c 'sh -c \"(echo \\$'\\''\\$xb2){,}it'\\''\\\\\\\"'\\'' & x=\\\"\\\"\n{rm,-rf} ./x\"'",
+    "cat <<E-'F'\n\nE-F\nif true; then bash -c \"(echo {a,b}) #{rm,-rf} #\n{rm,-rf,./x}\"; fi",
+    true
+  ],
+  ["# \nbash -c 'eval \"cat <<-\\\"E.F\\\"\n\nE.F\necho #{a,b}# s;rm -rf ./x\"'", false],
+  ["x=$'{#\"$'\"|&\"; true ; sh -c 'rm -rf ./x'", true],
+  ["(echo '#$') #$'\\\\((\\''\" && bash -c \"eval '# \n# ;\\\\\\\"\n{rm,-rf,./x}'\"", false],
+  ["# #\\\\\n(echo \"\\\\\n\"{rm,-rf}a)#'' & bash -c 'eval '\\''{rm,-rf} ./x'\\'''", false],
+  [
+    "cat <<<' | x=1 eval \"(echo 'a''|{'\\$'aa')\\\\#it #)\\\\\nx=\\$'\\\\}''\\\\' | {rm,-rf,./x}\"",
     false
   ],
-  ["# \\'\nrm -rf ./x", true],
-  ["sh -c 'sh -c \"cat <<<\\\"\\$(echo \\\"a\\\")\\\";{rm,-rf} ./x\"'", true],
-  ["sh -c 'sh -c \"echo \\\\#;{rm,-rf} ./x\"'", true],
-  ["sh -c '# a\\\"\\\\|\n{rm,-rf} ./x'", true],
-  ["(echo ${x#a})\\\\{a,b}\"'(\" && eval \"bash -c '{rm,-rf} ./x'\"", false],
-  ["eval 'bash -c \"(echo '\\''\\${#x}) ##;cat <<<#\\\"\\\"'\\'''\\'';rm -rf ./x\"'", false],
-  ["eval 'cat <<<$'\\''\"'\\''\"|'\\''\n# #(\n{rm,-rf,./x}'", false],
-  ["# (;{\nsh -c 'sh -c '\\''{rm,-rf,./x}'\\'''", true],
-  ["x=$'''';' & {rm,-rf} ./x", false],
+  ["# \n(echo {a,b})## | cat <<<{a,b}#\nbash -c \"eval '{rm,-rf} ./x'\"", true],
   [
-    "eval \"bash -c 'cat <<'\\\\''EOF-1'\\\\''\n\nEOF-1\ncat <<<'\\\\'';'\\\\''\\$#; rm -rf ./x'\"",
+    "eval \"bash -c \\\"(echo ita\\\\\\$''') #b2\\\\\\\"it & cat <<\\\\\\\"E-F\\\\\\\"\n}\\\\\\\"\nE-F\nrm -rf ./x\\\"\"",
+    false
+  ],
+  [
+    "sh -c \"sh -c \\\"cat <<-\\\\\\\\EOF\n{\\\\\\\\ {\n\\\\\\\\\\\\\\\\\nEOF\n(echo \\\\\\\\#s) #\\\\\\$'(\\\\\\\"|' #;\\\\\\\\\\\\\\\")\n{rm,-rf} ./x\\\"\"",
+    true
+  ],
+  ["true $'\\\"''\\' $'\"$\\'\"\n(echo s) #'\ntrue  | x=1 eval \"rm -rf ./x\"", true],
+  [
+    "true \"s# #\\\\|\\'\nsh -c \"sh -c \\\"x=\\\\\\$'(\\\\\\\"&'\\\\\\\"; }\\\\\\\"#;rm -rf ./x\\\"\"",
+    false
+  ],
+  ["echo '|a' {a,b} 'a'$' && bash -c \"eval \\\"cat <<-EOF\n\nEOF\n{rm,-rf} ./x\\\"\"", false],
+  [
+    "echo sa $''\"(#)\"; sh -c \"sh -c \\\"cat <<<\\\\\\\" & # \\\\\\\\\\\\\\\"\nrm -rf ./x\\\"\"",
+    false
+  ],
+  ["x=\\'\nif true; then bash -c \"{rm,-rf} ./x\"; fi", true],
+  ["echo {a,b}{rm,-rf}$' )' & sh -c \"{rm,-rf} ./x\"", true],
+  ["# a(} \n# {\" ;\nbash -c 'eval \"rm -rf ./x\"'", true],
+  ["cat <<<\"$(echo 'a') | echo \" ${x#a}\\&${x};x=$''$'\\'''} \\ ' #;#\n{rm,-rf,./x}", true],
+  ["true \"}'\" & cat <<<\\ ;true ; sh -c \"{rm,-rf,./x}\"", true],
+  ["# \\'\\')\neval \"bash -c \\\"x=\\\\\\\" \\\\\\\"a #\n{rm,-rf,./x}\\\"\"", true],
+  ["cat <<<\\'\"\"$'{' && sh -c '{rm,-rf} ./x'", true],
+  ["echo \\' \" $';\\\"{'#\"$\\\n\" & bash -c \"x=''\\$'(|' #\n{rm,-rf,./x}\"", false],
+  [
+    "true '}\"}$'{a,b}$'&' $'\n(#'; eval \"x=\\\"\\\\\\\\\\\"; x=\\$'& {a'a{,} | rm -rf ./x\"",
+    true
+  ],
+  ["cat <<<\"'\"{,} | echo \\#s\\  $''$# $x#; {rm,-rf} ./x", true],
+  ["if true; then bash -c \"x={a,b} | {rm,-rf,./x}\"; fi", true],
+  [
+    "sh -c 'sh -c \"true \\\"\\\\\\\\\\\\\\\"\\\"'\\''\\`echo a\\` | echo {rm,-rf}\\\\; | # #}|\n{rm,-rf} ./x\"'",
+    false
+  ],
+  ["true ; (echo \\$$'\\;')#${x};x={a,b}#{a,b}\nif true; then bash -c \"rm -rf ./x\"; fi", true],
+  ["x=$'## #\ntrue $''\\;# | sh -c \"sh -c \\\"rm -rf ./x\\\"\"", false],
+  ["(echo {rm,-rf}\"$'(\\\\')\"\"$'\nif true; then bash -c '{rm,-rf} ./x'; fi", false],
+  ["cat <<<{,}{a,b}`echo a` && bash -c \"{rm,-rf,./x}\"", true],
+  ["x=1 eval \"cat <<<\\\\  | {rm,-rf,./x}\"", true],
+  [
+    "cat <<'EOF'\n\nEOF\n(echo ')'\"\\\"((\\\\\"\\\")$''\nsh -c 'sh -c '\\''{rm,-rf,./x}'\\'''",
+    false
+  ],
+  ["true  & sh -c \"{rm,-rf,./x}\"", true],
+  ["(echo \"it)\\|$';x=1 eval '# {\n{rm,-rf,./x}'", false],
+  [
+    "echo '\\\\\n{' $'\"{(' {,} #\nsh -c 'cat <<-EOF\n \"\nEOF\n(echo $'\\'''\\''#\"\\\"\n;)\") #{,}s | {rm,-rf} ./x'",
+    false
+  ],
+  [
+    "x=1 eval \"x={,}''\\\\';(echo \\$'''}\\$#''|\\\\')#'s & (echo \\$')#\\$'|'\\\\'{,} & {rm,-rf} ./x\"",
+    false
+  ],
+  ["x=\\'\\  && (echo $' $')\" {;\";sh -c \"{rm,-rf,./x}\"", false],
+  [
+    "cat <<<{,}b2;echo \\ a$' '(\"{'\\$$'' & sh -c \"x={rm,-rf}\\$'\\\\\\\"'s; {rm,-rf} ./x\"",
+    false
+  ],
+  ["bash -c \"true 'b2 #{rm,-rf}\\\\\\\" | {rm,-rf} ./x\"", false],
+  [
+    "true $'\"&'# & # \\)\\\"'\neval \"bash -c \\\"echo {a,b}# \\\\\\\"(;&\\\\\\\\\\\\\\\"'}'\\\\\\$'\\\\\\\\'' b2# #\\\\\\$| #\nrm -rf ./x\\\"\"",
+    false
+  ],
+  ["bash -c \"eval 'x={,}s\\${x#a} && rm -rf ./x'\"", true],
+  ["cat <<EOF_2\n\nEOF_2\nsh -c \"{rm,-rf} ./x\"", true],
+  ["true $x''' && true {,}# #\\\\\nbash -c 'eval '\\''cat <<EOF\n\nEOF\n{rm,-rf} ./x'\\'''", false],
+  [
+    "sh -c 'sh -c '\\''cat <<E.F\n\\\"{\\\"\n\nE.F\ncat <<<a #\ntrue \" \n)\"\\&\\|;{rm,-rf} ./x'\\'''",
     true
   ],
   [
-    "(echo '\\\\##'{rm,-rf}) #\"\\'\"${\" & bash -c 'x=\")\"'\\'''\\'''\\'' #'\\''\\\" \nrm -rf ./x'",
-    false
-  ],
-  ["eval 'true {,}{rm,-rf} '\\'';#  \n{rm,-rf,./x}'", false],
-  ["x='&#\\\\' & true ; sh -c \"{rm,-rf} ./x\"", true],
-  ["x=''\\ \\# #\\'\\\\''\neval 'bash -c \"{rm,-rf} ./x\"'", true],
-  [
-    "echo ## #\\'}$\\'\neval 'bash -c \"echo # \\\\ \\$'\\''\\\\} '\\'' b2 | true  & {rm,-rf,./x}\"'",
+    "x='\n\\$$'\"; cat <<<it\"{\"'\\\\\"\\\\\\';eval 'cat <<<#'\\''a\n'\\'' #\\'\\''\n{rm,-rf} ./x'",
     false
   ],
   [
-    "eval 'bash -c '\\''(echo \";\"{a,b})#$'\\''\\'\\'''\\'''\\''\\'\\'''\\''a & {rm,-rf,./x}'\\'''",
-    false
-  ],
-  ["cat <<EOF\n\nEOF\nbash -c 'eval \"{rm,-rf} ./x\"'", true],
-  ["sh -c 'sh -c \"true  | rm -rf ./x\"'", true],
-  ["(echo s'})')#'a\\\\\\' | cat <<<{a,b}\"\n\"\nbash -c '# #;\n{rm,-rf} ./x'", false],
-  ["x=\\ $' && echo '}\\{|'; eval \"true \n{rm,-rf,./x}\"", false],
-  ["bash -c \"eval \\\"# )}\n{rm,-rf,./x}\\\"\"", true],
-  ["x=\"\\&\\\\|\"\nbash -c '{rm,-rf,./x}'", true],
-  ["# )\\\"|\necho {a,b}# # )\n# \n{rm,-rf,./x}", true],
-  ["cat <<'EOF'\n\nEOF\ncat <<<${#x}'{,} #\\\"\nsh -c 'sh -c \"{rm,-rf,./x}\"'", false],
-  [
-    "bash -c 'eval \"(echo '\\''\\\\#) ##\\$(echo '\\''a'\\'')\\\\; && cat <<<\\\\\\\"\\\\|;rm -rf ./x\"'",
-    false
-  ],
-  [
-    "sh -c \"sh -c \\\"cat <<<\\\\\\\"\\\\\\\\\\\\\\\"}}\\\\\\\"\\\\\\\\# & cat <<\\\\\\\"E-F\\\\\\\"\n\nE-F\nx=\\\\\\\\;s\\\\\\$(echo a); {rm,-rf,./x}\\\"\"",
+    "bash -c 'eval '\\''cat <<'\\''\\'\\'''\\''EOF'\\''\\'\\'''\\''\n\nEOF\n{rm,-rf,./x}'\\'''",
     true
   ],
-  ["true  | rm -rf ./x", true],
-  ["bash -c 'x=\\$ && (echo $'\\''\n})\"'\\'')#\"\" #\"'\\''\n{rm,-rf,./x}'", true],
-  ["# |;;\nbash -c 'eval '\\''rm -rf ./x'\\'''", true],
-  ["x=''$'' #''\nsh -c \"{rm,-rf} ./x\"", true],
-  ["# \\'|$\necho $#;bash -c \"x=# #;\n{rm,-rf,./x}\"", true],
+  ["cat <<<'&'\\\"\";\"\nsh -c 'sh -c \"rm -rf ./x\"'", true],
+  ["cat <<<$' && (echo s#)#\\#\"\"$(echo a) && sh -c 'sh -c '\\''{rm,-rf,./x}'\\'''", false],
+  ["# \nsh -c \"{rm,-rf,./x}\"", true],
   [
-    "eval 'bash -c \"true {a,b}\\\"\\\" \\$'\\'''\\''\\\\'\\'' | x='\\''\\\\{'\\''\\\\ #\nrm -rf ./x\"'",
+    "(echo ${x#a})'(#'#$'a'\n(echo \"\\a\"$'\\\\\"\\&'\"\\\") #\\\" | bash -c '{rm,-rf,./x}'",
+    false
+  ],
+  ["bash -c 'cat <<<\"{$\"a$'\\'''\\'' & # \nrm -rf ./x'", true],
+  ["sh -c \"x='' |{''|\\\\\\\\{' | {rm,-rf,./x}\"", false],
+  ["# \nx=1 eval \"true \\$'&\\\\\\\"' 'a & x='\\$'; {rm,-rf} ./x\"", false],
+  ["(echo \\;) #'\"$(echo \"a\")\" | eval \"bash -c 'rm -rf ./x'\"", false],
+  ["cat <<\"E-F\"\n\nE-F\nx=1 eval 'cat <<'\\''EOF'\\''\n\nEOF\n{rm,-rf} ./x'", true],
+  ["# |'\ncat <<<\" & x=1 eval \"rm -rf ./x\"", false],
+  [
+    "echo \\$$'|\n'{,} `echo a`\";|\\\"'\"$'(a)' b2\" \"#; if true; then bash -c \"{rm,-rf,./x}\"; fi",
     true
   ],
-  ["x=`echo a`\nbash -c 'eval '\\''{rm,-rf,./x}'\\'''", true],
-  ["true '#\n\\' \\|$'{\n\\\"$'\";\" && x=${x#a} | rm -rf ./x", true],
-  ["echo \\; & cat <<\\EOF\n\nEOF\necho \"\\\\'\\\\#\" \\\"$'\n$'\neval \"rm -rf ./x\"", true],
-  ["bash -c '# \n{rm,-rf,./x}'", true],
-  ["cat <<E.F\na&a\n}\n\nE.F\ntrue \"\"$'\"'\n(echo $'#')a$'}'a #\nrm -rf ./x", false],
-  ["# \ncat <<<\";\\'\\\\'\";true $'#(#'# & bash -c 'rm -rf ./x'", true],
-  ["echo #\\; && true  #\\\\\n{rm,-rf} ./x", true],
-  ["true  && x=$'&;\"'$'$(echo 'a');echo {rm,-rf}\"&\" it'\\\\a\n'# {,} & rm -rf ./x", false],
-  ["true $'\n;'#a\nx=$'&\"' && x=s && {rm,-rf} ./x", true],
-  ["cat <<-\\EOF\n\nEOF\nsh -c 'sh -c '\\''{rm,-rf} ./x'\\'''", true],
-  ["# \nsh -c \"sh -c 'x=\\$'\\\\'' #&;\nrm -rf ./x'\"", false],
-  ["echo $''$'\\\"\\\")\\\"'$x && # })a\neval \"x=\\\"(\\\\a\\\" && {rm,-rf,./x}\"", true],
   [
-    "true ${#x}';;&;' $(echo a)a\\  | sh -c \"sh -c \\\"echo \\\\\\$'\\\\\\\\\\\\\\\"\\\\\\\\\\\\\\\\\n''\\\\\\$#\\\\\\\\\\\\\\\\'\\\\\\\" \\\\\\$'b2 | echo # {rm,-rf}\\\\\\\"'' \\\\\\${x} & {rm,-rf} ./x\\\"\"",
+    "eval \"# #\ntrue \\$(echo a)'\\\\\\\\; (echo \\$'; '\\\\\\\\')#\\$'a\\\\''\\\"{{#\\\" & {rm,-rf} ./x\"",
+    false
+  ],
+  ["sh -c 'true \\\"$'\\'''\\'' s\" #(\" #;}\nx=$'\\'''\\''\\\" | {rm,-rf} ./x'", true],
+  ["cat <<-\"E.F\"\n\nE.F\nif true; then bash -c \"{rm,-rf} ./x\"; fi", true],
+  [
+    "cat <<<#'&\\';echo {rm,-rf}\\| \"'\\\\\\ \" #$'&' && if true; then bash -c \"{rm,-rf,./x}\"; fi",
+    false
+  ],
+  [
+    "bash -c \"eval 'x=\\\"\\\\\\\"\\\"b2 | (echo \\\"a)\\\"\\\"\\\\\\\"(#;\\\"{a,b})'\\\\''}\\\\\\\\aa'\\\\''\\\\ \\\" #|\\\\'\\\\''\n# \\\\\\\\\n{rm,-rf} ./x'\"",
+    false
+  ],
+  ["x=\\\"$'}\"\\'\\\"'{rm,-rf} & sh -c \"x=\\\\;\\$'(\\\"\n{'\\$' &' && {rm,-rf,./x}\"", true],
+  ["echo {a,b}' #\nif true; then bash -c 'echo \")({\" {a,b};x='\\'' && {rm,-rf,./x}'; fi", false],
+  [
+    "sh -c \"# \\\"\\\\\\\\\ntrue \\\"\\\\|{,} | cat <<\\\\EOF\n; \n&\\\\\nEOF\n{rm,-rf} ./x\"",
+    false
+  ],
+  [
+    "(echo '\\\"a$')#{rm,-rf} & cat <<\\EOF\n{\\\"\"\n {$\n\nEOF\ncat <<<{rm,-rf}\"$(echo \"a\")\"'$\")'; {rm,-rf,./x}",
+    false
+  ],
+  [
+    "true #'(\\\" ('')' | cat <<'EOF'\n \\'|\\\\\n&&\nEOF\ncat <<<'\"$(echo \"a\")\"; eval \"bash -c \\\"{rm,-rf,./x}\\\"\"",
+    false
+  ],
+  ["(echo $')$' | true b2' {a,b}'(\\}\\\\'\"\" | bash -c \"{rm,-rf,./x}\"", false],
+  ["bash -c 'eval '\\''true \ncat <<E.F\n\nE.F\n{rm,-rf} ./x'\\'''", true],
+  ["bash -c \"true #;cat <<\\\\EOF\n\\\\\n\nEOF\ncat <<<\\\\'\\\\\\$\\$'' && rm -rf ./x\"", true],
+  ["cat <<<it\\# | cat <<<it\"\"\"}\"\"(\" | x=1 eval '{rm,-rf} ./x'", true],
+  ["echo a${x}# | eval '# \n{rm,-rf} ./x'", true],
+  ["(echo #\"\")#`echo a`\nx=$'\\\"'$(echo a) | sh -c \"sh -c \\\"rm -rf ./x\\\"\"", false],
+  ["# \\'$\\\\}\n# a\nif true; then bash -c \"{rm,-rf} ./x\"; fi", true],
+  [
+    "if true; then bash -c \"x=\\\"\\$(echo \\\"a\\\")\\\"\\\"\\$x & cat <<'EOF'\n\\\\'')\n'a\nEOF\n{rm,-rf,./x}\"; fi",
+    false
+  ],
+  ["cat <<<#\")'\" & x=1 eval \"echo \\$'}\\\\\\\\\\\\&' && {rm,-rf} ./x\"", false],
+  ["true \" $'\\\"$'$'&'a & bash -c \"{rm,-rf} ./x\"", false],
+  ["cat <<<'(\\'##; cat <<-EOF\n\\\"'\n\\\\|\nEOF\nsh -c \"sh -c '{rm,-rf} ./x'\"", true],
+  [
+    "eval \"bash -c 'cat <<\\\\EOF\na\n\\$\n}\nEOF\ntrue \\$x\\\"}a\n\\\\\\\\\\\" | rm -rf ./x'\"",
     true
   ],
-  ["bash -c 'cat <<<'\\''|&\\\"\\'\\'''\\'''\\''\n{rm,-rf} ./x'", true],
-  ["eval \"bash -c '# \\\\\ncat <<-EOF\n\nEOF\nrm -rf ./x'\"", true],
   [
-    "cat <<<{,}\\#\\'\n(echo $') #$##;bash -c \"(echo \\$'\\\\';\\\\\\\"\\$'\\\"#) #\\\\|{a,b}it; rm -rf ./x\"",
+    "sh -c \"true ' \\${x#a}\\\"'\\\\\\\\'\n(echo {,}\\\")#\\\\#'\\$\\$)''' | {rm,-rf,./x}\"",
     false
   ],
-  ["cat <<<#; (echo #$(echo 'a'))#$(echo 'a')\\#' | bash -c \"eval '# (&\n{rm,-rf} ./x'\"", false],
+  ["eval 'bash -c '\\''cat <<<{a,b}\"\" && {rm,-rf} ./x'\\'''", true],
+  ["(echo #'\"#;\\')#{a,b}\"\"; x=1 eval \"true ;cat <<-EOF\n\nEOF\n{rm,-rf,./x}\"", false],
+  ["(echo {a,b}s#)#it | sh -c \"{rm,-rf,./x}\"", false],
   [
-    "true #'(\\\" ('')' | cat <<'EOF'\n \\'|\\\\\n&&\nEOF\ncat <<<'\"$(echo \"a\")\"; sh -c \"{rm,-rf,./x}\"",
-    false
-  ],
-  ["sh -c 'cat <<<\\ {rm,-rf} && {rm,-rf,./x}'", true],
-  ["echo # '}\\\"|'$';'a && bash -c \"eval \\\"cat <<<\\\\\\\"; {rm,-rf,./x}\\\"\"", false],
-  ["bash -c \"# #)}\n{rm,-rf,./x}\"", true],
-  ["bash -c \"x=\\\\&\\\"&\\\";cat <<<s\n# &\\\\\\\\\\\\\\\"\n{rm,-rf} ./x\"", true],
-  [
-    "x=$'''{' ##\\\"\nsh -c \"(echo ##) #\\$'; \\\\\\\"|'\\$(echo 'a')\\\"a\\\\\\\\\\\"; true \\\"a\\\\'\\\" ' &\\\"|'\\\\ ;rm -rf ./x\"",
-    false
-  ],
-  ["echo \\ {rm,-rf} $'\na\"$'\\#'{' $'\"'$'|\"a'#;bash -c '# \n{rm,-rf} ./x'", true],
-  [
-    "sh -c \"sh -c \\\"(echo \\\\\\$''|#\n\\\\\\$'{rm,-rf})#\\\\\\${#x}#b2 #\\\\\\\\'{\\\\\\\\'\n# {\\\\\\\\a\ncat <<<\\\\\\\"\\\\\\\\\\\\\\\\a\\\\\\\"\\\\\\$'\\\\\\\"\\\\\\\"; {rm,-rf,./x}\\\"\"",
-    false
-  ],
-  ["x='|' | bash -c \"eval \\\"{rm,-rf,./x}\\\"\"", true],
-  ["# a\"a\\'\n{rm,-rf,./x}", true],
-  ["x=it\\\\;bash -c \"(echo {rm,-rf}')\\$''\\$''; {rm,-rf,./x}\"", false],
-  [
-    "x=$x\neval \"bash -c \\\"true ; (echo \\\\\\$'&#'\\\\\\$'\n'\\\\\\\";|\\\\\\\") ##{rm,-rf} | rm -rf ./x\\\"\"",
-    false
-  ],
-  ["bash -c \"true \\$'\\\\\\\\a\\\\\\\\\n' & rm -rf ./x\"", true],
-  [
-    "true  #\neval 'bash -c \"# \n(echo b2\\$'\\''\\$\\\\'\\'''\\''{,}) #\\$'\\''\nrm -rf ./x\"'",
+    "bash -c \"eval 'echo '\\\\''\\\"\\\\\\\"}\\\\\\\"'\\\\''{a,b}it \\$'\\\\'' '\\\\''{,};{rm,-rf} ./x'\"",
     true
   ],
-  ["bash -c \"eval 'cat <<'\\\\''EOF-1'\\\\''\n'\\\\''\\\"&\n\\$\nEOF-1\n{rm,-rf,./x}'\"", true],
-  ["echo $'#(\n)'#'\\\"|' #\neval \"cat <<<''';{rm,-rf,./x}\"", false],
   [
-    "bash -c \"cat <<\\\\EOF\n\\\\)\\\\'&\n(\\\\\nEOF\necho #\\\"\\\"\\\\\\\" && (echo \\\\\\\"\\$''b2) #'a #}\\\\\\\")\\\\'\n{rm,-rf,./x}\"",
+    "x=##it\ncat <<<\\#$(echo a){a,b} && cat <<<{,}; if true; then bash -c '{rm,-rf} ./x'; fi",
     true
   ],
-  ["echo '\\$ \\$#\n# \\\\{\nbash -c \"{rm,-rf} ./x\"", false],
-  ["cat <<'EOF-1'\n\nEOF-1\nbash -c \"eval \\\"true \\\\\\$'{)& ' | {rm,-rf,./x}\\\"\"", true],
   [
-    "#  a\\'\n(echo \")a)\"\")#$#$'\\\"\\''\\# ## |'\n(echo \"'\")') #'$'\n'\\|;eval 'bash -c '\\''{rm,-rf} ./x'\\'''",
+    "cat <<<{a,b} & x=$'\\\" | sh -c \"(echo '')#\\\"\\\\#&\\\\\\\"\\\"\\\\&\\$'; rm -rf ./x\"",
     false
   ],
-  ["echo $x {a,b}\"\"{a,b} | bash -c \"eval '{rm,-rf,./x}'\"", true],
-  ["eval \"true  && {rm,-rf} ./x\"", true],
-  ["cat <<\"E-F\"\n$\\\\'\nE-F\ncat <<'EOF-1'\n\\\"{&\nEOF-1\neval '#  &'\\''\nrm -rf ./x'", true],
-  ["# ; \ncat <<<'()a''#}' && sh -c \"sh -c '{rm,-rf} ./x'\"", true],
+  ["(echo s$'\")${x}b2 & x=\"(|\\\"\"\\';sh -c 'rm -rf ./x'", false],
+  ["eval 'true $(echo a)'\\'' \"#\\\\'\\'' it'\\''&}\\\"\\\\'\\''\nrm -rf ./x'", true],
+  ["bash -c \"eval \\\"# \\\\\\\\(\\\\\\\\(\nrm -rf ./x\\\"\"", true],
+  ["bash -c 'cat <<-EOF\n\nEOF\n{rm,-rf,./x}'", true],
+  ["# &\nsh -c \"sh -c \\\"true \\\\\\${x#a} {,}\\\\\\$x;rm -rf ./x\\\"\"", true],
+  ["bash -c 'x={rm,-rf}{rm,-rf} & x=\\&'\\''#{'\\'''\\''\"\\\"\\'\\'';{rm,-rf} ./x'", true],
+  ["(echo \\|) #\"(\"\\\"\\\" | cat <<\"E-F\"\n\n\nE-F\n{rm,-rf} ./x", true],
+  ["eval \"true b2 # #\\$\nx='b2{rm,-rf} & {rm,-rf,./x}\"", false],
   [
-    "(echo ${#x}) #\")\"$'';echo \"\"s \\\\ $'{a,b}'\n\\\\a#' & eval 'bash -c \"{rm,-rf,./x}\"'",
-    false
-  ],
-  ["eval \"bash -c \\\"cat <<<{rm,-rf}'''\\\\\\\\{{'; rm -rf ./x\\\"\"", true],
-  [
-    "(echo \"\\\" \"') #\"'a' | true '|\\' \"b2\\$ #\\\\$\ntrue \"\\\\\n(#\" {rm,-rf}{,}$'a(\\\\|' && sh -c 'rm -rf ./x'",
-    false
-  ],
-  ["echo $(echo 'a')# $'$'; bash -c 'eval \"(echo \\\"\\\") #s\ntrue  && rm -rf ./x\"'", true],
-  ["# \nbash -c \"eval '{rm,-rf} ./x'\"", true],
-  [
-    "cat <<\"E-F\"\n\n\\\\\nE-F\nsh -c 'sh -c '\\''x=$(echo '\\''\\'\\'''\\''a'\\''\\'\\'''\\''){,} & rm -rf ./x'\\'''",
+    "eval 'bash -c '\\''true  && cat <<'\\''\\'\\'''\\''EOF'\\''\\'\\'''\\''\n\nEOF\necho '\\''\\'\\'''\\'''\\''\\'\\'''\\''s; {rm,-rf} ./x'\\'''",
     true
   ],
-  ["cat <<<''\n\\\"{'; sh -c \"sh -c \\\"{rm,-rf} ./x\\\"\"", false],
-  ["# \necho \"\"#\necho {rm,-rf}$x# \"\"$(echo \"a\")\" \\;$'\\\\|}#' && {rm,-rf,./x}", false],
-  ["cat <<-\\EOF\n\nEOF\ncat <<<$(echo a)$''{;' #'&\\a\n# \\\\\neval '{rm,-rf} ./x'", true],
-  ["cat <<<\"a(\\'\\'\"{,}; cat <<<\"#\"\"{\n\"\" | cat <<-\\EOF\n# #\"\n\nEOF\nrm -rf ./x", true],
-  ["(echo {,}\\#'}a|#')#$''a# |'\\\\ | eval \"bash -c '{rm,-rf} ./x'\"", false],
-  ["true #b2 | (echo $(echo a){a,b}) #\"\" && sh -c \"sh -c '{rm,-rf} ./x'\"", false],
-  ["cat <<<${#x} && cat <<<{rm,-rf}{,}\\&\necho ''\"&\" $''it it | {rm,-rf} ./x", true],
-  ["sh -c 'cat <<E.F\naa\"a\nE.F\n{rm,-rf,./x}'", true],
-  ["true  #a\nbash -c 'eval \"rm -rf ./x\"'", true],
-  ["# \\\\)&\n(echo {rm,-rf}s)\"; \\|\" | bash -c \"eval '{rm,-rf} ./x'\"", false],
-  ["eval 'bash -c '\\''echo \\$; {rm,-rf} ./x'\\'''", true],
-  ["cat <<-\\EOF\n\nEOF\n# \n{rm,-rf,./x}", true],
-  ["bash -c 'eval '\\''cat <<E.F\n#\\\nE.F\n{rm,-rf} ./x'\\'''", false],
-  ["x=$''('${#x} && echo '$' #\\'\\\"&\ncat <<<\\\"{a,b}b2 & eval '{rm,-rf} ./x'", false],
-  ["(echo \"$'\n\\\\'{')#$';)  ';bash -c \"{rm,-rf} ./x\"", false],
-  ["sh -c \"x=\\${x#a}a | (echo \\\"\\\")#'#\\\\;{'\\$'|''b2\ncat <<<{,} & {rm,-rf} ./x\"", true],
-  ["(echo \"a\"\"$#) #'\\|; sh -c \"x=#\\\" && {rm,-rf,./x}\"", false],
-  ["(echo ')#$(echo 'a')\"};\"'&{\\\"' && bash -c '#  aa\ntrue ; {rm,-rf} ./x'", false],
-  ["bash -c 'cat <<-\\EOF\n\nEOF\n# (;)\\\\\necho #\\& \\|\\'\\''it;rm -rf ./x'", false],
-  ["# \necho $' $'${x#a} | bash -c \"cat <<<';('{,} & {rm,-rf} ./x\"", true],
+  ["# (\neval '{rm,-rf,./x}'", true],
+  ["true \nbash -c 'eval '\\''{rm,-rf,./x}'\\'''", true],
+  ["# )|\"\n(echo ${#x}#') #'\"#(;';x=1 eval '# \n{rm,-rf} ./x'", false],
   [
-    "eval 'bash -c '\\''cat <<<$'\\''\\'\\'''\\'''\\''\\'\\'''\\'''\\''\\'\\'''\\''\"|\\\\\" & cat <<<$'\\''\\'\\'''\\''a'\\''\\'\\'''\\'' && {rm,-rf} ./x'\\'''",
-    false
-  ],
-  ["x=a\"\n;|\"'; # )#\nbash -c 'rm -rf ./x'", false],
-  [
-    "echo \\|\"'#\\\\$\"\"# \" #$';(\\'' {a,b}\" #$\\\\'{\ncat <<EOF\n\nEOF\neval \"true  & rm -rf ./x\"",
+    "# \\'\neval \"bash -c \\\"x=\\\\\\$'| ()'\\\\\\\"\\\\\\\\' (#\\\\\\\" && cat <<<\\\\\\$''{a,b} #|\n{rm,-rf} ./x\\\"\"",
     true
   ],
-  ["(echo \\'$'a'\"$(echo \"a\")\") #$'\\'' && (echo \\') #\\;${x} & {rm,-rf} ./x", false],
-  ["eval 'bash -c \"(echo \\\\#it) #a{rm,-rf}\\$'\\''\\\\\\\"'\\'' && {rm,-rf,./x}\"'", false],
-  ["eval 'bash -c '\\''true ;x=#$# | # (#}a\nrm -rf ./x'\\'''", true],
-  ["(echo $') #'\\&'$';\\' #a'\"a\ncat <<<{a,b}')$';# { \\'\nrm -rf ./x", false],
+  ["# aa\nx=\"\"; rm -rf ./x", true],
+  ["eval 'bash -c '\\''# |\nrm -rf ./x'\\'''", true],
   [
-    "sh -c \"sh -c \\\"(echo \\\\\\\")'\\\\\\\"\\\\\\\"{,})\\\\\\\"'\\\\\\\"')\\\\\\\\\\\\\\\"'\n{rm,-rf} ./x\\\"\"",
+    "eval \"bash -c '(echo \\\"\n{))\\\"a'\\\\''\\\\#{('\\\\'')\\$'\\\\''#&'\\\\'''\\\\'''\\\\'';true ##s \\${x#a}s #)\nrm -rf ./x'\"",
     false
   ],
-  ["x=\" & bash -c 'cat <<E.F\n\n)\\\\\nE.F\n{rm,-rf,./x}'", false],
-  ["true \"\" && x={a,b} #\\\"\\\\\ncat <<E-'F'\n\nE-F\nbash -c '{rm,-rf} ./x'", true],
-  ["cat <<EOF\n(|\n\\'\n\nEOF\n# \ntrue $' && sh -c \"{rm,-rf} ./x\"", false],
-  ["cat <<'EOF-1'\n\nEOF-1\nsh -c 'sh -c \"{rm,-rf,./x}\"'", true],
-  ["eval '(echo \")##{a,b}#; cat <<\\EOF\n&&a\nEOF\n{rm,-rf} ./x'", false],
+  ["true '$'; eval 'bash -c '\\''# \n{rm,-rf,./x}'\\'''", true],
+  ["eval \"bash -c 'cat <<E.F\naa\\\"a\nE.F\n{rm,-rf,./x}'\"", true],
+  ["true b2\\&# ' \"#a' & bash -c 'eval \"rm -rf ./x\"'", true],
+  ["cat <<\\EOF\n\nEOF\ntrue $')(#\\\\'$'\n{&'a $'\\'';# '}\nrm -rf ./x", true],
   [
-    "eval \"bash -c '(echo a\\$'\\\\''\\$'\\\\''b2)#\\$'\\\\''\n'\\\\''\\${x}\\\\  && echo {,}\\\")\\$&a\\\";{rm,-rf} ./x'\"",
-    false
-  ],
-  [
-    "x=b2 && echo #\" it\"}\n\\\"$# '\\(''#\\a('${#x} | sh -c \"sh -c 'cat <<<\\\"a;\\\";rm -rf ./x'\"",
+    "if true; then bash -c 'cat <<EOF_2\n\nEOF_2\ncat <<\\EOF\n\nEOF\ntrue {,} s\"\\\"#$\" & {rm,-rf} ./x'; fi",
     true
   ],
-  ["cat <<<'\\\\#'$'\n'$' #\nx=$'#\\\\&\\\\'$''' & cat <<<$(echo 'a') & {rm,-rf,./x}", true],
-  ["x=$'&'\"\\'(&\\\\\"b2; cat <<-\"E.F\"\n\nE.F\nsh -c 'sh -c '\\''{rm,-rf} ./x'\\'''", true],
-  ["cat <<-\\EOF\n\\\"\nEOF\n# \n{rm,-rf,./x}", true],
-  ["# \neval 'bash -c '\\''{rm,-rf} ./x'\\'''", true],
-  ["cat <<<'}&{'#$x\ncat <<<\")\"${#x}' #\nbash -c 'rm -rf ./x'", false],
-  ["cat <<'EOF-1'\n\nEOF-1\ncat <<E.F\n{ )\n |}\nE.F\nbash -c \"{rm,-rf,./x}\"", true],
   [
-    "x={a,b}\\| && echo \\;\"('&$\" \\; $'('{rm,-rf} & sh -c 'true it{,} '\\''$'\\''#'\\''}'\\'''\\''$'\\'''\\'';{rm,-rf,./x}'",
+    "bash -c 'eval '\\''cat <<E-'\\''\\'\\'''\\''F'\\''\\'\\'''\\''\n\na\nE-F\ncat <<<\\#\"$(echo \"a\")\"\"(\";rm -rf ./x'\\'''",
+    true
+  ],
+  ["x=1 eval 'cat <<EOF\n'\\'''\\''&\nEOF\nrm -rf ./x'", true],
+  [
+    "echo \"$'\\''\"\\\\; \" $'\\'' #${#x} | x=\\\\{rm,-rf}\ncat <<<\\ $'' && eval \"{rm,-rf} ./x\"",
     false
   ],
-  ["echo # \\| | bash -c \"eval '# \n{rm,-rf,./x}'\"", false],
-  ["# \necho {a,b}\"'\\${|' $')a\n'${x#a} s#; sh -c \"{rm,-rf,./x}\"", false],
-  ["x=\"$\\'$\"\\\\ #}$\\\nbash -c \"eval 'true \\$'\\\\''\\\\\\\\\\\" & rm -rf ./x'\"", false],
-  ["x=${x#a}\\'{,};bash -c \"eval 'true  && rm -rf ./x'\"", true],
-  ["cat <<<##'\\\\' # ;\neval '{rm,-rf,./x}'", false],
+  ["true  & echo \\;#\\$ $'#'#$' \"(|\\'{\"$'a;echo \"\n}\"s $'a'\n{rm,-rf,./x}", true],
+  ["eval 'true #$'\\''\\\"{\\\\'\\'' \"(\"\" | {rm,-rf,./x}'", false],
+  ["cat <<EOF\n\nEOF\necho \"#\" $'a;'{,}\"&(\" && rm -rf ./x", true],
+  ["(echo 'it$'{# ') #'\\|; sh -c 'sh -c \"{rm,-rf,./x}\"'", false],
+  ["echo $'\\''$' ss; eval '{rm,-rf,./x}'", false],
+  ["x=\"\" & echo {rm,-rf}; x=1 eval \"true #''|#' && {rm,-rf} ./x\"", false],
   [
-    "cat <<'EOF'\n'\n\n\nEOF\neval 'bash -c '\\''(echo a${x#a}'\\''\\'\\'''\\'')\\(;'\\''\\'\\'''\\'')\\'\\''\\'\\'''\\''#\"|\" #&;\nrm -rf ./x'\\'''",
+    "(echo {rm,-rf}''$')#{a,b}')'\nif true; then bash -c 'true \\&; cat <<E.F\n||$\nE.F\nrm -rf ./x'; fi",
     false
   ],
-  ["cat <<-EOF\n\nEOF\ncat <<<#$'('\nbash -c \"eval '{rm,-rf,./x}'\"", false],
+  ["bash -c '(echo #)\"\\\"}\\'\\''\\\"\"it$'\\''(\\\\'\\'' && rm -rf ./x'", false],
+  ["x=1 eval \"echo \\\\\\\\\\\"\\\\'\\\\\\\\\\\" & # ))\\\\\\\"\nrm -rf ./x\"", true],
+  ["echo $(echo a)\\#$'$' | # \nx=1 eval '(echo \" \na\"\")'\\''#;{rm,-rf,./x}'", false],
+  ["eval '# }'\\''\nrm -rf ./x'", true],
+  ["(echo \\ $'\\\\|'\"\\';\")${x}b2$'${';x=1 eval \"cat <<'EOF'\na }\nEOF\n{rm,-rf} ./x\"", false],
+  ["eval \"cat <<'EOF-1'\n#a#\n\\\\\\\\&\\$\\\\'\nEOF-1\n{rm,-rf} ./x\"", true],
   [
-    "cat <<<#$'\\''a; echo \"'\"# #\\  s$''{,} && bash -c \"eval '# '\\\\''\n{rm,-rf,./x}'\"",
+    "echo '\\&\\\\ $'(\\|' $'\\'' && cat <<<$x#\"\"; cat <<<s'; \"'' {\n';bash -c \"{rm,-rf} ./x\"",
     false
   ],
-  ["x=\"( \n\"{,}\neval \"cat <<<# && #  \n{rm,-rf,./x}\"", false]
+  ["true  && x=#b2 && echo {,} && bash -c \"eval \\\"{rm,-rf,./x}\\\"\"", true],
+  ["# );\nbash -c \"eval \\\"{rm,-rf,./x}\\\"\"", true],
+  ["(echo \"#) #\\ it';a '; sh -c \"{rm,-rf} ./x\"", false],
+  [
+    "if true; then bash -c \"cat <<<\\$'\\\\'' & x=\\\"&{|\\\"\\$xb2 | (echo \\\\\\\") #{a,b}\\$';rm -rf ./x\"; fi",
+    false
+  ],
+  [
+    "x=$'\\''\" | eval \"bash -c \\\"echo {,}## #'|}' #\n# &#\\\\\\\\\\\\\\\\(\nrm -rf ./x\\\"\"",
+    false
+  ],
+  ["# }#\ncat <<\\EOF\n\nEOF\nsh -c \"{rm,-rf,./x}\"", true],
+  ["x=\" & cat <<\"E-F\"\n\\$\\'\\\\\n' |\\\\\nE-F\nbash -c '{rm,-rf,./x}'", false],
+  [
+    "echo \\#\\\" `echo a`$'|$a'' && (echo \\ $'( #}'\") ##\\\"') $' | # a\nx=1 eval '{rm,-rf,./x}'",
+    false
+  ],
+  [
+    "if true; then bash -c 'cat <<-\\EOF\n'\\''&a\n}&\nEOF\ncat <<EOF_2\n& \nEOF_2\ncat <<'\\''EOF-1'\\''\n'\\'')\n\n\"\nEOF-1\nrm -rf ./x'; fi",
+    true
+  ],
+  ["(echo {,}{,}it) #it; eval \"{rm,-rf} ./x\"", false],
+  ["bash -c 'x=\\| & rm -rf ./x'", true],
+  ["eval 'echo \"a\" {,}'\\'')\"'\\''s & {rm,-rf,./x}'", true],
+  ["cat <<<\"\";bash -c \"x=#'))\\\\' #{\\\\}\n{rm,-rf,./x}\"", true],
+  ["x={,}'\n&;'; bash -c '{rm,-rf} ./x'", true],
+  ["x=\" | sh -c 'sh -c \"echo \\$'\\'')('\\'' '\\''a{'\\'' && rm -rf ./x\"'", false],
+  ["x=';bash -c '# \n{rm,-rf} ./x'", false],
+  ["x=1 eval '# \\'\\''\necho b2 $x'\\'' ${x#a}\n{rm,-rf,./x}'", false],
+  [
+    "x=\"{rm,-rf}# | eval 'bash -c '\\''x={,}it$'\\''\\'\\'''\\'' &\\\\'\\''\\'\\'''\\''; {rm,-rf,./x}'\\'''",
+    false
+  ],
+  ["# \nsh -c '{rm,-rf} ./x'", true],
+  ["x=it;x=1 eval '{rm,-rf} ./x'", true],
+  [
+    "x=b2; cat <<EOF\n\nEOF\nsh -c 'echo \"\"#\\\"(\"\\ '\\''\\\\|'\\'' #it$'\\''\\\\\")('\\'' {,}s;rm -rf ./x'",
+    false
+  ],
+  ["eval \"echo ## 'a\\\\\\\\'\\\\#\\${x} & {rm,-rf,./x}\"", false],
+  [
+    "cat <<\\EOF\n;\nEOF\nif true; then bash -c 'echo #\"{\\\"\\'\\''\"'\\''&#('\\'' && echo #{rm,-rf}#;{rm,-rf} ./x'; fi",
+    false
+  ],
+  ["x=\"\"\"'|{' | # \n{rm,-rf} ./x", false]
 ]

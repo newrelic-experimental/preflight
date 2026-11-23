@@ -899,7 +899,7 @@ var HEREDOC_OPERATOR = /(?<!<)<<(-?)[ \t]*/y;
 var WORD_END = /[\s;&|()<>]/;
 var LINE_CONTINUES = /(?<!\\)(?:\\\\)*\\$/;
 var COMMAND_END = /[;&|()\n]/;
-var COMMAND_START = String.raw`(?:^|[;&|(\n])[ \t]*`;
+var COMMAND_START = String.raw`(?:^|[;&|(\n])[ \t]*(?:(?:if|elif|then|else|do|while|until|time|!|\{)[ \t]+)*(?:[A-Za-z_]\w*=[^\s;&|()]*[ \t]+)*`;
 var NESTED_SCRIPT = new RegExp(
   String.raw`(${COMMAND_START})(?:(?:command|builtin)[ \t]+)*(?:(eval)|(?:[^\s;&|()]*/)?(?:ba|z|da)?sh[ \t]+-[a-zA-Z]*c[a-zA-Z]*)`,
   "g"
@@ -937,7 +937,7 @@ function readHeredocWord(command, start) {
     }
     quoted = true;
   }
-  return i === start ? void 0 : { delimiter, quoted, end: i };
+  return i === start ? void 0 : { delimiter, quoted };
 }
 function heredocBodiesEnd(command, start, heredocs) {
   let i = start;
@@ -947,7 +947,7 @@ function heredocBodiesEnd(command, start, heredocs) {
       const eol = command.indexOf("\n", i);
       const end = eol === -1 ? command.length : eol;
       const segment = command.slice(i, end);
-      i = end + 1;
+      i = eol === -1 ? end : eol + 1;
       if (!quoted && LINE_CONTINUES.test(segment)) {
         line += segment.slice(0, -1);
         continue;
@@ -998,7 +998,7 @@ function lex(command) {
           stripTabs: operator[1] === "-",
           quoted: word.quoted
         });
-        emitCode(word.end);
+        emitCode(i + operator[0].length);
         atWordStart = false;
         continue;
       }
@@ -1061,7 +1061,7 @@ function wordsFrom({ masked, kept }, start) {
   return words;
 }
 function isCommandWord(kept, at, prefix, end) {
-  return (prefix === "" || kept[at] === null) && typeof kept[at + prefix.length] === "string" && typeof kept[end] !== "string";
+  return (at === 0 || kept[at] === null) && typeof kept[at + prefix.length] === "string" && typeof kept[end] !== "string";
 }
 function expandCommandBraces({ masked, kept }) {
   return masked.replace(

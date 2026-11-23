@@ -249,7 +249,9 @@ const HEREDOC_OPERATOR = /(?<!<)<<(-?)[ \t]*/y;
 const WORD_END = /[\s;&|()<>]/;
 const LINE_CONTINUES = /(?<!\\)(?:\\\\)*\\$/;
 const COMMAND_END = /[;&|()\n]/;
-const COMMAND_START = String.raw`(?:^|[;&|(\n])[ \t]*`;
+// A separator, then reserved words and `NAME=value` assignments that can precede a
+// command. The value excludes separators so each match stays inside one command.
+const COMMAND_START = String.raw`(?:^|[;&|(\n])[ \t]*(?:(?:if|elif|then|else|do|while|until|time|!|\{)[ \t]+)*(?:[A-Za-z_]\w*=[^\s;&|()]*[ \t]+)*`;
 const NESTED_SCRIPT = new RegExp(
   String.raw`(${COMMAND_START})(?:(?:command|builtin)[ \t]+)*(?:(eval)|(?:[^\s;&|()]*/)?(?:ba|z|da)?sh[ \t]+-[a-zA-Z]*c[a-zA-Z]*)`,
   'g',
@@ -271,7 +273,7 @@ function stateOpenedAt(command: string, i: number, atWordStart: boolean): LexSta
 function readHeredocWord(
   command: string,
   start: number,
-): { delimiter: string; quoted: boolean; end: number } | undefined {
+): { delimiter: string; quoted: boolean } | undefined {
   let delimiter = '';
   let quoted = false;
   let i = start;
@@ -294,7 +296,7 @@ function readHeredocWord(
     }
     quoted = true;
   }
-  return i === start ? undefined : { delimiter, quoted, end: i };
+  return i === start ? undefined : { delimiter, quoted };
 }
 
 function heredocBodiesEnd(command: string, start: number, heredocs: readonly Heredoc[]): number {
@@ -305,7 +307,7 @@ function heredocBodiesEnd(command: string, start: number, heredocs: readonly Her
       const eol = command.indexOf('\n', i);
       const end = eol === -1 ? command.length : eol;
       const segment = command.slice(i, end);
-      i = end + 1;
+      i = eol === -1 ? end : eol + 1;
       if (!quoted && LINE_CONTINUES.test(segment)) {
         line += segment.slice(0, -1);
         continue;
@@ -318,18 +320,21 @@ function heredocBodiesEnd(command: string, start: number, heredocs: readonly Her
   return i;
 }
 
-// Replace quoted regions and `#` comments with spaces so destructive-pattern
-// matching can't be fooled by quoted arguments (`git commit -m "rm -rf old"`)
-// and an apostrophe in a comment can't open a quote. Outside single quotes a
-// backslash escapes the next character, and an escaped character never opens
-// a quote or a comment. Heredoc bodies are left unmasked: they are data, but an
-// unquoted body still runs its `$(...)` substitutions.
 interface Lexed {
   readonly masked: string;
   readonly kept: readonly (string | null)[];
 }
 
-function lex(command: string): Lexed {
+// Replace quoted regions and `#` comments with spaces so destructive-pattern
+// matching can't be fooled by quoted arguments (`git commit -m "rm -rf old"`)
+// and an apostrophe in a comment can't open a quote. Outside single quotes a
+// backslash escapes the next character, and an escaped character never opens
+// a quote or a comment. Heredoc bodies are left unmasked: they are data, but an
+// unquoted body still runs its `$(...)` substitutions. `kept[i]` is what
+// `command[i]` adds to its word after quote removal: `null` for code outside any
+// word (blanks, operators, comments, heredoc bodies), `''` for a removed quote or
+// backslash, and otherwise the characters it contributes.
+export function lex(command: string): Lexed {
   let masked = '';
   const kept: (string | null)[] = [];
   const emit = (shown: string, keep: string | null): void => {
@@ -368,7 +373,7 @@ function lex(command: string): Lexed {
           stripTabs: operator[1] === '-',
           quoted: word.quoted,
         });
-        emitCode(word.end);
+        emitCode(i + operator[0].length);
         atWordStart = false;
         continue;
       }
@@ -434,7 +439,7 @@ function wordsFrom({ masked, kept }: Lexed, start: number): string[] {
 
 function isCommandWord(kept: Lexed['kept'], at: number, prefix: string, end: number): boolean {
   return (
-    (prefix === '' || kept[at] === null) &&
+    (at === 0 || kept[at] === null) &&
     typeof kept[at + prefix.length] === 'string' &&
     typeof kept[end] !== 'string'
   );
