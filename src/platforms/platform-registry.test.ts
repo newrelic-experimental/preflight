@@ -267,6 +267,74 @@ describe('PlatformRegistry', () => {
       expect(detected!.platformName).toBe('copilot');
     });
 
+    it.each([
+      ['MCP_CLIENT', 'Kiro', 'kiro'],
+      ['MCP_CLIENT', 'Gemini_CLI', 'gemini-cli'],
+      ['NEW_RELIC_AI_PLATFORM', 'COPILOT_SDK', 'copilot-sdk'],
+    ])('detects the engine %s=%s names in another spelling', (key, value, platformName) => {
+      process.env[key] = value;
+      expect(createDefaultRegistry().detect()?.platformName).toBe(platformName);
+    });
+
+    it('leaves the engine env as the user spelled it', () => {
+      process.env.MCP_CLIENT = 'Gemini_CLI';
+      process.env.NEW_RELIC_AI_PLATFORM = 'COPILOT_SDK';
+      createDefaultRegistry().detect();
+      expect(process.env.MCP_CLIENT).toBe('Gemini_CLI');
+      expect(process.env.NEW_RELIC_AI_PLATFORM).toBe('COPILOT_SDK');
+    });
+
+    const spellings = (name: string): string[] => [
+      name.toUpperCase().replace(/-/g, '_'),
+      name.replace(
+        /(^|-)(\w)/g,
+        (_m, sep: string, c: string) => `${sep ? '_' : ''}${c.toUpperCase()}`,
+      ),
+      name.toUpperCase().replace(/-/g, ''),
+    ];
+    const MCP_CLIENT_ONLY = new Set([
+      'claude-code',
+      'cursor',
+      'windsurf',
+      'zed',
+      'continue',
+      'amazon-q',
+      'antigravity',
+    ]);
+    const aliasCases = createDefaultRegistry()
+      .getRegistered()
+      .filter((adapter) => adapter.platformName !== 'pi' && adapter.platformName !== 'generic-mcp')
+      .flatMap((adapter) =>
+        spellings(adapter.platformName).map((spelling) => ({
+          adapter,
+          name: adapter.platformName,
+          spelling,
+        })),
+      );
+
+    it.each(aliasCases)(
+      'lets $name used without detect() recognise MCP_CLIENT=$spelling',
+      ({ adapter, spelling }) => {
+        process.env.MCP_CLIENT = spelling;
+        expect(adapter.isSupported()).toBe(true);
+      },
+    );
+
+    it.each(aliasCases)(
+      'lets $name used without detect() recognise NEW_RELIC_AI_PLATFORM=$spelling if it reads that key',
+      ({ adapter, name, spelling }) => {
+        process.env.NEW_RELIC_AI_PLATFORM = spelling;
+        expect(adapter.isSupported()).toBe(!MCP_CLIENT_ONLY.has(name));
+      },
+    );
+
+    it('skips an MCP_CLIENT it does not know for the engine NEW_RELIC_AI_PLATFORM names', () => {
+      process.env.CLAUDE_CODE_VERSION = '1.2.3';
+      process.env.MCP_CLIENT = 'vscode';
+      process.env.NEW_RELIC_AI_PLATFORM = 'kiro';
+      expect(createDefaultRegistry().detect()?.platformName).toBe('kiro');
+    });
+
     it('falls back to ambient-signal registration order when no explicit MCP_CLIENT/NEW_RELIC_AI_PLATFORM is set', () => {
       process.env.CLAUDE_CODE_VERSION = '1.2.3';
       const registry = createDefaultRegistry();

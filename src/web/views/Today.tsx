@@ -8,7 +8,8 @@ import {
   type AlertEvent,
   type AntiPatternEvent,
 } from '../store/liveStore';
-import { Kpi } from '../components/Kpi';
+import { Kpi, type KpiTone } from '../components/Kpi';
+import { TaskCompletionPanel } from '../components/TaskCompletionPanel';
 import { AnimatedCard } from '../components/AnimatedCard';
 import { DiscreteBlockChart, type DiscreteBlockChartItem } from '../components/DiscreteBlockChart';
 import { EmptyState } from '../components/EmptyState';
@@ -29,9 +30,20 @@ import {
   type ModelShareRow,
 } from '../components/UsageContributionPanel';
 import { AttentionList, type AttentionRow } from '../components/AttentionList';
-import { Card, Eyebrow, InfoTooltip, LiveBadge, Pill } from '../components/ui';
+import {
+  Card,
+  EstimateMarker,
+  EstimateNote,
+  Eyebrow,
+  InfoTooltip,
+  LiveBadge,
+  Pill,
+} from '../components/ui';
 import {
   fetchRecentAlerts,
+  fetchBudget,
+  fetchSettings,
+  type BudgetStatus,
   fetchCacheHealth,
   fetchCost,
   fetchCostPerTool,
@@ -76,6 +88,7 @@ import {
   type UsageInsightsReport,
 } from '../api/client';
 import {
+  fmtReportedAsOf,
   fmtTimeOfDay,
   formatMs,
   formatNumber,
@@ -92,6 +105,11 @@ import {
   localStartOfDay,
   todayPortionRatio,
 } from '../../lib/date.js';
+import {
+  findReportedSpend,
+  isReportedSpendStale,
+  type ReportedSpend,
+} from '../../lib/reported-spend.js';
 import { buildWeekForecast } from '../lib/forecast.js';
 
 const HEADER_TIMESTAMP_FORMAT = {
@@ -103,6 +121,8 @@ const HEADER_TIMESTAMP_FORMAT = {
 } as const;
 
 const RECENT_ALERTS_REFETCH_MS = 30_000;
+
+const CONCURRENCY_CHART_MAX_LEVELS = 8;
 
 const SEVERITY_DOT: Record<AlertEvent['severity'], string> = {
   info: 'text-ink-muted',
@@ -228,6 +248,56 @@ interface ToolSelectionMetrics {
 
 const QUALITY_REFETCH_MS = 10_000;
 
+const BUDGET_CAUTION_PCT = 50;
+const BUDGET_WARN_PCT = 80;
+const BUDGET_DANGER_PCT = 100;
+
+function DailyBudgetKpi({
+  spentUsd,
+  capUsd,
+  reported,
+}: {
+  spentUsd: number | null;
+  capUsd: number | null;
+  reported: ReportedSpend | null;
+}): JSX.Element {
+  if (spentUsd === null) return <Kpi label="daily budget" value="…" sub="loading…" />;
+  const reportedStale = reported !== null && isReportedSpendStale(reported);
+  // Round first so float error cannot drop a boundary: 4.52 / 5.65 * 100 is 79.999…
+  const pct = capUsd === null ? 0 : Math.round((spentUsd / capUsd) * 1e6) / 1e4;
+  const overBudget = pct > BUDGET_DANGER_PCT;
+  const tone: KpiTone =
+    pct >= BUDGET_DANGER_PCT ? 'bad' : pct >= BUDGET_WARN_PCT ? 'warn' : 'neutral';
+  const caution = pct >= BUDGET_CAUTION_PCT && pct < BUDGET_WARN_PCT;
+  return (
+    <Kpi
+      label="daily budget"
+      tone={tone}
+      value={formatUsd(spentUsd)}
+      marker={reported ? <EstimateMarker /> : undefined}
+      sub={
+        <>
+          {capUsd !== null && (
+            <span className="block">
+              {`of ${formatUsd(capUsd)} · `}
+              <span className={caution ? 'text-accent-amber' : undefined}>
+                {`${Math.floor(pct)}% used`}
+              </span>
+              {overBudget ? ' · over budget' : ''}
+            </span>
+          )}
+          {reported && (
+            <span className={`block ${reportedStale ? 'opacity-60' : ''}`}>
+              {`reported ${formatUsd(reported.amountUsd)} as of ${fmtReportedAsOf(reported.asOf, reportedStale)}`}
+              {reportedStale && <span className="ml-1 text-accent-amber">stale</span>}
+            </span>
+          )}
+        </>
+      }
+    />
+  );
+}
+
 export function Today(): JSX.Element {
   const cost = useLiveStore((s) => s.cost);
   const antiPatterns = useLiveStore((s) => s.antiPatterns);
@@ -243,6 +313,18 @@ export function Today(): JSX.Element {
     queryFn: ({ signal }) => fetchCost(signal),
     refetchInterval: 10_000,
   });
+  const { data: budget } = useQuery<BudgetStatus>({
+    queryKey: qk.budget,
+    queryFn: ({ signal }) => fetchBudget(signal),
+    refetchInterval: 10_000,
+  });
+  const { data: settings } = useQuery({
+    queryKey: qk.settings,
+    queryFn: ({ signal }) => fetchSettings(signal),
+  });
+  const dailyBudgetCap = budget?.daily?.budgetUsd ?? null;
+  const reportedDaily = findReportedSpend(settings?.reportedSpend, 'daily');
+  const showBudgetKpi = dailyBudgetCap !== null || reportedDaily !== null;
   const { data: aggregate, isPending: aggregatePending } = useQuery<TodayAggregateResponse>({
     queryKey: qk.sessionsTodayAggregate,
     queryFn: ({ signal }) => fetchTodayAggregate(signal),
@@ -332,12 +414,17 @@ export function Today(): JSX.Element {
     aggregate?.antiPatternCount ?? 0,
     persistedTodayFlags + currentSessionFlags,
   );
-  const forecastKpiUsd = spendLoading
-    ? null
-    : (aggregate?.forecastEndOfDayUsd ??
-      cost?.forecastEodUsd ??
-      costApi?.forecast?.forecastEndOfDayUsd ??
-      null);
+  // In order of preference. A source below the spend on the tile is stale, so
+  // the page shows the next one rather than a forecast under money spent.
+  const forecastSources = spendLoading
+    ? []
+    : [
+        { usd: aggregate?.forecastEndOfDayUsd, scope: 'all sessions' },
+        { usd: cost?.forecastEodUsd, scope: "all spend so far, this session's pace" },
+        { usd: costApi?.forecast?.forecastEndOfDayUsd, scope: 'this session' },
+      ].filter((source): source is { usd: number; scope: string } => source.usd != null);
+  const forecast = forecastSources.find((source) => source.usd >= todayTotal);
+  const forecastKpiUsd = forecast?.usd ?? null;
 
   // The subagent KPI must source from the polled aggregate
   // endpoint, not the liveStore — the SSE frames that would populate
@@ -365,8 +452,13 @@ export function Today(): JSX.Element {
   const weekForecastTotalUsd =
     aggregate && aggregate.totalCostUsd >= todayTotal ? aggregate.totalCostUsd : todayTotal;
   const weekForecast =
-    forecastKpiUsd !== null
-      ? buildWeekForecast(todaySessions ?? [], forecastKpiUsd, weekForecastTotalUsd, Date.now())
+    forecastSources.length > 0
+      ? buildWeekForecast(
+          todaySessions ?? [],
+          forecastKpiUsd ?? todayTotal,
+          weekForecastTotalUsd,
+          Date.now(),
+        )
       : null;
   const [headerTimestamp, setHeaderTimestamp] = useState(() =>
     new Date().toLocaleString(undefined, HEADER_TIMESTAMP_FORMAT),
@@ -407,24 +499,26 @@ export function Today(): JSX.Element {
   const flagsLoading = aggregatePending && sessionsPending && flagsCount === 0;
   const attentionLoading = antiPatternsPending || sessionsPending;
 
-  const noActivityToday =
+  const todayLoaded =
     !spendLoading &&
     !aggregatePending &&
     !sessionsPending &&
     !antiPatternsPending &&
     !concurrencyPending &&
     !todayHeatmapPending &&
-    !liveSessionsPending &&
-    (aggregate?.sessionCount ?? 0) === 0 &&
-    todayTotal === 0 &&
-    flagsCount === 0;
+    !liveSessionsPending;
+  const noActivityToday =
+    todayLoaded && (aggregate?.sessionCount ?? 0) === 0 && todayTotal === 0 && flagsCount === 0;
 
   return (
     <section>
       <GeoBanner />
       <header className="flex items-baseline justify-between mb-4">
         <h1 className="text-xl font-semibold gradient-text">Today</h1>
-        <span className="text-xs text-ink-muted">{headerTimestamp}</span>
+        <div className="flex items-baseline gap-3">
+          {todayLoaded && !noActivityToday && <EstimateNote />}
+          <span className="text-xs text-ink-muted">{headerTimestamp}</span>
+        </div>
       </header>
       <UnpricedSpendNotice
         unpricedByModel={aggregate?.unpricedByModel}
@@ -459,7 +553,7 @@ export function Today(): JSX.Element {
         <>
           <AnimatedCard index={0} className="mb-4">
             <Card padding="lg" tone="elevated" glow="green">
-              <div className="grid grid-cols-5 gap-4">
+              <div className={`grid ${showBudgetKpi ? 'grid-cols-6' : 'grid-cols-5'} gap-4`}>
                 <Kpi
                   label="efficiency"
                   hero
@@ -472,12 +566,13 @@ export function Today(): JSX.Element {
                 <Kpi
                   label="spend today"
                   tone="good"
+                  marker={spendLoading ? undefined : <EstimateMarker />}
                   value={spendLoading ? '…' : formatUsd(todayTotal)}
                   sub={
-                    forecastKpiUsd != null && forecastKpiUsd > todayTotal
+                    forecast && forecast.usd > todayTotal
                       ? weekForecast != null
-                        ? `→ ${formatUsd(forecastKpiUsd)} by end of day · ~${formatUsd(weekForecast)} by end of week`
-                        : `→ ${formatUsd(forecastKpiUsd)} by end of day`
+                        ? `→ ${formatUsd(forecast.usd)} by end of day (${forecast.scope}) · ~${formatUsd(weekForecast)} by end of week`
+                        : `→ ${formatUsd(forecast.usd)} by end of day (${forecast.scope})`
                       : undefined
                   }
                   {...(!spendLoading
@@ -510,6 +605,13 @@ export function Today(): JSX.Element {
                   value={flagsLoading ? '…' : String(flagsCount)}
                   {...(flagsLoading ? {} : { animate: true, numericValue: flagsCount })}
                 />
+                {showBudgetKpi && (
+                  <DailyBudgetKpi
+                    spentUsd={spendLoading ? null : todayTotal}
+                    capUsd={dailyBudgetCap}
+                    reported={reportedDaily}
+                  />
+                )}
               </div>
             </Card>
             {watcherOff && (
@@ -563,6 +665,10 @@ export function Today(): JSX.Element {
             <ComputeWasteCard liveSessions={liveSessions ?? []} />
             <LatencyCard aggregate={aggregate} />
             <ApiFailuresCard />
+          </AnimatedCard>
+
+          <AnimatedCard index={6}>
+            <TaskCompletionPanel />
           </AnimatedCard>
         </>
       )}
@@ -1286,6 +1392,7 @@ function ActivityTodayPanel({
             {hasConcurrencyData ? (
               <DiscreteBlockChart
                 data={concurrencyItems}
+                maxLevels={CONCURRENCY_CHART_MAX_LEVELS}
                 ariaLabel={`Concurrency over time, peak ${concurrency?.peak ?? 0}`}
               />
             ) : concurrencyLoading ? (
@@ -1764,6 +1871,7 @@ function LiveSessionPane({
           contextWindow={contextData?.contextWindow}
           contextComposition={contextComposition}
           contextEfficiency={contextEfficiency}
+          summary={todaySessions.find((s) => s.sessionId === activeId)}
           onClose={() => setShowDetail(false)}
         />
       )}

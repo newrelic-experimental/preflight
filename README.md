@@ -22,6 +22,8 @@ Your AI coding assistant makes hundreds of decisions every session — what to r
 
 **Local-first by design.** Preflight runs entirely on your machine and sends your data nowhere by default. A live dashboard at `localhost:7777` shows your sessions in real time, fully offline. Connect a New Relic account only when you want more — team rollups, alerting, and cross-session history. You choose: **local-only**, **New Relic**, or **both**.
 
+**Cost and AI activity, not productivity.** Preflight reports what AI coding costs and what the assistant did. In New Relic mode, the Adoption & Cost dashboard shows AI activity signals, such as tasks per developer and PRs the assistant created or merged. These signals are not a measure of developer or team productivity, which is out of scope, because a session has no link to a ticket and Preflight misses work done outside the assistant, such as a merge on GitHub. `nr_observe_get_cost_per_outcome` splits cost by inferred task type, and its ROI estimate comes from fixed hours-saved assumptions, not measured time.
+
 ---
 
 ## Demo
@@ -63,7 +65,7 @@ See cost breakdown, efficiency scoring, anti-patterns, and live session tracking
   - **Session Detail** — deep-dive into a single session's tool calls
   - **Team View** — aggregated cost and efficiency across developers
   - **Manager View** — high-level team metrics, no tool-call content
-  - **Adoption & Cost** — adoption momentum, spend, skill and MCP usage, and per-developer outcomes for engineering managers
+  - **Adoption & Cost** — adoption momentum, spend, skill and MCP usage, and per-developer activity for engineering managers
   - **Platform Comparison** — Claude Code vs. Cursor vs. Windsurf, etc.
   - **Security Audit** — audit trail of sensitive file access
 
@@ -164,7 +166,7 @@ NEW_RELIC_API_KEY=NRAK-... NEW_RELIC_ACCOUNT_ID=12345 \
   preflight deploy-dashboards --all
 ```
 
-You'll need a **license key** (telemetry ingest) and your **account ID**, plus a **user API key** (`NRAK-…`) to deploy dashboards and alerts. See [ADVANCED.md](docs/ADVANCED.md) for alerts, OTLP export to other backends, and Terraform.
+You'll need a **license key** (telemetry ingest). To deploy dashboards and alerts you also need your **account ID** and a **user API key** (`NRAK-…`). See [ADVANCED.md](docs/ADVANCED.md) for alerts, OTLP export to other backends, and Terraform.
 
 > **No dashboard until you run `deploy-dashboards`.** Cloud mode ships telemetry to New Relic as soon as it's configured, but nothing creates a dashboard automatically — that's the separate step above, and it needs a **different** credential (a user API key, not your license key). Until you run it, there's no UI to look at. In the meantime, query the raw events directly in New Relic's **Query Builder**, e.g.:
 >
@@ -225,6 +227,7 @@ Add `--project` to `install`/`uninstall` to scope changes to the current directo
 - [**CONTRIBUTING.md**](CONTRIBUTING.md) — Development, testing, submitting PRs
 - [**SECURITY.md**](./SECURITY.md) — Security guidelines and best practices
 - [**PRIVACY.md**](./PRIVACY.md) — Data collection inventory and pre-cloud checklist
+- [**COMPLIANCE.md**](docs/COMPLIANCE.md): for security reviews, the data flow from the developer machine to New Relic, the controls at each hop, the New Relic certifications that cover stored data (such as SOC 2 and ISO 27001), and a security FAQ
 
 ---
 

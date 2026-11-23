@@ -8,6 +8,7 @@ import {
   fetchSessionReplay,
   fetchActivityHeatmap,
   patchSettings,
+  digestSendStatus,
   postDigestSend,
   qk,
   NotFoundError,
@@ -91,10 +92,23 @@ describe('api/client', () => {
     await expect(postDigestSend()).rejects.toThrow(/503/);
   });
 
+  it('digestSendStatus shows the send outcome, or a fallback when the body is not JSON', () => {
+    const body = (text: string) => ({ content: [{ type: 'text' as const, text }] });
+    expect(digestSendStatus(body(JSON.stringify({ ok: true })))).toBe('Digest sent.');
+    expect(digestSendStatus(body(JSON.stringify({ error: 'Slack webhook returned 500' })))).toBe(
+      'Slack webhook returned 500',
+    );
+    expect(digestSendStatus(body('<html>Bad Gateway</html>'))).toBe('Done.');
+  });
+
   it('qk produces stable React Query keys', () => {
     expect(qk.sessionCurrent).toEqual(['session', 'current']);
     expect(qk.audit).toEqual(['audit']);
     expect(qk.sessionDetail('abc')).toEqual(['session', 'abc']);
+  });
+
+  it('qk.sessionsByIds is order-insensitive', () => {
+    expect(qk.sessionsByIds(['b', 'a'])).toEqual(['sessions', 'byIds', 'a', 'b']);
   });
 
   it('qk.sessionsList differs by limit so the React Query cache does not collide', () => {

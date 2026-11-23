@@ -1,6 +1,6 @@
 # NR AI Coding Observability: Preflight
 
-Flat single-package repo providing observability for AI coding assistants (MCP server + metrics engine + HTTP proxy). Source lives directly in `src/`. Shared transport/events/pricing code lives in `src/shared/`. All telemetry flows to New Relic.
+Flat single-package repo providing observability for AI coding assistants (MCP server + metrics engine + HTTP proxy). Source lives directly in `src/`. Foundation code (events, transport, harvest, pricing, logger) lives in `src/core/`. All telemetry flows to New Relic.
 
 ## Development Commands
 
@@ -24,16 +24,8 @@ Run tests for a single file:
 
 ```bash
 npx jest -- src/metrics/cost-tracker.test.ts
-npx jest -- src/shared/harvest/harvest-scheduler.test.ts
+npx jest -- src/core/harvest/harvest-scheduler.test.ts
 ```
-
-## Shared Code (`src/shared/`)
-
-**`src/shared/` is a vendored snapshot — do not edit directly.**
-
-**Rules:**
-
-1. **Never edit files under `src/shared/` in this repo.** It is a vendored snapshot. If you find a bug there, open an issue.
 
 ## Architecture
 
@@ -97,7 +89,7 @@ Claude Code
 1. Node.js builtins (`node:fs`, `node:path`, `node:crypto`)
 2. External packages (`@modelcontextprotocol/sdk`, `zod`, `commander`)
 3. Blank line
-4. Shared module imports (`./shared/index.js` or `../shared/index.js`)
+4. Core module imports (`./core/index.js` or `../core/index.js`)
 5. Local imports (`./types.js`, `../metrics/session-tracker.js`)
 
 ### Logger Pattern
@@ -105,7 +97,7 @@ Claude Code
 Every module creates a scoped logger at module level:
 
 ```typescript
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 const logger = createLogger('module-name');
 ```
 
@@ -163,7 +155,7 @@ The config file path defaults to `~/.newrelic-preflight/config.json` or can be p
 Key config interfaces:
 
 - `McpServerConfig` in `src/config.ts`
-- `AgentConfig` in `src/shared/config.ts`
+- `AgentConfig` in `src/core/config.ts`
 
 ### Additional Configuration Fields
 
@@ -194,11 +186,11 @@ All local persistence lives under `~/.newrelic-preflight/` by default:
 | `sessions/`         | JSON files | Session summaries (`YYYY-MM-DD_sessionId.json`)                |
 | `weekly_summaries/` | JSON files | Cross-session weekly aggregations                              |
 
-Every write to a `buffer-*.jsonl` file from `src/` goes through `appendToHookBuffer` in [`src/storage/hook-buffer.ts`](./src/storage/hook-buffer.ts): the collector, `LocalStore`, the legacy buffer migration, and the transcript and Copilot watchers. Never append to a buffer any other way from `src/`. A raw append that races a drain is lost, and ESLint rejects `appendFileSync` in the collector and the watcher files. `npx tsx scripts/stress-hook-drain.ts` races one writer against four drainer processes and fails on any lost or doubled line. The one writer outside `src/` is the Copilot SDK extension (`copilot-sdk-extension/extension.mjs`), a standalone file users copy by hand. It still appends with `appendFileSync`, so a token line it writes during a drain can be lost. `LocalStore` drains by renaming the buffer into a claim under `drains/`, then `takeClaimText` appends a seal, returns the lines before it, and deletes the claim. A writer whose line landed after a seal writes it again to the live buffer. `LocalStore` also handles session and weekly-summary persistence.
+Every write to a `buffer-*.jsonl` file from `src/` goes through `appendToHookBuffer` in [`src/storage/hook-buffer.ts`](./src/storage/hook-buffer.ts): the collector, the Copilot SDK extension, `LocalStore`, the legacy buffer migration, and the transcript and Copilot watchers. Never append to a buffer any other way from `src/`. A raw append that races a drain is lost, and ESLint rejects `appendFileSync` in the collector, the Copilot SDK extension source and the watcher files. `npx tsx scripts/stress-hook-drain.ts` races one writer against four drainer processes and fails on any lost or doubled line. The Copilot SDK host loads the extension as one plain JavaScript file, so `npm run build:copilot-extension` bundles `src/hooks/copilot-sdk-extension.ts` into `copilot-sdk-extension/extension.mjs`. Edit the source, never the bundle. `npm run verify:copilot-extension` fails when the committed bundle is stale. `LocalStore` drains by renaming the buffer into a claim under `drains/`, then `takeClaimText` appends a seal, returns the lines before it, and deletes the claim. A writer whose line landed after a seal writes it again to the live buffer. `LocalStore` also handles session and weekly-summary persistence.
 
 ## Harvest and Ingestion
 
-`HarvestScheduler` (in `src/shared/harvest/`) manages periodic flush of events and metrics to New Relic:
+`HarvestScheduler` (in `src/core/harvest/`) manages periodic flush of events and metrics to New Relic:
 
 - Events flush every 5 seconds (configurable)
 - Metrics flush every 60 seconds (configurable)
@@ -213,7 +205,7 @@ Every write to a `buffer-*.jsonl` file from `src/` goes through `appendToHookBuf
 
 The **primary tier** is the first NR-type tier in array order. It alone carries the aggregated Metric API stream, the NR Logs API audit entries, the OTLP bridge/transport, and the `getEventSendHealth()` counters — per-tier metrics, logs, and OTLP are explicit non-goals.
 
-`src/transport/tier-types.ts` owns `KNOWN_EVENT_TYPES` (all 14 emitted `eventType` values) and `EVENT_TYPE_SENSITIVITY`, which classifies each as `safe-shared` (aggregate counts/durations/costs) or `personal-only` (raw or lightly-redacted per-call detail: bash commands, file paths, agent descriptions, audit specifics). **Adding a new event type to `nr-ingest.ts` requires adding it to both** — `EVENT_TYPE_SENSITIVITY`'s `Record<KnownEventType, …>` type turns a forgotten entry into a compile error. `validateTiers()` warns (never blocks) when a `personal-only` type is routed to any tier other than `default`.
+`src/transport/tier-types.ts` owns `KNOWN_EVENT_TYPES` (all 16 emitted `eventType` values) and `EVENT_TYPE_SENSITIVITY`, which classifies each as `safe-shared` (aggregate counts/durations/costs) or `personal-only` (raw or lightly-redacted per-call detail: bash commands, file paths, agent descriptions, audit specifics). **Adding a new event type to `nr-ingest.ts` requires adding it to both** — `EVENT_TYPE_SENSITIVITY`'s `Record<KnownEventType, …>` type turns a forgotten entry into a compile error. `validateTiers()` warns (never blocks) when a `personal-only` type is routed to any tier other than `default`.
 
 When the config file has no `tiers` array, `loadMcpConfig()` synthesizes one implicit tier (`name: 'default'`, `eventTypes: ['*']`) from the flat `licenseKey`/`accountId`, in memory only — existing single-account deployments behave exactly as before. An explicit `tiers` array while `mode === 'local'` is a config-load error.
 
@@ -221,7 +213,7 @@ When the config file has no `tiers` array, `loadMcpConfig()` synthesizes one imp
 
 See [SECURITY.md](./SECURITY.md) for the full guidelines, invariants, and code review checklist. Key points:
 
-- **Redaction** — `REDACTION_PATTERNS` in `src/redaction-patterns.ts` (imported by `src/config.ts` as `DEFAULT_REDACTION_PATTERNS`) covers API keys, Bearer tokens, AWS/Google/GitHub/GitLab/npm/Slack/Stripe/PyPI/Hugging Face secrets, credentials in URLs, JWTs, and PEM blocks. Apply `redact()` / `redactSensitive()` before any free-form string reaches a log or NR event field, and `redactIdentifier()` to identifiers (`project_id`, `repo_url`, repo names). See SECURITY.md § Secret Redaction.
+- **Redaction** — `redactSecrets()` in `src/redaction-patterns.ts` runs the token patterns in `REDACTION_PATTERNS` (API keys, Bearer tokens, AWS/Google/GitHub/GitLab/npm/Slack/Stripe/PyPI/Hugging Face secrets, credentials in URLs, JWTs, PEM blocks, `aws_secret_access_key`) and argument rules that redact a secret argument with its value, read as one shell word (`NAME=value`, `--token`-style flags, a mysql `-p` password, curl `-u`/`-U`/`-t` credentials, API-key headers). Apply `redact()` / `redactSensitive()` before any free-form string reaches a log or NR event field, and `redactIdentifier()` to identifiers (`project_id`, `repo_url`, repo names). See SECURITY.md § Secret Redaction.
 - **Input validation** — `accountId` is validated as `/^\d{1,12}$/` at config load. `envInt` callers supply `{ min, max }` bounds. Tool names are truncated to 256 chars with control chars stripped.
 - **SSRF protection** — `HttpUpstream` requires `https:` unless the host is loopback (`localhost`, `127.0.0.1`, `::1`), or a private host with `allowPrivateHosts` and `allowInsecureHttp`; it also rejects RFC-1918/loopback hosts before connecting unless `allowPrivateHosts`.
 - **Process safety** — `StdioUpstream` requires an absolute command path and strips `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, `NODE_OPTIONS`, and related keys from the child env.

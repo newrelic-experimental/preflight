@@ -53,13 +53,13 @@ start, same as the npm install.
 
 Local mode (no New Relic account needed, dashboard at `localhost:7777`) is
 the default when the plugin's MCP server sees no license key. To send
-telemetry to New Relic, set three environment variables:
+telemetry to New Relic, set these environment variables (the account ID is optional):
 
 | Variable                | Value                                                   |
 | ----------------------- | ------------------------------------------------------- |
 | `NR_AI_MODE`            | `cloud` (or `both` to keep the local dashboard as well) |
 | `NEW_RELIC_LICENSE_KEY` | Your New Relic ingest license key                       |
-| `NEW_RELIC_ACCOUNT_ID`  | Your numeric New Relic account ID (1 to 12 digits)      |
+| `NEW_RELIC_ACCOUNT_ID`  | Optional. Your numeric account ID (1 to 12 digits)      |
 
 `NR_AI_MODE` is required. A license key with no explicit mode fails at
 startup, because telemetry export is opt-in, and the plugin's tools do not
@@ -109,7 +109,7 @@ simply pointing it at this repo's own `dist/`:
 1. `dist/` is gitignored — nothing is pre-built/committed, and (per above)
    marketplace installs don't run `tsc` for you even if it were needed.
 2. [`src/hooks/collector-script.ts`](../src/hooks/collector-script.ts) has a
-   `<5ms execution budget` design constraint — it runs on every single tool
+   `~5ms in-process execution budget` design constraint — it runs on every single tool
    call, so routing it through `npx` per invocation (as the MCP server does)
    would add unacceptable latency to every tool use for the whole session.
 

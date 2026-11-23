@@ -26,6 +26,12 @@ describe('Kpi', () => {
     expect(screen.getByText('+34% vs avg')).toBeInTheDocument();
   });
 
+  it('renders a marker right after the value', () => {
+    render(<Kpi label="spend" value="$3.42" marker={<span>est.</span>} />);
+    const value = screen.getByText('$3.42');
+    expect(value).toContainElement(screen.getByText('est.'));
+  });
+
   it('does not accept tone="accent" (removed — use "good")', () => {
     render(<Kpi label="spend" value="$3.42" tone="good" />);
     const v = screen.getByText('$3.42');
