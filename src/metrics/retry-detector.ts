@@ -80,6 +80,53 @@ const DEFAULT_MAX_SESSIONS = 50;
 // how a sessionless alert rolls up.
 const UNKNOWN_SESSION_KEY = 'unknown';
 
+// Record fields serializeInput() leaves out because they are not the tool's
+// input, so they can differ between two calls with identical input.
+const NON_INPUT_FIELDS: ReadonlySet<string> = new Set([
+  // Per-call ids, timing and sizes. permissionWaitMs is wall-clock minus
+  // Claude Code's duration_ms, so it differs by a few ms on every call.
+  'id',
+  'sessionId',
+  'toolUseId',
+  'timestamp',
+  'durationMs',
+  'permissionWaitMs',
+  'inputSizeBytes',
+  'outputSizeBytes',
+  'inputHash',
+  // Outcome and output-derived fields, which differ between a failed call
+  // and its successful retry.
+  'success',
+  'errorType',
+  'error',
+  'exitCode',
+  'editSuccess',
+  'editMatched',
+  'editErrorReason',
+  'grepMatchCount',
+  'grepResultLines',
+  'agentCompleted',
+  'agentInterrupted',
+  'agentResultLength',
+  'spawnedAgentId',
+  'createdPrNumber',
+  'createdPrRepo',
+  // Stamped by SkillActivationTracker with a minted runId. A successful
+  // Skill call opens a new run, so it differs from the failed call it retries.
+  'activeSkill',
+  // Constant or near-constant within a session, so they pull distinct calls'
+  // similarity up toward a retry's.
+  'cwd',
+  'transcriptPath',
+  'permissionMode',
+  'isTestCommand',
+  'isBuildCommand',
+  'isLintCommand',
+  'bashCategory',
+  'bashDestructive',
+  'bashNetwork',
+]);
+
 // ---------------------------------------------------------------------------
 // Levenshtein similarity
 // ---------------------------------------------------------------------------
@@ -296,23 +343,10 @@ export class RetryDetector implements Resettable {
     return comparisons > 0 ? totalSimilarity / comparisons : 0;
   }
 
-  // Excludes per-call metadata that varies even when the actual tool
-  // input/arguments are identical (timestamps, ids, sizes, error details) —
-  // without stripping these, every call would serialize as "different" and
-  // similarity would never detect a genuine repeated-input retry. Also
-  // excludes fields that are constant or near-constant *within a session*
-  // regardless of how different two calls' real inputs are: cwd and
-  // transcriptPath never change within a session, permissionMode rarely
-  // does, and extractInputMeta()'s boolean/enum classifier fields
-  // (isTestCommand/isBuildCommand/isLintCommand/bashCategory/
-  // bashDestructive/bashNetwork) are identical for any two "ordinary" shell
-  // commands. Left in place, these dominate the serialized string and pull
-  // genuinely distinct calls' similarity up into a false-positive band, close
-  // to a genuine retry's score.
-  //
-  // inputHash is also excluded here, but NOT dropped from similarity scoring
-  // entirely — computeGroupSimilarity() falls back to comparing it by
-  // equality, but ONLY when the fields above give it nothing else to work
+  // Leaves out NON_INPUT_FIELDS. inputHash is among them, but is NOT
+  // dropped from similarity scoring entirely — computeGroupSimilarity()
+  // falls back to comparing it by equality, but ONLY when the other fields
+  // give it nothing else to work
   // with (see that method's comment for the exact condition). inputHash is
   // a hash of the FULL raw tool input, computed for every call regardless
   // of tool name, unlike the narrowed per-tool fields
@@ -326,35 +360,15 @@ export class RetryDetector implements Resettable {
   // dilutes the comparison. Equality doesn't have that floor: two unrelated
   // hashes essentially never match (contributes 0), while a genuine repeat
   // still hashes identically (contributes 1) — real-retry detection for
-  // parser-less tools is unaffected. Gating this on the fields above having
+  // parser-less tools is unaffected. Gating this on the other fields having
   // no signal of their own also means a tool WITH rich parser fields (Edit,
   // Bash, ...) never has its near-identical-but-not-byte-identical retry
   // detection capped by an unrelated hash comparison — only a parser-less
   // tool's calls ever reach the gate condition in practice.
   private serializeInput(record: ToolCallRecord): string {
-    const {
-      id: _id,
-      sessionId: _s,
-      timestamp: _t,
-      durationMs: _d,
-      success: _su,
-      errorType: _e,
-      error: _er,
-      inputSizeBytes: _is,
-      outputSizeBytes: _os,
-      toolUseId: _tu,
-      cwd: _cwd,
-      transcriptPath: _tp,
-      permissionMode: _pm,
-      isTestCommand: _itc,
-      isBuildCommand: _ibc,
-      isLintCommand: _ilc,
-      bashCategory: _bc,
-      bashDestructive: _bdes,
-      bashNetwork: _bnet,
-      inputHash: _ih,
-      ...rest
-    } = record;
+    const rest = Object.fromEntries(
+      Object.entries(record).filter(([key]) => !NON_INPUT_FIELDS.has(key)),
+    );
     try {
       return JSON.stringify(rest, null, 0);
     } catch {
