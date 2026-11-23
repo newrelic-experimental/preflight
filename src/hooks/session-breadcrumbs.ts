@@ -35,11 +35,13 @@ export function breadcrumbRoot(storagePath: string, writer: string): string {
 /**
  * Anything started from a Claude Code shell inherits its env signals, so a hook
  * for a session other than the one CLAUDE_CODE_SESSION_ID names belongs to
- * another engine.
+ * another engine. A hook with no session id has nothing to compare, so the env
+ * signals decide.
  */
 export function isClaudeCodeHook(env: NodeJS.ProcessEnv, sessionId: unknown): boolean {
   const claudeSessionId = env.CLAUDE_CODE_SESSION_ID;
-  if (claudeSessionId !== undefined && claudeSessionId !== sessionId) return false;
+  if (claudeSessionId !== undefined && sessionId !== undefined && claudeSessionId !== sessionId)
+    return false;
   return CLAUDE_CODE_ENV_SIGNALS.some((key) => env[key] !== undefined);
 }
 

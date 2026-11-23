@@ -565,7 +565,8 @@ function breadcrumbRoot(storagePath, writer) {
 }
 function isClaudeCodeHook(env, sessionId) {
   const claudeSessionId = env.CLAUDE_CODE_SESSION_ID;
-  if (claudeSessionId !== void 0 && claudeSessionId !== sessionId) return false;
+  if (claudeSessionId !== void 0 && sessionId !== void 0 && claudeSessionId !== sessionId)
+    return false;
   return CLAUDE_CODE_ENV_SIGNALS.some((key) => env[key] !== void 0);
 }
 function breadcrumbWriter(env, sessionId) {

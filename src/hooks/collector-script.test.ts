@@ -3113,6 +3113,13 @@ describe('collector-script', () => {
       expect(readBufferLines('sess-codex')[0]!.platform).toBeUndefined();
     });
 
+    it('stamps a hook with no session id inside a Claude Code shell as Claude Code', () => {
+      process.env.CLAUDECODE = '1';
+      process.env.CLAUDE_CODE_SESSION_ID = 'sess-claude';
+      processHook(makePreToolUse({ session_id: undefined, cwd: '/projects/test' }));
+      expect(readBufferLines('unknown')[0]!.platform).toBe('claude-code');
+    });
+
     it('files a hook that names no engine as unattributed', () => {
       processHook(makePreToolUse({ session_id: 'sess-codex', cwd: '/projects/test' }));
       expect(readFileSync(crumbs('unattributed').ppid, 'utf-8')).toBe('sess-codex');
