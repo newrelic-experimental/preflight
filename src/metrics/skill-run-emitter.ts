@@ -2,7 +2,7 @@ import type { SkillStamp } from '../storage/types.js';
 
 import type { SkillRunOpenContext } from './skill-activation-tracker.js';
 import type { ClosedSkillRun } from './skill-run-ledger.js';
-import { isTokenEventForThisProcess } from './cost-estimate-gate.js';
+import { isForThisProcess } from './cost-estimate-gate.js';
 
 export interface SkillRunSink {
   ingestSkillRun(
@@ -23,9 +23,9 @@ export interface SkillRunEmitterOptions {
  * drains other sessions' records while its own id is still provisional.
  */
 function isOwnRun(options: SkillRunEmitterOptions, sessionId: string | null): boolean {
-  return isTokenEventForThisProcess({
+  return isForThisProcess({
     stdio: options.stdio,
-    eventSessionId: sessionId,
+    sessionId,
     ownSessionId: options.getOwnSessionId(),
   });
 }

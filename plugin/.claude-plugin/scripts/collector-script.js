@@ -1354,6 +1354,13 @@ function writePpidBreadcrumb(sessionId, root, legacyRoot) {
     );
   }
 }
+function writeSessionIdBreadcrumb(sessionId, root) {
+  if (!SESSION_ID_RE.test(sessionId)) return;
+  try {
+    writeOrTouch(resolve3(root, "session-by-id"), `${sessionId}.txt`, sessionId);
+  } catch {
+  }
+}
 function writeCwdBreadcrumb(sessionId, cwd, root, legacyRoot) {
   if (!SESSION_ID_RE.test(sessionId)) return;
   if (typeof cwd !== "string" || cwd.length === 0) return;
@@ -1650,6 +1657,7 @@ function processHook(raw, cliEvent) {
       }
     }
     const tagged = breadcrumbRoot(storageDir, writer);
+    writeSessionIdBreadcrumb(data.session_id, tagged);
     writePpidBreadcrumb(data.session_id, tagged, storageDir);
     writeCwdBreadcrumb(data.session_id, data.cwd, tagged, storageDir);
   }
@@ -1665,7 +1673,7 @@ function processHook(raw, cliEvent) {
   const agyCliEvent = hookEventFromArg(cliEvent);
   const isAntigravityPost = isAntigravityShape && (agyCliEvent === "PostToolUse" || agyCliEvent !== "PreToolUse" && (data.error !== void 0 || data.toolCall === void 0));
   const isAntigravityPre = isAntigravityShape && !isAntigravityPost;
-  const agyToolUseId = typeof data.stepIdx === "number" ? { toolUseId: String(data.stepIdx) } : {};
+  const agyToolUseId = typeof data.stepIdx === "number" ? { toolUseId: sessionId ? `${sessionId}:${data.stepIdx}` : String(data.stepIdx) } : {};
   let event;
   let selfReportCall;
   if (eventName === "pretooluse") {
