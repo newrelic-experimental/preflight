@@ -8,6 +8,7 @@
     "src/install/diagnostics.test.ts",
     "src/lib/date.test.ts",
     "src/lib/reported-spend.test.ts",
+    "src/metrics/budget-tracker.test.ts",
     "src/metrics/collaboration-profile.test.ts",
     "src/metrics/cost-forecast.test.ts",
     "src/metrics/cost-reconciliation.test.ts",
