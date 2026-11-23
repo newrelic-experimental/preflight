@@ -1,4 +1,4 @@
-import type { LogLevel } from './shared/index.js';
+import type { LogLevel } from './core/index.js';
 import type { SessionTracker } from './metrics/session-tracker.js';
 import type { CostTracker } from './metrics/cost-tracker.js';
 import type { TaskDetector } from './metrics/task-detector.js';
@@ -17,7 +17,7 @@ import type { RecommendationEngine } from './metrics/recommendation-engine.js';
 export interface CliOptions {
   readonly port: number;
   readonly config: string | null;
-  readonly logLevel: LogLevel;
+  readonly logLevel?: LogLevel;
   readonly stdio: boolean;
   readonly local: boolean;
   readonly validate: boolean;

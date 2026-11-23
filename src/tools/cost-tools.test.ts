@@ -1,4 +1,7 @@
-import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import {
   handleReportTokens,
   REPORT_TOKENS_TOOL,
@@ -10,6 +13,7 @@ import {
   registerCostTools,
 } from './cost-tools.js';
 import { CostTracker } from '../metrics/cost-tracker.js';
+import { CursorAdapter } from '../platforms/cursor-adapter.js';
 import { estimatedFromOf } from '../__test-utils__/estimated-from.js';
 import { BudgetTracker } from '../metrics/budget-tracker.js';
 import { SessionResumeTracker } from '../metrics/session-resume-tracker.js';
@@ -19,6 +23,7 @@ import type { TokenReport } from './cost-tools.js';
 import type { CostMetrics } from '../metrics/cost-tracker.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
+let tempDir: string | undefined;
 
 beforeEach(() => {
   stderrSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -26,6 +31,8 @@ beforeEach(() => {
 
 afterEach(() => {
   stderrSpy.mockRestore();
+  if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+  tempDir = undefined;
 });
 
 // ---------------------------------------------------------------------------
@@ -366,6 +373,7 @@ describe('handleGetPromptCacheHealth()', () => {
       parentCostUsd: 0,
       costByWorkflowRunId: {},
       costByDayUsd: {},
+      firstActivityByDayMs: {},
       subagentCostByDayUsd: {},
       unpricedByModel: {},
       estimatedByModel: {},
@@ -499,6 +507,39 @@ describe('handleGetBudgetStatus()', () => {
 // ---------------------------------------------------------------------------
 
 describe('handleGetCostForecast()', () => {
+  it('ages a resumed session from its saved start, not from the process start', () => {
+    const MIN = 60_000;
+    const now = new Date(2024, 0, 3, 14).getTime();
+    jest.useFakeTimers({ now });
+    try {
+      const tracker = new CostTracker();
+      tracker.seedFromPersisted({
+        totalCostUsd: 50,
+        subagentCostUsd: 0,
+        parentCostUsd: 50,
+        totalInputTokens: 1,
+        totalOutputTokens: 1,
+        totalThinkingTokens: 0,
+        totalCacheReadTokens: 0,
+        totalCacheCreationTokens: 0,
+        totalCacheSavingsUsd: 0,
+        costByModel: {},
+        costByWorkflowRunId: {},
+        dayKey: localDateKey(now),
+        dayCostUsd: 0,
+        daySubagentCostUsd: 0,
+        sessionStartMs: now - 180 * MIN,
+      });
+
+      const body = JSON.parse(handleGetCostForecast(tracker, now - 10 * MIN).content[0].text);
+
+      // 50 spent over 3h, with 5h left of the 8h horizon: 50 + (50 / 180min) * 300min.
+      expect(body.forecastSessionEndUsd).toBeCloseTo(50 + (50 / 180) * 300, 6);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('anchors the end-of-day forecast to getCostForDay()/getFirstActivityMsForDay(), not the full session spend', () => {
     jest.useFakeTimers({ now: new Date(2024, 0, 3, 12).getTime() });
     try {
@@ -693,6 +734,28 @@ describe('registerCostTools()', () => {
       'nr_observe_get_prompt_cache_health',
       'nr_observe_report_tokens',
     ]);
+  });
+
+  it('on the hook path, records a report without report_id in process and leaves one with it to the hook', async () => {
+    const costTracker = new CostTracker();
+    const dir = (tempDir = mkdtempSync(join(tmpdir(), 'nr-cost-tools-hook-')));
+    const hook = new CursorAdapter().capabilities.tokenReportHook!;
+    const { tools, handlers } = registerCostTools({
+      costTracker,
+      hookRecordedReports: { hook, homeDir: dir, projectDir: dir },
+    });
+    const report = { input_tokens: 1000, output_tokens: 200, model: 'claude-sonnet-4-6' };
+    const reply = async (args: Record<string, unknown>) =>
+      JSON.parse((await handlers.nr_observe_report_tokens!(args)).content[0]!.text);
+
+    expect(await reply(report)).toMatchObject({ recorded: true });
+    expect(await reply({ ...report, report_id: 'r-12345678' })).toMatchObject({
+      accepted: true,
+      recorded_by: 'hook',
+    });
+    const listed = tools.find((t: { name: string }) => t.name === 'nr_observe_report_tokens');
+    expect(listed?.inputSchema.required).not.toContain('report_id');
+    expect(costTracker.getMetrics().reportCount).toBe(1);
   });
 
   it('rejects an invalid token report the same way the raw handler does', async () => {

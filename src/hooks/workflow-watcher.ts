@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { claudeProjectsDir } from '../lib/claude-config-dir.js';
 import type {
   ObservabilityHealthMetrics,
@@ -425,7 +425,7 @@ export class WorkflowWatcher {
     // would show a false "100% gap" (subagentSum === 0 is indistinguishable
     // from "not collected yet" if we let it flow into the ratio below).
     const subagentSum = this.getSubagentTokenSumForRun?.(runId) ?? 0;
-    const totalTokens = subagentSum > 0 ? subagentSum : totalTokensRollup;
+    const totalTokens = totalTokensRollup > 0 ? totalTokensRollup : subagentSum;
     const tokenReconciliationDelta =
       subagentSum > 0 && totalTokensRollup > 0
         ? (totalTokensRollup - subagentSum) / totalTokensRollup

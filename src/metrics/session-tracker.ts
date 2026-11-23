@@ -7,7 +7,7 @@
  */
 
 import { basename } from 'node:path';
-import type { MetricAggregator } from '../shared/index.js';
+import type { MetricAggregator } from '../core/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import {
   DEGENERATE_NAMES,
@@ -77,6 +77,12 @@ export interface SessionMetrics {
 // ---------------------------------------------------------------------------
 
 const MAX_TIMELINE_ENTRIES = 10_000;
+
+/** A call's key among the counted ones. A tool use id is only promised unique within its session. */
+function countedKey(sessionId: string, toolUseId: string): string {
+  return `${sessionId}\u0000${toolUseId}`;
+}
+
 const AMENDABLE_ERROR_TYPES = new Set(['timeout', 'rejected']);
 
 /** A record for a pre that has seen no post yet, which a late post could still amend or count. */
@@ -138,15 +144,20 @@ export function computeDurationStats(durations: number[]): DurationStats {
  * merges scalar counters via Math.max(), which under-reports when pre- and
  * post-restart activity are disjoint rather than overlapping).
  *
- * Only toolCallCount and bashCommandCount are seeded here — SessionTracker's
+ * Only toolCallCount and bashCommandCount are seeded here, less the saved calls
+ * (by toolUseId) the tracker already counted. SessionTracker's
  * other counters that end up on FullSessionSummary (linesAdded, linesRemoved,
  * testRunCount/testPassCount, buildRunCount/buildPassCount) are sourced from
  * TaskDetector's seededAggregate instead (see buildSessionSummary() in
  * session-store.ts) and are already seeded there.
  */
 export interface SessionTrackerSeed {
+  /** The session the saved file belongs to. */
+  readonly sessionId: string;
   readonly toolCallCount: number;
   readonly bashCommandCount: number;
+  /** The tool name of each saved call that has a toolUseId, keyed by that id. */
+  readonly toolNameByUseId: ReadonlyMap<string, string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -188,8 +199,12 @@ export class SessionTracker implements Resettable {
     { record: ToolCallRecord; timelineSequence: number }
   >();
   private readonly maxAmendable: number;
+  /** The most recent calls counted, seeded ones included, so a call another process also drained counts once. */
+  private readonly toolNameByCountedKey = new Map<string, string>();
   /** What getMetrics() shows until this engine adopts a session, which some engines never do. */
   private drainedWhilePending: SessionTracker | null;
+  /** Set by a pending or adopted id, whose engine also drains other sessions' calls. */
+  private countsOnlyOwnSession: boolean;
 
   constructor(sessionId: string, maxAmendable = 0) {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
@@ -200,15 +215,24 @@ export class SessionTracker implements Resettable {
     this.sessionId = sessionId;
     this.sessionStartTime = Date.now();
     this.maxAmendable = maxAmendable;
-    this.drainedWhilePending = sessionId.startsWith('pending-')
+    this.countsOnlyOwnSession = sessionId.startsWith('pending-');
+    this.drainedWhilePending = this.countsOnlyOwnSession
       ? new SessionTracker('drained-while-pending', maxAmendable)
       : null;
   }
 
   recordToolCall(record: ToolCallRecord): void {
     this.drainedWhilePending?.recordToolCall(record);
-    // A pending engine drains every session; adoptSessionId() replays its own.
-    if (record.sessionId && this.sessionId.startsWith('pending-')) return;
+    // A pending engine drains every session, and after adoption its scoped store still
+    // takes its own claims of other buffers; adoptSessionId() replays its own records.
+    if (record.sessionId && this.countsOnlyOwnSession && record.sessionId !== this.sessionId) {
+      return;
+    }
+    if (record.toolUseId) {
+      const key = countedKey(record.sessionId ?? this.sessionId, record.toolUseId);
+      if (this.toolNameByCountedKey.has(key)) return;
+      this.rememberCounted(key, record.toolName);
+    }
     this.toolCallCount++;
 
     // FALLBACK naming only: an authoritative name (job-state title or
@@ -475,19 +499,41 @@ export class SessionTracker implements Resettable {
     }
     if (replacingGuess) this.clearCounts();
     this.drainedWhilePending = null;
+    this.countsOnlyOwnSession = true;
     this.sessionId = sessionId;
     for (const record of records) this.recordToolCall(record);
   }
 
   /**
-   * Fold a resumed session's pre-restart toolCallCount/bashCommandCount into
-   * this (freshly-started) process's live counters. See SessionTrackerSeed's
-   * doc comment for why this exists.
+   * Fold a resumed session's saved toolCallCount/bashCommandCount into this
+   * process's live counters, leaving out saved calls it already counted, such
+   * as ones adoptSessionId() replayed. See SessionTrackerSeed's doc comment for
+   * why this exists.
    */
   seedFromPersisted(seed: SessionTrackerSeed): void {
-    if (seed.toolCallCount === 0 && seed.bashCommandCount === 0) return;
-    this.toolCallCount += seed.toolCallCount;
-    this.bashCommandsRun += seed.bashCommandCount;
+    let calls = seed.toolCallCount;
+    let bashCalls = seed.bashCommandCount;
+    const unseen: [string, string][] = [];
+    for (const [toolUseId, toolName] of seed.toolNameByUseId) {
+      const key = countedKey(seed.sessionId, toolUseId);
+      if (!this.toolNameByCountedKey.has(key)) {
+        unseen.push([key, toolName]);
+        continue;
+      }
+      calls--;
+      if (toolName === 'Bash') bashCalls--;
+    }
+    // Remembering them only now keeps a full map from evicting the live ids the loop has yet to reach.
+    for (const [key, toolName] of unseen) this.rememberCounted(key, toolName);
+    // A max-merged file can hold more ids than its count, so the overlap can exceed it.
+    this.toolCallCount += Math.max(0, calls);
+    this.bashCommandsRun += Math.max(0, bashCalls);
+  }
+
+  private rememberCounted(key: string, toolName: string): void {
+    if (this.toolNameByCountedKey.size >= MAX_TIMELINE_ENTRIES)
+      this.toolNameByCountedKey.delete(this.toolNameByCountedKey.keys().next().value!);
+    this.toolNameByCountedKey.set(key, toolName);
   }
 
   reset(sessionId: string): void {
@@ -495,6 +541,7 @@ export class SessionTracker implements Resettable {
       throw new Error('SessionTracker.reset() requires a non-empty sessionId');
     }
     this.drainedWhilePending = null;
+    this.countsOnlyOwnSession = sessionId.startsWith('pending-');
     this.sessionId = sessionId;
     this.sessionName = null;
     this.sessionNameSource = null;
@@ -521,5 +568,6 @@ export class SessionTracker implements Resettable {
     this.timeline = [];
     this.timelineEntryCount = 0;
     this.amendable.clear();
+    this.toolNameByCountedKey.clear();
   }
 }

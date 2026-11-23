@@ -1,5 +1,6 @@
-import type { FullSessionSummary } from '../storage/session-store.js';
-import { buildCostTrackerSeed } from './cost-tracker-seed.js';
+import { savedToolNameByUseId, type FullSessionSummary } from '../storage/session-store.js';
+import { buildCostTrackerSeed, unbookedSeedCostOf } from './cost-tracker-seed.js';
+import type { UnbookedSeedCost } from './cost-tracker-seed.js';
 import type { CostTrackerSeed } from './cost-tracker.js';
 import type { ModelBreakdownEntry } from './model-usage-tracker.js';
 import type { EfficiencyScoreSeed } from './efficiency-score.js';
@@ -20,8 +21,10 @@ export function toolCallSeedOf(summary: FullSessionSummary): ToolCallSeed {
   const sampleCount = summary.efficiencyScoreSampleCount ?? 0;
   return {
     sessionTracker: {
+      sessionId: summary.sessionId,
       toolCallCount: summary.toolCallCount,
       bashCommandCount: summary.bashCommandCount,
+      toolNameByUseId: savedToolNameByUseId(summary),
     },
     qualityProxy: summary.qualityProxy,
     taskDetector: buildTaskDetectorSeed(summary),
@@ -42,13 +45,17 @@ export interface CostSeed {
   readonly modelBreakdown: Readonly<Record<string, ModelBreakdownEntry>>;
   /** The prior spend alone, which is all the budget thresholds may be seeded from. */
   readonly estimatedCostUsd: number | null;
+  /** What the budget windows by day on top of the seeded CostTracker. */
+  readonly unbooked: UnbookedSeedCost;
 }
 
 export function costSeedOf(summary: FullSessionSummary): CostSeed {
+  const costTracker = buildCostTrackerSeed(summary);
   return {
-    costTracker: buildCostTrackerSeed(summary),
+    costTracker,
     modelBreakdown: summary.modelBreakdown,
     estimatedCostUsd: summary.estimatedCostUsd,
+    unbooked: unbookedSeedCostOf(summary, costTracker),
   };
 }
 

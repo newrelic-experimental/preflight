@@ -5,6 +5,7 @@ import {
   type PlatformConfig,
   type PlatformSessionMetadata,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 /**
  * Maps the Copilot agent-host's built-in tool names to Preflight's canonical
@@ -220,8 +221,8 @@ export class CopilotSdkAdapter implements PlatformAdapter {
 
   isSupported(): boolean {
     return (
-      process.env.MCP_CLIENT === 'copilot-sdk' ||
-      process.env.NEW_RELIC_AI_PLATFORM === 'copilot-sdk'
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'copilot-sdk' ||
+      canonicalPlatformName(process.env.NEW_RELIC_AI_PLATFORM) === 'copilot-sdk'
     );
   }
 }

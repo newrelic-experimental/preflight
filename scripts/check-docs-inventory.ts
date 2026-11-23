@@ -2,7 +2,7 @@
 /**
  * Docs-vs-code drift checker for the cloud-egress inventory.
  *
- * Four checks:
+ * Five checks:
  *   1. Every event type this app actually emits (`eventType: '<Name>'`
  *      literals under src/) must be named in both docs/METRICS_TABLE.md and
  *      PRIVACY.md.
@@ -11,8 +11,14 @@
  *      somewhere in src/ (no phantom metrics).
  *   3. Every `nr_observe_*` MCP tool name literal under src/ must be named in
  *      docs/COMMANDS_TABLE.md.
- *   4. Every `NEW_RELIC_AI_*` env var read in src/config.ts must be named in
- *      at least one of README.md, docs/ADVANCED.md, SECURITY.md, PRIVACY.md.
+ *   4. Every metric name passed as a string literal to `record(...)` or
+ *      `recordMetric(...)` under src/ (including src/core, not src/web) must be
+ *      named in docs/METRICS_TABLE.md. Metrics that are defined but never
+ *      exported satisfy this by being listed under "Local-only Metrics".
+ *   5. Every `NEW_RELIC_AI_*` env var named in any non-test file under src/
+ *      (including src/core and src/web) must be named in at least one of
+ *      README.md, docs/ADVANCED.md, SECURITY.md, PRIVACY.md, unless it is in
+ *      INTERNAL_ENV_VARS.
  *
  * Does not adjudicate *which* tracker metrics are actually wired into the
  * harvest loop — that nuance stays prose in METRICS_TABLE.md.
@@ -20,35 +26,58 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
+import { findDocMetricNames, findRecordedMetrics } from './docs-inventory-patterns.js';
+
 const ROOT = process.cwd();
 const SRC_DIR = resolve(ROOT, 'src');
 const METRICS_DOC_PATH = resolve(ROOT, 'docs/METRICS_TABLE.md');
 const PRIVACY_DOC_PATH = resolve(ROOT, 'PRIVACY.md');
 const COMMANDS_DOC_PATH = resolve(ROOT, 'docs/COMMANDS_TABLE.md');
-const CONFIG_PATH = resolve(ROOT, 'src/config.ts');
 const ENV_DOC_PATHS = ['README.md', 'docs/ADVANCED.md', 'SECURITY.md', 'PRIVACY.md'].map((p) =>
   resolve(ROOT, p),
 );
 
-// 'web' is the built SPA, not server code. 'shared' is a vendored snapshot
-// (CLAUDE.md: never edit it) whose own event/test vocabulary is far broader
-// than what this app wires up — scanning it would flag things like the
-// vendored `AiMessage`/`AiRequest` events this app never sends. '*.test.ts'
+// 'web' is the built SPA, not server code. 'core' carries its own event/test
+// vocabulary, far broader than what this app wires up — scanning it would
+// flag things like the `AiMessage`/`AiRequest` events this app never sends. '*.test.ts'
 // files declare fixture event names ('Session1', 'dropped', ...) that are
 // mock data, not real emissions. All three would drown real drift in noise.
-const SKIP_DIR_NAMES = new Set(['web', 'shared', 'node_modules']);
+const SKIP_DIR_NAMES = new Set(['web', 'core', 'node_modules']);
+
+// Env vars the code names but that are not a Preflight setting. Each needs a
+// reason. These are read only by `loadConfig()` in src/core/config.ts, which
+// Preflight never calls (it loads src/config.ts instead), so setting them
+// changes nothing.
+const INTERNAL_ENV_VARS = new Set([
+  'NEW_RELIC_AI_ATTRIBUTION_ENVIRONMENT',
+  'NEW_RELIC_AI_ATTRIBUTION_FEATURE',
+  'NEW_RELIC_AI_ATTRIBUTION_TEAM',
+  'NEW_RELIC_AI_ATTRIBUTION_USER',
+  'NEW_RELIC_AI_CLIENT_NAME',
+  'NEW_RELIC_AI_CLIENT_VERSION',
+  'NEW_RELIC_AI_CONVERSATION_TRACKING',
+  'NEW_RELIC_AI_COST_TRACKING',
+  'NEW_RELIC_AI_ENABLED',
+  'NEW_RELIC_AI_QUALITY_TRACKING',
+  'NEW_RELIC_AI_RECORD_CONTENT',
+  'NEW_RELIC_AI_THINKING_TRACKING',
+]);
 
 const EVENT_TYPE_RE = /eventType:\s*'([A-Za-z0-9_]+)'/g;
 const METRIC_TOKEN_RE = /\bai\.[a-z0-9_]+(?:\.[a-z0-9_]+)+\b/g;
 const TOOL_NAME_RE = /\bnr_observe_[a-z0-9_]+\b/g;
 const ENV_VAR_RE = /\bNEW_RELIC_AI_[A-Z0-9_]+\b/g;
 
-function collectSourceFiles(dir: string, out: string[] = []): string[] {
+function collectSourceFiles(
+  dir: string,
+  skipDirs: ReadonlySet<string> = SKIP_DIR_NAMES,
+  out: string[] = [],
+): string[] {
   for (const entry of readdirSync(dir)) {
-    if (SKIP_DIR_NAMES.has(entry)) continue;
+    if (skipDirs.has(entry)) continue;
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) {
-      collectSourceFiles(full, out);
+      collectSourceFiles(full, skipDirs, out);
     } else if (/\.tsx?$/.test(entry) && !/\.test\.tsx?$/.test(entry)) {
       out.push(full);
     }
@@ -60,8 +89,13 @@ function main(): void {
   const files = collectSourceFiles(SRC_DIR);
 
   const emittedEvents = new Set<string>();
+  const recordedMetrics = new Set<string>();
   const srcMetricTokens = new Set<string>();
   const srcToolNames = new Set<string>();
+  for (const file of collectSourceFiles(SRC_DIR, new Set(['web', 'node_modules']))) {
+    const text = readFileSync(file, 'utf8');
+    for (const name of findRecordedMetrics(text)) recordedMetrics.add(name);
+  }
   for (const file of files) {
     const text = readFileSync(file, 'utf8');
     for (const m of text.matchAll(EVENT_TYPE_RE)) emittedEvents.add(m[1]);
@@ -69,7 +103,12 @@ function main(): void {
     for (const m of text.matchAll(TOOL_NAME_RE)) srcToolNames.add(m[0]);
   }
 
-  const configEnvVars = new Set(readFileSync(CONFIG_PATH, 'utf8').match(ENV_VAR_RE) ?? []);
+  const srcEnvVars = new Set<string>();
+  for (const file of collectSourceFiles(SRC_DIR, new Set(['node_modules']))) {
+    for (const m of readFileSync(file, 'utf8').matchAll(ENV_VAR_RE)) {
+      if (!INTERNAL_ENV_VARS.has(m[0])) srcEnvVars.add(m[0]);
+    }
+  }
 
   const metricsDoc = readFileSync(METRICS_DOC_PATH, 'utf8');
   const privacyDoc = readFileSync(PRIVACY_DOC_PATH, 'utf8');
@@ -82,11 +121,14 @@ function main(): void {
   const docMetricTokens = new Set(metricsDoc.match(METRIC_TOKEN_RE) ?? []);
   const phantomMetrics = [...docMetricTokens].filter((t) => !srcMetricTokens.has(t)).sort();
 
+  const docMetricNames = findDocMetricNames(metricsDoc);
+  const undocumentedMetrics = [...recordedMetrics].filter((t) => !docMetricNames.has(t)).sort();
+
   const docToolNames = new Set(commandsDoc.match(TOOL_NAME_RE) ?? []);
   const toolsMissingFromCommandsDoc = [...srcToolNames].filter((t) => !docToolNames.has(t)).sort();
 
   const docEnvVars = new Set(envDocText.match(ENV_VAR_RE) ?? []);
-  const envVarsMissingFromDocs = [...configEnvVars].filter((v) => !docEnvVars.has(v)).sort();
+  const envVarsMissingFromDocs = [...srcEnvVars].filter((v) => !docEnvVars.has(v)).sort();
 
   let ok = true;
 
@@ -105,6 +147,11 @@ function main(): void {
     console.error('Metric names in docs/METRICS_TABLE.md with no matching literal in src/:');
     for (const t of phantomMetrics) console.error(`  - ${t}`);
   }
+  if (undocumentedMetrics.length > 0) {
+    ok = false;
+    console.error('Metrics recorded in src/ but absent from docs/METRICS_TABLE.md:');
+    for (const t of undocumentedMetrics) console.error(`  - ${t}`);
+  }
   if (toolsMissingFromCommandsDoc.length > 0) {
     ok = false;
     console.error('MCP tools registered in src/ but undocumented in docs/COMMANDS_TABLE.md:');
@@ -113,7 +160,7 @@ function main(): void {
   if (envVarsMissingFromDocs.length > 0) {
     ok = false;
     console.error(
-      'NEW_RELIC_AI_* env vars read in src/config.ts but undocumented in ' +
+      'NEW_RELIC_AI_* env vars named in src/ but undocumented in ' +
         'README.md, docs/ADVANCED.md, SECURITY.md, or PRIVACY.md:',
     );
     for (const v of envVarsMissingFromDocs) console.error(`  - ${v}`);
@@ -127,8 +174,9 @@ function main(): void {
   console.log(
     `✓ OK: ${emittedEvents.size} emitted event types documented in both docs, ` +
       `${docMetricTokens.size} documented metric names all trace to src/, ` +
+      `${recordedMetrics.size} recorded metrics all documented, ` +
       `${srcToolNames.size} MCP tools documented in COMMANDS_TABLE.md, ` +
-      `${configEnvVars.size} config env vars documented.`,
+      `${srcEnvVars.size} src env vars documented.`,
   );
 }
 

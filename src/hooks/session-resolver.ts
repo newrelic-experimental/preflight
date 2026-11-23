@@ -28,6 +28,9 @@
  *      Windows, where Claude Code interposes Git Bash between itself and the
  *      hook collector but launches the MCP server directly). Consulted last,
  *      only when #2 and #3 both miss.
+ *   Sources #2–#4 each read the engine's own writers first, then the
+ *   unattributed writer, then the legacy layout older collectors wrote
+ *   straight under `<storage>` (see sessionBreadcrumbs()).
  *   Sources #2–#4 are polled together at exponential backoff: 100ms, 200ms,
  *   500ms, 1s, 2s, then steady at 2s. No hard timeout; logs a single WARN at
  *   60s if still unresolved.
@@ -49,7 +52,7 @@ import {
 } from 'node:fs';
 import { resolve, basename } from 'node:path';
 import { homedir } from 'node:os';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { claudeProjectsDir } from '../lib/claude-config-dir.js';
 import {
   getAncestorPids,
@@ -61,7 +64,8 @@ import { breadcrumbRoot } from './session-breadcrumbs.js';
 
 import { redactSensitive } from '../config.js';
 import { CLAUDE_CODE_PLATFORM_NAME } from '../platforms/claude-code-adapter.js';
-import { hasLiveOwningEngine } from '../storage/local-store.js';
+import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
+import { breadcrumbWriters, hasLiveOwningEngine } from '../storage/local-store.js';
 
 const logger = createLogger('session-resolver');
 
@@ -70,6 +74,7 @@ const DEFAULT_STORAGE_DIR = resolve(homedir(), '.newrelic-preflight');
 const POLL_SCHEDULE_MS = [100, 200, 500, 1000, 2000];
 const STEADY_POLL_MS = 2000;
 const WARN_AFTER_MS = 60_000;
+const TAGGED_CWD_SESSION_MAX_IDLE_MS = 12 * 60 * 60 * 1000;
 
 /**
  * How far above our own ppid to look for a breadcrumb. Deliberately shallower
@@ -105,9 +110,14 @@ export interface SessionResolverOptions {
    * settles, reporting which source produced the winning value. Purely
    * additive — omitting it changes no behavior. Lets callers detect a
    * cwd-sourced (lower-confidence) resolution without changing the
-   * `Promise<string>` contract existing callers rely on.
+   * `Promise<string>` contract existing callers rely on. An ancestor hit
+   * also reports its depth (see AncestorBreadcrumbHit).
    */
-  readonly onResolutionSource?: (info: { source: SessionIdSource; sessionId: string }) => void;
+  readonly onResolutionSource?: (info: {
+    source: SessionIdSource;
+    sessionId: string;
+    depth?: number;
+  }) => void;
 }
 
 /**
@@ -176,6 +186,10 @@ export function resolveFromJobDir(claudeJobDir: string | null | undefined): stri
   return sessionIdFromLinkScanPath(parsed.linkScanPath);
 }
 
+function ppidCrumb(pid: number | undefined): string {
+  return `session-by-ppid/${pid}.txt`;
+}
+
 /**
  * Try to resolve the session_id synchronously from the PPID breadcrumb file.
  * Returns the validated session_id or null.
@@ -193,7 +207,7 @@ export function resolveFromBreadcrumb(
   processStartMs: number = Date.now() - process.uptime() * 1000,
 ): string | null {
   if (typeof ppid !== 'number' || ppid <= 0) return null;
-  const breadcrumbPath = resolve(storagePath, 'session-by-ppid', `${ppid}.txt`);
+  const breadcrumbPath = resolve(storagePath, ppidCrumb(ppid));
   if (!existsSync(breadcrumbPath)) return null;
 
   let mtimeMs: number;
@@ -251,6 +265,7 @@ export function resolveFromAncestorBreadcrumb(
   storagePath: string,
   ancestorPids: readonly number[],
   processStartMs?: number,
+  accept: (hit: AncestorBreadcrumbHit) => boolean = () => true,
 ): AncestorBreadcrumbHit | null {
   for (let depth = 1; depth < ancestorPids.length; depth++) {
     const pid = ancestorPids[depth]!;
@@ -258,7 +273,8 @@ export function resolveFromAncestorBreadcrumb(
       processStartMs === undefined
         ? resolveFromBreadcrumb(storagePath, pid)
         : resolveFromBreadcrumb(storagePath, pid, processStartMs);
-    if (sessionId) return { sessionId, pid, depth };
+    const hit = sessionId ? { sessionId, pid, depth } : null;
+    if (hit && accept(hit)) return hit;
   }
   return null;
 }
@@ -277,27 +293,19 @@ export function sanitizeCwdForFilename(cwd: string): string {
   return cwd.replace(/[\\/:]/g, '-');
 }
 
+function cwdCrumb(cwd: string): string {
+  return `session-by-cwd/${sanitizeCwdForFilename(cwd)}.txt`;
+}
+
 /**
  * Try to resolve the session_id synchronously from the cwd breadcrumb file.
  * Fallback for platforms where the PPID breadcrumb never matches (see the
  * module doc comment above). Returns the validated session_id or null.
  */
-export function resolveFromCwd(
-  storagePath: string,
-  cwd: string | undefined,
-  writtenSinceMs?: number,
-): string | null {
+export function resolveFromCwd(storagePath: string, cwd: string | undefined): string | null {
   if (typeof cwd !== 'string' || cwd.length === 0) return null;
-  const sanitizedCwd = sanitizeCwdForFilename(cwd);
-  const breadcrumbPath = resolve(storagePath, 'session-by-cwd', `${sanitizedCwd}.txt`);
+  const breadcrumbPath = resolve(storagePath, cwdCrumb(cwd));
   if (!existsSync(breadcrumbPath)) return null;
-  if (writtenSinceMs !== undefined) {
-    try {
-      if (statSync(breadcrumbPath).mtimeMs < writtenSinceMs) return null;
-    } catch {
-      return null;
-    }
-  }
   let raw: string;
   try {
     raw = readFileSync(breadcrumbPath, 'utf-8');
@@ -317,46 +325,124 @@ export interface SessionBreadcrumbs {
   readonly cwd: (cwd: string | undefined) => string | null;
 }
 
+function mtimeMs(path: string): number {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return -Infinity;
+  }
+}
+
+function readSessionId(path: string): string | null {
+  try {
+    return readFileSync(path, 'utf-8').trim();
+  } catch {
+    return null;
+  }
+}
+
+function listFiles(dir: string): string[] {
+  try {
+    return readdirSync(dir).map((name) => resolve(dir, name));
+  } catch {
+    return [];
+  }
+}
+
 /**
- * Each breadcrumb source tries the writers' own directories first, then the
- * untagged layout older collectors wrote. An untagged breadcrumb names
- * no engine, so it counts only when written since this process started:
- * an older collector still running keeps rewriting its own, while one left
- * from before an upgrade never counts again. The ancestor source takes the
- * closest ancestor across all of them, the earlier directory on a tie.
+ * Each source reads three tiers in order: the engine's own writers (the
+ * closest ancestor wins across them), the unattributed writer, then the legacy
+ * layout under `storagePath`. A legacy breadcrumb names no engine, so it counts
+ * only when no writer ever filed its session and the session has been active
+ * since this process started. A tagged cwd breadcrumb lives until 7 idle days,
+ * so it counts only while its session was active in the last 12 hours, which keeps
+ * a session that ended yesterday from shadowing a live one in a later tier.
+ * A session is active since a time when its breadcrumb, or a ppid breadcrumb
+ * in the same root naming it, was touched since then. Older collectors leave
+ * an unchanged cwd breadcrumb alone but touch the ppid breadcrumb on every
+ * event.
  */
 export function sessionBreadcrumbs(
   storagePath: string,
   writers: readonly string[],
   processStartMs: number = Date.now() - process.uptime() * 1000,
 ): SessionBreadcrumbs {
-  const roots: readonly { dir: string; writtenSinceMs?: number }[] =
-    writers.length === 0
-      ? []
-      : [
-          ...writers.map((w) => ({ dir: breadcrumbRoot(storagePath, w) })),
-          { dir: storagePath, writtenSinceMs: processStartMs },
-        ];
-  const first = <T>(read: (root: { dir: string; writtenSinceMs?: number }) => T | null) => {
-    for (const root of roots) {
-      const hit = read(root);
-      if (hit) return hit;
+  const tiers = [
+    writers.filter((w) => w !== UNATTRIBUTED_BREADCRUMB_WRITER),
+    writers.filter((w) => w === UNATTRIBUTED_BREADCRUMB_WRITER),
+  ]
+    .filter((tier) => tier.length > 0)
+    .map((tier) => tier.map((w) => breadcrumbRoot(storagePath, w)));
+  // Older collectors never touch an unchanged cwd breadcrumb but touch the ppid breadcrumb on every
+  // event, so a ppid breadcrumb in the same root naming the same session also proves it is live.
+  const activeSince = (dir: string, crumb: string, sessionId: string, sinceMs: number) =>
+    mtimeMs(resolve(dir, crumb)) >= sinceMs ||
+    listFiles(resolve(dir, 'session-by-ppid')).some(
+      (path) => mtimeMs(path) >= sinceMs && readSessionId(path) === sessionId,
+    );
+  const everTaggedIds = new Set<string>();
+  const scanTaggedIds = () => {
+    for (const writer of breadcrumbWriters(storagePath)) {
+      for (const kind of ['session-by-ppid', 'session-by-cwd', 'session-by-id']) {
+        for (const path of listFiles(resolve(breadcrumbRoot(storagePath, writer), kind))) {
+          const id = readSessionId(path);
+          if (id) everTaggedIds.add(id);
+        }
+      }
     }
-    return null;
   };
+  const rootHitCounts = (crumb: string, sessionId: string) => {
+    if (everTaggedIds.has(sessionId) || !activeSince(storagePath, crumb, sessionId, processStartMs))
+      return false;
+    scanTaggedIds();
+    return !everTaggedIds.has(sessionId);
+  };
+  const pick = <T>(
+    read: (root: string, accept: (hit: T) => boolean) => T | null,
+    crumbOf: (hit: T) => string,
+    sessionIdOf: (hit: T) => string,
+    depthOf: (hit: T) => number = () => 0,
+  ): T | null => {
+    if (writers.length === 0) return null;
+    for (const tier of tiers) {
+      let best: { hit: T; depth: number } | null = null;
+      for (const root of tier) {
+        const hit = read(root, () => true);
+        if (hit && (!best || depthOf(hit) < best.depth)) best = { hit, depth: depthOf(hit) };
+      }
+      if (best) return best.hit;
+    }
+    return read(storagePath, (hit) => rootHitCounts(crumbOf(hit), sessionIdOf(hit)));
+  };
+  const self = (sessionId: string) => sessionId;
+  const cwdSessionLive = (dir: string, cwd: string | undefined, sessionId: string) =>
+    dir === storagePath ||
+    activeSince(dir, cwdCrumb(cwd ?? ''), sessionId, Date.now() - TAGGED_CWD_SESSION_MAX_IDLE_MS);
+  const kept = (id: string | null, accept: (id: string) => boolean) =>
+    id !== null && accept(id) ? id : null;
   return {
     jobDir: (claudeJobDir) =>
       writers.includes(CLAUDE_CODE_PLATFORM_NAME) ? resolveFromJobDir(claudeJobDir) : null,
-    ppid: (ppid) => first(({ dir }) => resolveFromBreadcrumb(dir, ppid, processStartMs)),
-    ancestors: (ancestorPids) => {
-      let closest: AncestorBreadcrumbHit | null = null;
-      for (const { dir } of roots) {
-        const hit = resolveFromAncestorBreadcrumb(dir, ancestorPids, processStartMs);
-        if (hit && (!closest || hit.depth < closest.depth)) closest = hit;
-      }
-      return closest;
-    },
-    cwd: (cwd) => first(({ dir, writtenSinceMs }) => resolveFromCwd(dir, cwd, writtenSinceMs)),
+    ppid: (ppid) =>
+      pick(
+        (dir, accept) => kept(resolveFromBreadcrumb(dir, ppid, processStartMs), accept),
+        () => ppidCrumb(ppid),
+        self,
+      ),
+    ancestors: (ancestorPids) =>
+      pick(
+        (dir, accept) => resolveFromAncestorBreadcrumb(dir, ancestorPids, processStartMs, accept),
+        (hit) => ppidCrumb(hit.pid),
+        (hit) => hit.sessionId,
+        (hit) => hit.depth,
+      ),
+    cwd: (cwd) =>
+      pick(
+        (dir, accept) =>
+          kept(resolveFromCwd(dir, cwd), (id) => cwdSessionLive(dir, cwd, id) && accept(id)),
+        () => cwdCrumb(cwd ?? ''),
+        self,
+      ),
   };
 }
 
@@ -483,6 +569,7 @@ export async function resolveSessionId(
         options.onResolutionSource?.({
           source: 'ppid-ancestor',
           sessionId: fromAncestor.sessionId,
+          depth: fromAncestor.depth,
         });
         if (options.signal) options.signal.removeEventListener('abort', onAbort);
         resolvePromise(fromAncestor.sessionId);
@@ -537,7 +624,7 @@ export type PpidBreadcrumbWatchOptions = Omit<SessionResolverOptions, 'ancestorP
     | { readonly includeParentOfPpid?: false }
     | {
         readonly includeParentOfPpid: true;
-        /** The cwd-guessed id the caller already adopted. */
+        /** The id the caller adopted from the cwd or an ancestor breadcrumb. */
         readonly staleId: string;
         /**
          * Called once, synchronously, with a listener for the caller to invoke
@@ -551,11 +638,11 @@ export type PpidBreadcrumbWatchOptions = Omit<SessionResolverOptions, 'ancestorP
 /**
  * Keep watching the PPID breadcrumb only (never cwd, never CLAUDE_JOB_DIR) —
  * used as a corrective safety net after an initial resolution came from the
- * cwd fallback. Same exponential-backoff schedule as resolveSessionId
- * (reuses nextDelayMs). Resolves on the first valid ppid hit; never resolves
- * null. The caller decides whether the resolved id differs from what's
- * already adopted and is worth acting on — this function doesn't know or
- * care. No 60s WARN log: a cwd-sourced session working fine while the ppid
+ * cwd fallback or an ancestor breadcrumb. Same exponential-backoff schedule
+ * as resolveSessionId (reuses nextDelayMs). Resolves on the first valid ppid
+ * hit; never resolves null. The caller decides whether the resolved id
+ * differs from what's already adopted and is worth acting on — this function
+ * doesn't know or care. No 60s WARN log: a cwd-sourced session working fine while the ppid
  * breadcrumb stays silent is expected, not alarming.
  *
  * With `includeParentOfPpid`, each tick also checks the breadcrumb of our
@@ -645,7 +732,8 @@ export async function watchPpidBreadcrumb(options: PpidBreadcrumbWatchOptions): 
         tick: tickCount,
       });
       lookupFailed = true;
-      if (uncheckedActivity) stopReadingParentLevel('Activity under the cwd guess went unchecked');
+      if (uncheckedActivity)
+        stopReadingParentLevel('Activity under the adopted guess went unchecked');
       return [ppid];
     }
     uncheckedActivity = false;
@@ -665,13 +753,13 @@ export async function watchPpidBreadcrumb(options: PpidBreadcrumbWatchOptions): 
   const onStaleIdActivity = (): void => {
     if (settled || !watchesParentLevel || parentLevelDone) return;
     if (!parentLevelPids) {
-      if (lookupFailed) stopReadingParentLevel('Activity under the cwd guess went unchecked');
+      if (lookupFailed) stopReadingParentLevel('Activity under the adopted guess went unchecked');
       else uncheckedActivity = true;
       return;
     }
     if (breadcrumbs.ancestors(parentLevelPids)?.sessionId === staleId) {
       stopReadingParentLevel(
-        'The ppid parent breadcrumb named the cwd guess as its activity drained',
+        'The ppid parent breadcrumb named the adopted guess as its activity drained',
       );
     }
   };
@@ -715,10 +803,13 @@ export async function watchPpidBreadcrumb(options: PpidBreadcrumbWatchOptions): 
           const { sessionId, pid } = fromParent;
           if (sessionId === staleId) {
             parentLevelDone = true;
-            logger.debug('The ppid parent breadcrumb matches the cwd guess; no longer reading it', {
-              sessionId,
-              pid,
-            });
+            logger.debug(
+              'The ppid parent breadcrumb matches the adopted guess; no longer reading it',
+              {
+                sessionId,
+                pid,
+              },
+            );
           } else if (hasLiveOwningEngine(storagePath, sessionId)) {
             skippedParentIds.add(sessionId);
             logger.debug('Ignoring the ppid parent breadcrumb: its session has a live owner', {
@@ -852,18 +943,7 @@ export async function watchCwdBreadcrumbForCorrection(options: {
   });
 }
 
-/**
- * Returns true for session IDs that are MCP-internal synthetic identifiers
- * (not real Claude Code session IDs). These should be hidden from user-facing
- * surfaces such as the dashboard session list and audit trail.
- *
- * Single source of truth: kept here alongside the other session-ID logic so
- * that adding a new synthetic prefix only requires one change.
- */
-export function isSyntheticSessionId(id: string | null | undefined): boolean {
-  if (!id) return false;
-  return id.startsWith('local-') || id.startsWith('proxy-') || id.startsWith('pending-');
-}
+export { isSyntheticSessionId } from './synthetic-session-id.js';
 
 /**
  * Returns true for session IDs whose owning process's SubagentWatcher (if

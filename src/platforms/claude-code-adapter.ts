@@ -5,6 +5,7 @@ import type {
   PlatformConfig,
   PlatformSessionMetadata,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 export const CLAUDE_CODE_PLATFORM_NAME = 'claude-code';
 
@@ -79,7 +80,7 @@ export class ClaudeCodeAdapter implements PlatformAdapter {
   isSupported(): boolean {
     return (
       CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined) ||
-      process.env.MCP_CLIENT === 'claude-code'
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'claude-code'
     );
   }
 }

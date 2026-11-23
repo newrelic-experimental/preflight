@@ -9,7 +9,9 @@
  * parsing error is caught and returns {}.
  */
 
+import { normalizeAgentType } from '../lib/agent-id.js';
 import { mcpPrToolAction } from '../metrics/mcp-pr-tools.js';
+import { parsePrRepo } from '../metrics/pr-ref.js';
 import { classifyBash } from './bash-classifier.js';
 
 type ToolFields = Record<string, string | number | boolean>;
@@ -98,8 +100,12 @@ function parseBash(input: Record<string, unknown>): ToolFields {
     const classification = classifyBash(input.command);
     fields.bashCategory = classification.category;
     fields.bashLeading = classification.leading;
-    fields.bashDestructive = classification.isDestructive;
-    fields.bashNetwork = classification.isNetwork;
+    // The collector classifies the raw command before redacting it and carries
+    // the flags. A carried true can only add to what the stored text shows, since
+    // redaction can hide a destructive command but never makes a safe one look
+    // destructive.
+    fields.bashDestructive = input.bashDestructive === true || classification.isDestructive;
+    fields.bashNetwork = input.bashNetwork === true || classification.isNetwork;
   }
   if (typeof input.description === 'string') fields.commandDescription = input.description;
   if (typeof input.timeout === 'number') fields.commandTimeout = input.timeout;
@@ -126,7 +132,8 @@ function parseGlob(input: Record<string, unknown>): ToolFields {
 function parseAgent(input: Record<string, unknown>): ToolFields {
   const fields: ToolFields = {};
   if (typeof input.description === 'string') fields.agentDescription = input.description;
-  if (typeof input.subagent_type === 'string') fields.subagentType = input.subagent_type;
+  const subagentType = normalizeAgentType(input.subagent_type);
+  if (subagentType !== undefined) fields.subagentType = subagentType;
   if (typeof input.promptLength === 'number') {
     fields.promptLength = input.promptLength;
   } else if (typeof input.prompt === 'string') {
@@ -269,12 +276,12 @@ export function parseToolSpecificFields(
     }
     // Set by the collector for `gh pr create` and MCP create_pull_request, so
     // it is tool-name independent here.
-    const createdPrNumber =
-      output !== null && typeof output === 'object'
-        ? (output as Record<string, unknown>).createdPrNumber
-        : undefined;
+    const { createdPrNumber, createdPrRepo } =
+      output !== null && typeof output === 'object' ? (output as Record<string, unknown>) : {};
     if (typeof createdPrNumber === 'string' && /^\d{1,9}$/.test(createdPrNumber)) {
       fields.createdPrNumber = createdPrNumber;
+      const repo = parsePrRepo(createdPrRepo);
+      if (repo !== undefined) fields.createdPrRepo = repo;
     }
     // Set by the collector from a GitHub MCP PR call's owner, repo and
     // pullNumber inputs.

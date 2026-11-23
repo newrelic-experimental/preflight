@@ -1,6 +1,7 @@
 import { redactSensitive } from '../config.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import { gitCommandTargetDir } from './local-session-aggregator.js';
+import { readShell, type ShellReading } from './shell-lexer.js';
 import type { PrEvent } from './git-efficiency-tracker.js';
 
 // ---------------------------------------------------------------------------
@@ -193,7 +194,10 @@ export function classifyGitCommand(
   command: string,
   record: ToolCallRecord,
   resolveRepo: (dir: string | null) => string | null,
-  targetDir: string | null = gitCommandTargetDir(command, record.cwd as string | undefined),
+  targetDir: string | null = gitCommandTargetDir(
+    readShell(command),
+    record.cwd as string | undefined,
+  ),
 ): GitEvent {
   const base = {
     timestamp: record.timestamp,
@@ -272,123 +276,8 @@ const GH_PR_VERB_ACTION: Record<string, PrEvent['action']> = {
   view: 'view',
 };
 
-/** A shell command's segments and the operators between them:
- *  `operators[i]` joins `segments[i]` to `segments[i + 1]`. */
-export interface ShellChain {
-  readonly segments: readonly string[];
-  readonly operators: readonly string[];
-  /** False when a quote never closed, so where each segment ends is a guess
-   *  (see `splitShellChain`). */
-  readonly quotesBalanced: boolean;
-}
-
-// Line breaks, blank lines and comment lines right after `||`, `&&` or `|`,
-// where bash reads on to the next line for the rest of the command.
-const CONTINUED_LINES_RE = /(?:[ \t]*(?:#[^\n]*)?\n)+/y;
-
-// Characters that end a word. `)` is left out because it also closes a
-// `$( … )` inside a word.
-const WORD_BREAK_RE = /[ \t(<>]/;
-
-/**
- * Splits a shell command on its top-level `||`, `&&`, `;`, `|`, `&` and
- * newline operators, read the way bash reads them. An operator inside quotes
- * or a comment is text. A `#` at the start of the command, after an operator
- * or after a `WORD_BREAK_RE` character starts a comment, which runs to the end
- * of its line and is left out of the segment. A backslash-newline joins two
- * lines, and after `||`, `&&` or `|` the line breaks and comment lines before
- * the next command are skipped, so every segment begins at its command.
- * Segments are not trimmed. `|&` is reported as `|`, and the `&` of a
- * redirection (`2>&1`, `&>file`) is not an operator. Strip heredoc bodies
- * first so a surviving newline really does start a new command.
- *
- * bash stops with an error at a quote that never closes, so meeting one in a
- * command that succeeded means this scan misread it, as it does `$'it\'s'`.
- * Such a command is split on every operator, quoted or commented, which keeps
- * every command it holds, and `quotesBalanced` is false.
- */
-export function splitShellChain(command: string): ShellChain {
-  const chain = scanShellChain(command, true);
-  return chain.quotesBalanced
-    ? chain
-    : { ...scanShellChain(command, false), quotesBalanced: false };
-}
-
-/** `splitShellChain`'s scan. With `readQuotes` false, quote characters and
- *  `#` are plain text. */
-function scanShellChain(command: string, readQuotes: boolean): ShellChain {
-  const segments: string[] = [];
-  const operators: string[] = [];
-  let current = '';
-  let quote: string | null = null;
-  let wordStart = true;
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i];
-    if (quote === "'") {
-      current += ch;
-      if (ch === "'") quote = null;
-      continue;
-    }
-    if (ch === '\\') {
-      if (command[i + 1] !== '\n') {
-        current += command.slice(i, i + 2);
-        wordStart = false;
-      }
-      i++;
-      continue;
-    }
-    if (quote === '"') {
-      current += ch;
-      if (ch === '"') quote = null;
-      continue;
-    }
-    if (readQuotes && (ch === '"' || ch === "'")) {
-      current += ch;
-      quote = ch;
-      wordStart = false;
-      continue;
-    }
-    if (readQuotes && ch === '#' && wordStart) {
-      const lineEnd = command.indexOf('\n', i);
-      i = (lineEnd === -1 ? command.length : lineEnd) - 1;
-      continue;
-    }
-    const pair = command.slice(i, i + 2);
-    let operator: string;
-    if (pair === '||' || pair === '&&' || pair === '|&') {
-      operator = pair === '|&' ? '|' : pair;
-      i++;
-    } else if (ch === '|' || ch === ';' || ch === '\n') {
-      operator = ch;
-    } else if (
-      ch === '&' &&
-      command[i - 1] !== '>' &&
-      command[i - 1] !== '<' &&
-      command[i + 1] !== '>'
-    ) {
-      operator = ch;
-    } else {
-      current += ch;
-      wordStart = WORD_BREAK_RE.test(ch);
-      continue;
-    }
-    segments.push(current);
-    operators.push(operator);
-    current = '';
-    wordStart = true;
-    if (operator === '||' || operator === '&&' || operator === '|') {
-      CONTINUED_LINES_RE.lastIndex = i + 1;
-      if (CONTINUED_LINES_RE.test(command)) i = CONTINUED_LINES_RE.lastIndex - 1;
-    }
-  }
-  segments.push(current);
-  return { segments, operators, quotesBalanced: quote === null };
-}
-
-/** The segments of `splitShellChain`, without the operators. */
-export function splitShellSegments(command: string): string[] {
-  return [...splitShellChain(command).segments];
-}
+/** What decides whether a segment's success follows the command's. */
+type ShellChain = Pick<ShellReading, 'segments' | 'operators' | 'balanced'>;
 
 /** The PrEvent a `gh pr <verb>` segment denotes, or null when it is not one. */
 export function processGhCommand(command: string, timestamp: number): PrEvent | null {
@@ -445,12 +334,12 @@ export function segmentRunsNoCommand(segment: string): boolean {
  * steps, which run only if it succeeded. A trailing `;` or newline runs
  * nothing more and is ignored. bash can't end a list on `||`, `&&` or `|`,
  * so a segment that runs nothing after one of those means text was stripped
- * or misread, and the merge doesn't count. A chain whose quotes did not
- * balance shows none of this.
+ * or misread, and the merge doesn't count. A chain whose quotes or groups
+ * did not balance shows none of this.
  */
 export function segmentSuccessFollowsCommand(chain: ShellChain, index: number): boolean {
   const { segments, operators } = chain;
-  if (!chain.quotesBalanced) return false;
+  if (!chain.balanced) return false;
   let lastRun = operators.length;
   while (
     lastRun > index &&
@@ -521,8 +410,8 @@ const GIT_CONFLICT_CAPABLE_RE =
 // precedence, so `a || b && c` is `(a || b) && c`. `|` joins the commands of
 // one pipeline, whose exit status is its last command's.
 
-/** Whether `op` joins two commands of one pipeline. `splitShellChain`
- *  reports `|&` as `|`. */
+/** Whether `op` joins two commands of one pipeline. `readShell` reports
+ *  `|&` as `|`. */
 function isPipe(op: string | undefined): boolean {
   return op === '|';
 }
@@ -555,7 +444,7 @@ function pipelineEnd(operators: readonly string[], start: number): number {
  * or null when `target` follows another operator. `target` ran only if that
  * chain succeeded, so "did `target` running prove segment `i` succeeded" is
  * `segmentSuccessFollowsCommand` asked of it, with that function's handling
- * of `||` fallbacks, groups, pipelines and unbalanced quotes. A `target`
+ * of `||` fallbacks, groups, pipelines and unbalanced readings. A `target`
  * piped from another command is taken to prove nothing before it, the
  * reading that counts less in the case it decides: a failure that names no
  * step with a pipeline last, as in `git commit -m x && git log | head -1`,
@@ -566,7 +455,7 @@ function chainRunBefore(chain: ShellChain, target: number): ShellChain | null {
   return {
     segments: chain.segments.slice(0, target),
     operators: chain.operators.slice(0, target - 1),
-    quotesBalanced: chain.quotesBalanced,
+    balanced: chain.balanced,
   };
 }
 
@@ -750,7 +639,7 @@ function errorSegmentIndex(
 }
 
 /**
- * Classifies every git segment of a heredoc-stripped shell command, so a
+ * Classifies every git segment of a shell command's reading, so a
  * chained `git commit -m x && git push` yields a commit AND a push instead
  * of whichever verb `classifyGitCommand` ranks first.
  *
@@ -778,15 +667,14 @@ function errorSegmentIndex(
  * git segment.
  */
 export function classifyGitSegments(
-  command: string,
+  reading: ShellReading,
   record: ToolCallRecord,
   resolveRepo: (dir: string | null) => string | null,
 ): ClassifiedGitSegment[] {
-  const chain = splitShellChain(command);
-  const { segments, operators } = chain;
+  const { segments, operators } = reading;
   const isGit = segments.map((s) => GIT_SEGMENT_RE.test(s));
   const error = (record.error as string) ?? '';
-  const errorOwner = errorSegmentIndex(chain, isGit, error);
+  const errorOwner = errorSegmentIndex(reading, isGit, error);
   let owner = errorOwner.owner;
   // Segments (dropFrom, dropThrough] did not, or may not, have run.
   let failedAt = -1;
@@ -803,7 +691,7 @@ export function classifyGitSegments(
     if (dropFrom === failedAt && isGit[failedAt]) owner = failedAt;
   }
   const dropped = (i: number): boolean => i > dropFrom && i <= dropThrough;
-  const before = chainRunBefore(chain, failedAt);
+  const before = chainRunBefore(reading, failedAt);
   const provenSucceeded = (i: number): boolean =>
     before !== null && i < failedAt && segmentSuccessFollowsCommand(before, i);
   // Rejection text names the last push that ran and may have failed: not one
@@ -822,7 +710,7 @@ export function classifyGitSegments(
   const conflictAt = commitOverConflict
     ? lastGitSegment(segments.slice(0, owner), isGit, GIT_CONFLICT_CAPABLE_RE)
     : -1;
-  const targetDir = gitCommandTargetDir(command, record.cwd as string | undefined);
+  const targetDir = gitCommandTargetDir(reading, record.cwd as string | undefined);
   return segments.flatMap((segment, i) => {
     if (!isGit[i] || dropped(i)) return [];
     const forSegment =

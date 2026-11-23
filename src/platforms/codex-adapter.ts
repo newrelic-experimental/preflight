@@ -5,6 +5,7 @@ import {
   type PlatformConfig,
   type PlatformSessionMetadata,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 /**
  * Maps OpenAI Codex's built-in tool names to the normalized Claude Code tool
@@ -117,13 +118,16 @@ export class CodexAdapter implements PlatformAdapter {
       '   {',
       '     "hooks": {',
       '       "PreToolUse": [',
-      '         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }',
+      '         { "matcher": "*", "hooks": [{ "type": "command", "command": "MCP_CLIENT=codex preflight-collector" }] }',
       '       ],',
       '       "PostToolUse": [',
-      '         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }',
+      '         { "matcher": "*", "hooks": [{ "type": "command", "command": "MCP_CLIENT=codex preflight-collector" }] }',
       '       ]',
       '     }',
       '   }',
+      '   Keep the MCP_CLIENT=codex prefix: the hook runs apart from the MCP server, so an',
+      '   unstamped command files its breadcrumbs under a pool shared with other engines.',
+      '   On Windows use: "command": "cmd /c \\"set MCP_CLIENT=codex&& preflight-collector\\""',
       '2. Non-managed hooks require one-time review and trust before they run —',
       '   run `/hooks` in the Codex CLI to review and trust this hook definition.',
       '3. Ensure preflight-collector is on your PATH (npm link, or npm install -g @newrelic/preflight)',
@@ -137,6 +141,9 @@ export class CodexAdapter implements PlatformAdapter {
   }
 
   isSupported(): boolean {
-    return process.env.MCP_CLIENT === 'codex' || process.env.NEW_RELIC_AI_PLATFORM === 'codex';
+    return (
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'codex' ||
+      canonicalPlatformName(process.env.NEW_RELIC_AI_PLATFORM) === 'codex'
+    );
   }
 }

@@ -1,5 +1,5 @@
 import { Agent } from 'undici';
-import { createLogger } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
 import { validateSsrfUrl, createSsrfSafeLookup } from '../security/ssrf.js';
 import type { ToolCallRecord } from '../storage/types.js';
 

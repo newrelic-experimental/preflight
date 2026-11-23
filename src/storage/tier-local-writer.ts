@@ -15,10 +15,19 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { createLogger } from '../shared/index.js';
-import type { NrEventData } from '../shared/index.js';
+import { createLogger } from '../core/index.js';
+import type { NrEventData } from '../core/index.js';
 
 const logger = createLogger('tier-local-writer');
+
+// NR accepts event timestamps in epoch seconds or milliseconds, and audit
+// events use seconds. 1e11 ms is 1973 and 1e11 s is the year 5138, so any
+// value below it is seconds.
+const SECONDS_CEILING = 1e11;
+
+function timestampToMs(timestamp: number): number {
+  return Math.abs(timestamp) < SECONDS_CEILING ? timestamp * 1000 : timestamp;
+}
 
 export interface TierLocalWriterOptions {
   /** Tier name, used only for log attribution. */
@@ -51,7 +60,7 @@ export class TierLocalWriter {
   /** Append one event. Never throws. */
   addEvent(event: NrEventData): void {
     const rawTimestamp = event.timestamp;
-    const timestampMs = typeof rawTimestamp === 'number' ? rawTimestamp : Date.now();
+    const timestampMs = typeof rawTimestamp === 'number' ? timestampToMs(rawTimestamp) : Date.now();
 
     try {
       if (!this.dirEnsured) {

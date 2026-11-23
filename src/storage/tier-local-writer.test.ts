@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, statSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { TierLocalWriter } from './tier-local-writer.js';
-import type { NrEventData } from '../shared/index.js';
+import type { NrEventData } from '../core/index.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 let tmpDir: string;
@@ -45,6 +45,18 @@ describe('TierLocalWriter', () => {
     expect(JSON.parse(lines[0]).task_id).toBe('task-1');
     expect(JSON.parse(lines[1]).task_id).toBe('task-2');
     expect(JSON.parse(lines[1]).eventType).toBe('AiCodingTask');
+  });
+
+  it('files an event with an epoch-seconds timestamp under its real day, not 1970', () => {
+    const dir = resolve(tmpDir, 'org');
+    const writer = new TierLocalWriter({ tierName: 'org', path: dir });
+
+    writer.addEvent(makeEvent({ eventType: 'AiAuditEvent', timestamp: 1_700_000_000 }));
+
+    const lines = readFileSync(resolve(dir, 'events-2023-11-14.jsonl'), 'utf-8').trim().split('\n');
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]).timestamp).toBe(1_700_000_000);
+    expect(existsSync(resolve(dir, 'events-1970-01-20.jsonl'))).toBe(false);
   });
 
   it('creates the tier directory with mode 0o700', () => {
