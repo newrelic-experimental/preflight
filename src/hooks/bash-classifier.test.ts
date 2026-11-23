@@ -518,6 +518,7 @@ describe('classifyBash', () => {
       "eval 'rm -rf ./x'",
       'echo a; eval rm -rf ./x',
       'eval rm "-rf" ./x',
+      "eval r$'m' -rf ./x",
       'bash -c "echo \\\'; rm -rf ./x; echo \\\'"',
       'eval "r\\\nm -rf ./x"',
       "bash -c 'rm -rf ./x'",

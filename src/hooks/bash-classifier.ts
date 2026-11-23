@@ -248,7 +248,6 @@ const METACHAR = /[\s;&|(]/;
 const HEREDOC_OPERATOR = /(?<!<)<<(-?)[ \t]*/y;
 const WORD_END = /[\s;&|()<>]/;
 const LINE_CONTINUES = /(?<!\\)(?:\\\\)*\\$/;
-const WORD_BREAK = /[\s;&|()<>]/;
 const COMMAND_END = /[;&|()\n]/;
 const COMMAND_START = String.raw`(?:^|[;&|(\n])[ \t]*`;
 const NESTED_SCRIPT = new RegExp(
@@ -393,7 +392,7 @@ function lex(command: string): Lexed {
         continue;
       }
       if (ch === '(') parens.push('group');
-      emit(ch, WORD_BREAK.test(ch) ? null : ch);
+      emit(ch, WORD_END.test(ch) ? null : ch);
       i++;
       atWordStart = ch === ')' ? parens.pop() !== 'substitution' : METACHAR.test(ch);
       if (ch === '\n' && heredocs.length > 0) {
