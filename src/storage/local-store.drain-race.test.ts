@@ -6,6 +6,7 @@ import { appendToHookBuffer, DRAIN_SEAL as SEAL } from './hook-buffer.js';
 import { LocalStore } from './local-store.js';
 import { formatClaimName } from './drain-claims.js';
 import { HookEventProcessor } from '../hooks/event-processor.js';
+import { SessionTracker } from '../metrics/session-tracker.js';
 import type { HookEvent, ToolCallRecord } from './types.js';
 
 const mockHooks: {
@@ -637,6 +638,32 @@ describe('concurrent drainers of one buffer', () => {
 
     expect(atSwap).toEqual(['other:A:timeout']);
     expect([...outcomes.values()]).toEqual(['other:A:paired', 'other:X:timeout']);
+  });
+
+  it("keeps another session's pre held at the swap out of the adopted session's count", () => {
+    const tracker = new SessionTracker('pending-1700000000000', 10);
+    const pending = new LocalStore(dir);
+    const processor = new HookEventProcessor({
+      store: pending,
+      drainAllSessions: true,
+      pollIntervalMs: 3_600_000,
+      onRecord: (record) => tracker.recordToolCall(record),
+      onRecordAmend: (record) => tracker.amendToolCall(record),
+    });
+    const now = Date.now();
+    writeClaim(REAL_PID, now - 2_000, line('X', 'pre', 'other'), 'other');
+    writeClaim(REAL_PID, now - 1_000, line('X', 'post', 'other'), 'other');
+    refuseUnlinkOf('X');
+
+    processor.start();
+    processor.replaceStore(new LocalStore(dir, SESSION), false);
+    tracker.adoptSessionId(SESSION);
+    mockHooks.unlink = null;
+    appendToHookBuffer(bufferPath, line('A', 'pre'));
+    appendToHookBuffer(bufferPath, line('A'));
+    processor.stop();
+
+    expect(tracker.getMetrics().toolCallCountByTool).toEqual({ A: 1 });
   });
 
   it('keeps two adopted claims oldest first when the first take fails', () => {
