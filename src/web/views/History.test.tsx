@@ -818,6 +818,44 @@ describe('History — windowed totals', () => {
         .map((c) => c.textContent),
     ).toEqual(['claude-opus-4-6', '1', '—', '—', '$1.00', '100%', '—']);
   });
+
+  it('keeps the previous window on screen until the new window loads', async () => {
+    const { container } = renderHistory();
+    const strip = () => container.querySelector('.glow-green') as HTMLElement;
+    const before = computeHistoryKpis(SAMPLE_SESSIONS);
+    await waitFor(() =>
+      expect(within(strip()).getByText(`${before.sessionCount} sessions`)).toBeInTheDocument(),
+    );
+    await screen.findByText('claude-opus-4-6');
+
+    const serve = globalThis.fetch;
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    globalThis.fetch = ((url: string) =>
+      url.startsWith('/api/usage-insights?days=7')
+        ? held.then(() =>
+            jsonResponse({
+              ...SAMPLE_USAGE_INSIGHTS,
+              sessions: [
+                {
+                  sessionId: 'week',
+                  model: 'claude-opus-4-6',
+                  estimatedCostUsd: 1,
+                  costByDayUsd: { [localKey(daysAgo(1))]: 1 },
+                },
+              ],
+            }),
+          )
+        : serve(url)) as typeof globalThis.fetch;
+    fireEvent.click(screen.getByRole('tab', { name: '7d' }));
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(within(strip()).getByText(`${before.sessionCount} sessions`)).toBeInTheDocument();
+    expect(screen.queryByText('No model data yet')).not.toBeInTheDocument();
+
+    release();
+    await waitFor(() => expect(within(strip()).getByText('1 sessions')).toBeInTheDocument());
+  });
 });
 
 describe('History — Cost per outcome table', () => {

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { JSX } from 'react';
 
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import {
   ResponsiveContainer,
   AreaChart,
@@ -279,6 +279,7 @@ export function History(): JSX.Element {
   const costPerTool = useQuery<TurnCostsResponse>({
     queryKey: qk.costPerTool(windowNum),
     queryFn: ({ signal }) => fetchCostPerTool(undefined, windowNum, signal),
+    placeholderData: keepPreviousData,
   });
 
   const coach = useQuery<PersonalCoachResult>({
@@ -322,6 +323,7 @@ export function History(): JSX.Element {
   const usageInsights = useQuery<UsageInsightsReport>({
     queryKey: qk.usageInsights(windowNum),
     queryFn: ({ signal }) => fetchUsageInsights(windowNum, signal),
+    placeholderData: keepPreviousData,
   });
 
   const todayAggregate = useQuery<TodayAggregateResponse>({
