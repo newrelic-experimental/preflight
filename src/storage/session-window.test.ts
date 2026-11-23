@@ -39,7 +39,12 @@ describe('windowShare', () => {
       source({ costByDayUsd: { [localDateKey(DAY)]: 8 }, timeline: calls(9, 13, 14, 15) }),
       fromNoon,
     );
-    expect(share).toEqual({ weight: 0.75, costUsd: 6, toolCalls: 3 });
+    expect(share).toEqual({
+      weight: 0.75,
+      costUsd: 6,
+      costByDayUsd: { [localDateKey(DAY)]: 6 },
+      toolCalls: 3,
+    });
   });
 
   it('keeps whole days the window covers and drops days before it', () => {
@@ -58,6 +63,7 @@ describe('windowShare', () => {
       { startMs: DAY, endMs: Infinity },
     );
     expect(share.costUsd).toBe(3);
+    expect(share.costByDayUsd).toEqual({ [localDateKey(DAY)]: 3 });
     expect(share.weight).toBeCloseTo(0.3, 10);
     expect(share.toolCalls).toBe(1);
   });
@@ -75,6 +81,7 @@ describe('windowShare', () => {
       { startMs: DAY, endMs: Infinity },
     );
     expect(share.costUsd).toBeCloseTo(0.6, 10);
+    expect(share.costByDayUsd).toEqual({ [localDateKey(DAY)]: 0.6 });
     expect(share.weight).toBeCloseTo(0.6, 10);
     expect(share.toolCalls).toBe(2);
   });
@@ -85,7 +92,7 @@ describe('windowShare', () => {
 
   it('splits by elapsed time when there are no calls to go by', () => {
     const share = windowShare(source({}), fromNoon);
-    expect(share).toEqual({ weight: 0.5, costUsd: 4, toolCalls: 2 });
+    expect(share).toEqual({ weight: 0.5, costUsd: 4, costByDayUsd: {}, toolCalls: 2 });
   });
 
   it('counts a session inside the window whole, including calls its timeline dropped', () => {
@@ -93,7 +100,7 @@ describe('windowShare', () => {
       startMs: at(0),
       endMs: Infinity,
     });
-    expect(share).toEqual({ weight: 1, costUsd: 8, toolCalls: 7 });
+    expect(share).toEqual({ weight: 1, costUsd: 8, costByDayUsd: {}, toolCalls: 7 });
   });
 
   it('keeps cost booked to a day the session’s recorded span does not reach', () => {
@@ -120,7 +127,12 @@ describe('windowShare', () => {
       }),
       { startMs: DAY, endMs: Infinity },
     );
-    expect(share).toEqual({ weight: 0.5, costUsd: 1, toolCalls: 50 });
+    expect(share).toEqual({
+      weight: 0.5,
+      costUsd: 1,
+      costByDayUsd: { [localDateKey(DAY)]: 1 },
+      toolCalls: 50,
+    });
   });
 
   it('claims no cost from a summary with no day map, calls, subagent cost or timeline, as Spend Today does', () => {
@@ -129,7 +141,12 @@ describe('windowShare', () => {
     const inToday = { ...legacy, startTime: at(1), endTime: at(2) };
     const acrossMidnight = { ...legacy, startTime: DAY - HOUR_MS, endTime: at(1) };
     for (const s of [inToday, acrossMidnight]) {
-      expect(windowShare(s, today)).toEqual({ weight: 0, costUsd: 0, toolCalls: 0 });
+      expect(windowShare(s, today)).toEqual({
+        weight: 0,
+        costUsd: 0,
+        costByDayUsd: {},
+        toolCalls: 0,
+      });
       expect(todayCostOfSummary(s, localDateKey(DAY), at(12)).costUsd).toBe(0);
     }
     const withDayMap = { ...inToday, costByDayUsd: { [localDateKey(DAY)]: 2 } };
@@ -137,7 +154,7 @@ describe('windowShare', () => {
   });
 
   it('counts nothing for a session that ended before the window or started after it', () => {
-    const none = { weight: 0, costUsd: 0, toolCalls: 0 };
+    const none = { weight: 0, costUsd: 0, costByDayUsd: {}, toolCalls: 0 };
     expect(windowShare(source({}), { startMs: at(17), endMs: Infinity })).toEqual(none);
     expect(windowShare(source({}), { startMs: at(0), endMs: at(8) })).toEqual(none);
     const instant = source({ endTime: at(8), durationMs: 0 });
@@ -184,7 +201,12 @@ describe('windowedSessions', () => {
       }),
     } as FullSessionSummary;
     const [kept] = windowedSessions([chattedOnly], { startMs: DAY, endMs: Infinity });
-    expect(kept.share).toEqual({ weight: 3 / 8, costUsd: 3, toolCalls: 0 });
+    expect(kept.share).toEqual({
+      weight: 3 / 8,
+      costUsd: 3,
+      costByDayUsd: { [localDateKey(DAY)]: 3 },
+      toolCalls: 0,
+    });
   });
 
   it('drops an idle session that started after the window closed', () => {
