@@ -1,0 +1,5 @@
+---
+'@newrelic/preflight': patch
+---
+
+**Compute Waste no longer counts normal work as retries.** A run of successful tool calls with similar inputs, such as reading different line ranges of a file or starting several subagents, used to count as a retry and mark the card "Needs attention". A retry now needs a failed call first, and a successful call after it counts only when it repeats the failed call's input exactly. The comparison ignores per-call timing, ids, outcome and output fields, so an identical retry still matches when Claude Code reports each call's duration. Each repeated call is also charged once, where a burst used to be charged again each time the window moved. Retry token totals in `nr_observe_get_compute_waste`, `nr_observe_get_retry_alerts`, and `ai.retry.*` usually drop as a result. A run of failures that follows a success now alerts the same way as one with nothing before it, as long as no earlier failure of that tool is still in the window.

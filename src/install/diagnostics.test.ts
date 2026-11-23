@@ -96,7 +96,7 @@ import * as config from '../config.js';
 import * as installHelper from './install-helper.js';
 import * as platform from './platform.js';
 import { LocalStore, SessionStore } from '../storage/index.js';
-import { applyPricingOverlay, resolvePricing } from '../metrics/pricing-overlay.js';
+import { applyCustomPricing, resolvePricing } from '../metrics/pricing-overlay.js';
 
 const mockedExistSync = nodeFs.existsSync as jest.Mock;
 const mockedReadFileSync = nodeFs.readFileSync as jest.Mock;
@@ -427,9 +427,9 @@ describe('runDiagnostics', () => {
         (nodeFs.readFileSync as jest.Mock).mockReturnValue(
           JSON.stringify({ aliases: { 'acme-gateway-x': 'claude-sonnet-4-6' } }),
         );
-        applyPricingOverlay('/test-home/pricing.json');
+        applyCustomPricing('/test-home/pricing.json');
       };
-      afterEach(() => applyPricingOverlay(null));
+      afterEach(() => applyCustomPricing(null));
 
       it('drops a model the loaded file aliases to a priced one', async () => {
         mockSessions([{ unpricedByModel: { 'acme-gateway-x': { calls: 3, tokens: 1200 } } }]);

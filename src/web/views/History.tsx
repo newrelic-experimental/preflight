@@ -22,7 +22,11 @@ import { Kpi } from '../components/Kpi';
 import { RankedBars, type RankedBarRow } from '../components/RankedBars';
 import { ShareTable } from '../components/ShareTable';
 import { SpendBars, type SpendBarsDatum } from '../components/SpendBars';
-import { UsageContributionPanel, buildToolTableRows } from '../components/UsageContributionPanel';
+import {
+  UsageContributionPanel,
+  buildToolTableRows,
+  buildWindowedToolTableRows,
+} from '../components/UsageContributionPanel';
 import { Card, Panel, Pill, Tabs, type PillTone } from '../components/ui';
 import {
   fetchWeekly,
@@ -377,8 +381,11 @@ export function History(): JSX.Element {
   const antiPatternSeries = buildAntiPatternSeries(weeklyChronological);
   const modelPerf = aggregateModelPerformance(windowSessions);
   const modelPerfTotalCost = modelPerf.reduce((sum, m) => sum + m.totalCost, 0);
-  const toolTableRows = buildToolTableRows(windowSessions, costPerTool.data?.costByToolType);
-  const toolCostAvailable = costPerTool.data?.costByToolType !== undefined;
+  const windowedToolCost = costPerTool.data?.costByToolType;
+  const toolTableRows = windowedToolCost
+    ? buildWindowedToolTableRows(windowedToolCost)
+    : buildToolTableRows(windowSessions);
+  const toolCostAvailable = windowedToolCost !== undefined;
   // attribution.buckets.tool is a recently-added persisted field — most
   // historical sessions in the window predate it and simply lack it, so the
   // Tools table's cost/token columns go sparse the further back the window
@@ -388,7 +395,7 @@ export function History(): JSX.Element {
     attributedSessionCount !== undefined &&
     totalSessionCount !== undefined &&
     attributedSessionCount < totalSessionCount
-      ? `Cost/token breakdown only available for ${attributedSessionCount} of ${totalSessionCount} sessions in this window — older sessions predate per-tool attribution.`
+      ? `Tool calls, cost and tokens only count ${attributedSessionCount} of ${totalSessionCount} sessions in this window — older sessions predate per-tool attribution.`
       : null;
   const kpis = computeHistoryKpis(windowSessions);
 

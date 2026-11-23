@@ -1,4 +1,4 @@
-import type { Logger } from '../shared/index.js';
+import type { Logger } from '../core/index.js';
 
 const WARN_INTERVAL_MS = 60_000;
 

@@ -9,7 +9,7 @@ import type { ResolvedTier } from './tier-types.js';
 import type { ToolCallRecord } from '../storage/types.js';
 import type { AiCodingTask } from '../metrics/task-detector.js';
 import { SessionTracker } from '../metrics/session-tracker.js';
-import type { NrEventData, TransportOptions, TransportResult } from '../shared/index.js';
+import type { NrEventData, TransportOptions, TransportResult } from '../core/index.js';
 
 // ---------------------------------------------------------------------------
 // In-process, multi-scheduler integration proof
@@ -42,7 +42,6 @@ afterEach(() => {
 
 interface RecordedSend {
   readonly licenseKey: string;
-  readonly accountId: string;
   readonly eventTypes: readonly string[];
 }
 
@@ -63,11 +62,10 @@ function makeRecordingTransport(failForLicenseKey?: string): {
   const sendEventsFn = async (
     events: NrEventData[],
     licenseKey: string,
-    options: TransportOptions,
+    _options: TransportOptions,
   ): Promise<TransportResult> => {
     sends.push({
       licenseKey,
-      accountId: options.accountId,
       eventTypes: events.map((e) => String(e.eventType)),
     });
     if (licenseKey === failForLicenseKey) {
@@ -130,7 +128,7 @@ function makeTask(overrides?: Partial<AiCodingTask>): AiCodingTask {
 function makeOptions(overrides?: Partial<NrIngestOptions>): NrIngestOptions {
   return {
     licenseKey: 'lk-personal',
-    transportOptions: { accountId: '12345' },
+    transportOptions: {},
     developer: 'test-dev',
     appName: 'test-app',
     sessionTracker: new SessionTracker('test-session'),
@@ -176,10 +174,8 @@ describe('multi-tier fan-out (spec § Testing plan — N-scheduler fan-out)', ()
     const personal = sends.filter((s) => s.licenseKey === 'lk-personal');
     const team = sends.filter((s) => s.licenseKey === 'lk-team');
     expect(personal).toHaveLength(1);
-    expect(personal[0].accountId).toBe('12345');
     expect(personal[0].eventTypes).toEqual(['AiCodingTask']);
     expect(team).toHaveLength(1);
-    expect(team[0].accountId).toBe('67890');
     expect(team[0].eventTypes).toEqual(['AiCodingTask']);
 
     const jsonl = readFileSync(resolve(localDir, 'events-2023-11-14.jsonl'), 'utf-8')
@@ -306,7 +302,6 @@ describe('backward compatibility (spec § Testing plan — no tiers array)', () 
 
     expect(sends).toHaveLength(1);
     expect(sends[0].licenseKey).toBe('lk-personal');
-    expect(sends[0].accountId).toBe('12345');
     expect([...sends[0].eventTypes].sort()).toEqual(
       ['AiAuditEvent', 'AiBudgetWarning', 'AiCodingTask', 'AiToolCall'].sort(),
     );

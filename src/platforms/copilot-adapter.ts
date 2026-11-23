@@ -5,6 +5,7 @@ import {
   type PlatformConfig,
   type PlatformSessionMetadata,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 /**
  * Event types forwarded by a Copilot-compatible VS Code extension via HTTP.
@@ -115,8 +116,9 @@ export class CopilotAdapter implements PlatformAdapter {
     instructionFilePaths: [] as const,
     // Hook commands documented before 2026-09-04 lack the
     // NEW_RELIC_AI_PLATFORM=copilot stamp. The desktop app's setup stamps
-    // MCP_CLIENT=copilot-app into ~/.copilot/hooks/preflight.json, which VS
-    // Code reads too.
+    // MCP_CLIENT=copilot-app into ~/.copilot/hooks/preflight.json. VS Code
+    // reads user hook files from ~/.copilot/hooks/ (or $COPILOT_HOME/hooks/):
+    // https://code.visualstudio.com/docs/copilot/customization/hooks
     sessionBreadcrumbWriters: ['copilot', 'copilot-app', UNATTRIBUTED_BREADCRUMB_WRITER] as const,
   };
 
@@ -207,6 +209,9 @@ export class CopilotAdapter implements PlatformAdapter {
   }
 
   isSupported(): boolean {
-    return process.env.MCP_CLIENT === 'copilot' || process.env.NEW_RELIC_AI_PLATFORM === 'copilot';
+    return (
+      canonicalPlatformName(process.env.MCP_CLIENT) === 'copilot' ||
+      canonicalPlatformName(process.env.NEW_RELIC_AI_PLATFORM) === 'copilot'
+    );
   }
 }

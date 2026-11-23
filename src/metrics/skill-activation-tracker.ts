@@ -14,6 +14,22 @@ export interface SkillActivationMetrics {
   readonly openRuns: readonly SkillStamp[];
 }
 
+export interface SkillRunOpenContext {
+  readonly sessionId: string | null;
+  readonly timestamp: number | undefined;
+  readonly platform?: string;
+  /** The subagent whose Skill call opened the run. Absent for the main agent. */
+  readonly agentId?: string;
+}
+
+export interface SkillActivationTrackerOptions {
+  /**
+   * Called once for each newly created run. Not called when a same-skill
+   * slash run absorbs its Skill call, nor when a subagent pins an existing run.
+   */
+  readonly onRunOpened?: (stamp: SkillStamp, ctx: SkillRunOpenContext) => void;
+}
+
 /**
  * Tracks the open skill run per session and per agent, so every tool call can
  * be stamped with the skill whose work it is. A run opens on a successful,
@@ -29,6 +45,8 @@ export class SkillActivationTracker implements Resettable {
   private readonly sessions = new Map<string, Map<string, SkillStamp | null>>();
   private readonly lastActivity = new Map<string, number>();
   private readonly promptedSessions = new Set<string>();
+
+  constructor(private readonly options: SkillActivationTrackerOptions = {}) {}
 
   private runsFor(sessionId: string | null | undefined): Map<string, SkillStamp | null> {
     const key = sessionId ?? NULL_SESSION_KEY;
@@ -78,9 +96,20 @@ export class SkillActivationTracker implements Resettable {
         ...(open && { parentRunId: open.runId }),
       };
       runs.set(agentKey, stamp);
+      this.options.onRunOpened?.(stamp, {
+        sessionId: record.sessionId ?? null,
+        timestamp: record.timestamp,
+        ...(typeof record.platform === 'string' && { platform: record.platform }),
+        ...(agentKey !== MAIN_AGENT_KEY && { agentId: agentKey }),
+      });
       return stamp;
     }
     return open;
+  }
+
+  /** The run the main agent has open in a session, without touching the session's eviction order. */
+  openRun(sessionId: string | null | undefined): SkillStamp | null {
+    return this.sessions.get(sessionId ?? NULL_SESSION_KEY)?.get(MAIN_AGENT_KEY) ?? null;
   }
 
   private closeMainRunAfterIdleGap(
@@ -100,6 +129,7 @@ export class SkillActivationTracker implements Resettable {
   recordPrompt(
     sessionId: string | null | undefined,
     slashCommand: string | null,
+    timestamp?: number,
   ): SkillStamp | null {
     const stamp: SkillStamp | null = slashCommand
       ? { name: slashCommand, source: 'slash', runId: randomUUID() }
@@ -108,6 +138,7 @@ export class SkillActivationTracker implements Resettable {
     const sessionKey = sessionId ?? NULL_SESSION_KEY;
     this.promptedSessions.add(sessionKey);
     this.lastActivity.delete(sessionKey);
+    if (stamp) this.options.onRunOpened?.(stamp, { sessionId: sessionId ?? null, timestamp });
     return stamp;
   }
 

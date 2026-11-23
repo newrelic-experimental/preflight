@@ -268,6 +268,22 @@ describe('HookEventProcessor', () => {
       expect(record.agentType).toBe('Explore');
     });
 
+    it('drops a malformed or oversized agentId and falls back to the post event', () => {
+      const processor = new HookEventProcessor({ store, onRecord });
+
+      processor.processEvents([
+        makePreEvent({ agentId: 'x'.repeat(500) }),
+        makePostEvent({ agentId: 'agent-def456' }),
+      ]);
+      processor.processEvents([
+        makePreEvent({ toolUseId: 'toolu_2', agentId: 'agent\nforged' }),
+        makePostEvent({ toolUseId: 'toolu_2' }),
+      ]);
+
+      expect(records[0]!.agentId).toBe('agent-def456');
+      expect(records[1]!.agentId).toBeUndefined();
+    });
+
     it('falls back to the post event transcriptPath/permissionMode when the pre event has none', () => {
       const processor = new HookEventProcessor({ store, onRecord });
 
@@ -423,6 +439,7 @@ describe('HookEventProcessor', () => {
       expect(records).toHaveLength(1);
       const record = records[0]!;
       expect(record.toolUseId).toBe('toolu_orphan');
+      expect(record.timestamp).toBe(2000);
       expect(record.durationMs).toBeNull();
       expect(record.success).toBe(true);
       expect(record.outputSizeBytes).toBe(512);
@@ -446,7 +463,7 @@ describe('HookEventProcessor', () => {
       expect(record.agentType).toBe('general-purpose');
     });
 
-    it('still reports durationMs from nativeDurationMs even with no matching pre-event', () => {
+    it('reports durationMs from nativeDurationMs and starts the call that long before the post', () => {
       const processor = new HookEventProcessor({ store, onRecord });
 
       processor.processEvents([
@@ -459,6 +476,7 @@ describe('HookEventProcessor', () => {
 
       const record = records[0]!;
       expect(record.durationMs).toBe(75);
+      expect(record.timestamp).toBe(1925);
     });
   });
 
@@ -1756,6 +1774,82 @@ describe('HookEventProcessor', () => {
       expect(tokenEvents[0].platform).toBe(expected);
     });
 
+    const selfReport = {
+      mode: 'self_report',
+      tool: 'nr_observe_report_tokens',
+      timestamp: Date.now(),
+      sessionId: 'conv-1',
+      reportId: 'r-12345678',
+      model: 'claude-sonnet-4-6',
+      inputTokens: 10,
+      outputTokens: 20,
+      thinkingTokens: 30,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      platform: 'cursor',
+    } as const;
+
+    it('hands a self-report to onSelfReport once and never to onTokenEvent', () => {
+      const onTokenEvent = jest.fn();
+      const onSelfReport = jest.fn();
+      const processor = new HookEventProcessor({ store, onRecord, onTokenEvent, onSelfReport });
+      const reusedId = { ...selfReport, inputTokens: 11 };
+
+      processor.processEvents([selfReport, selfReport, reusedId]);
+
+      expect(onTokenEvent).not.toHaveBeenCalled();
+      expect(onSelfReport.mock.calls).toEqual([[selfReport], [reusedId]]);
+    });
+
+    it('drops a self-report with a bad model, keeps a plausible timestamp and dates the rest at drain time', () => {
+      const now = 1_800_000_000_000;
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
+      const minute = 60_000;
+      const day = 24 * 60 * minute;
+      const onSelfReport = jest.fn<(e: { reportId: string; timestamp: number }) => void>();
+      const processor = new HookEventProcessor({ store, onRecord, onSelfReport });
+      const at = (reportId: string, timestamp: unknown, model: string = selfReport.model) => ({
+        ...selfReport,
+        reportId,
+        model,
+        timestamp: timestamp as number,
+      });
+
+      try {
+        processor.processEvents([
+          at('r-bad-model', now, 'bad model!'),
+          at('r-old-kept', now - 29 * day),
+          at('r-too-old1', now - 31 * day),
+          at('r-ahead-ok', now + 4 * minute),
+          at('r-too-late', now + 6 * minute),
+          at('r-not-num1', 'soon'),
+        ]);
+      } finally {
+        nowSpy.mockRestore();
+      }
+
+      const timestamps = onSelfReport.mock.calls.map(([e]) => [e.reportId, e.timestamp]);
+      expect(timestamps).toEqual([
+        ['r-old-kept', now - 29 * day],
+        ['r-too-old1', now],
+        ['r-ahead-ok', now + 4 * minute],
+        ['r-too-late', now],
+        ['r-not-num1', now],
+      ]);
+    });
+
+    it('hands a self-report on once even when its callback threw partway, with counts clamped', () => {
+      const onSelfReport = jest.fn().mockImplementationOnce(() => {
+        throw new Error('disk full');
+      });
+      const processor = new HookEventProcessor({ store, onRecord, onSelfReport });
+      const oversized = { ...selfReport, inputTokens: 1e12 };
+
+      processor.processEvents([oversized, oversized]);
+
+      expect(onSelfReport.mock.calls).toEqual([[{ ...oversized, inputTokens: 10_000_000 }]]);
+    });
+
     it('does not error when onTokenEvent is not provided', () => {
       const processor = new HookEventProcessor({
         store,
@@ -1928,6 +2022,93 @@ describe('HookEventProcessor', () => {
       ]);
       expect(records.filter((r) => r.sessionId === 'sess-a')).toHaveLength(1);
       expect(records.filter((r) => r.sessionId === 'sess-b')).toHaveLength(1);
+    });
+  });
+
+  describe('admitRecord and replayRecord', () => {
+    const agentCall = (toolUseId: string, sessionId: string): HookEvent[] => [
+      makePreEvent({ tool: 'Agent', toolUseId, sessionId }),
+      makePostEvent({ tool: 'Agent', toolUseId, sessionId }),
+    ];
+
+    it('keeps a record admitRecord refuses from onRecord and onWorkflowAgent', () => {
+      const workflowRecords: ToolCallRecord[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onWorkflowAgent: (record) => workflowRecords.push(record),
+        admitRecord: (record) => (record.sessionId === 'sess-own' ? record : null),
+      });
+
+      processor.processEvents([
+        ...agentCall('tu_other', 'sess-other'),
+        ...agentCall('tu_own', 'sess-own'),
+      ]);
+
+      expect(records.map((r) => r.toolUseId)).toEqual(['tu_own']);
+      expect(workflowRecords.map((r) => r.toolUseId)).toEqual(['tu_own']);
+    });
+
+    it('hands on the record admitRecord returns', () => {
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        admitRecord: (record) => ({ ...record, agentType: 'reviewer' }),
+      });
+
+      processor.processEvents(agentCall('tu_1', 'sess-own'));
+
+      expect(records[0]!.agentType).toBe('reviewer');
+    });
+
+    it('replays a record to onRecord and onWorkflowAgent without asking admitRecord again', () => {
+      const workflowRecords: ToolCallRecord[] = [];
+      const admitted: ToolCallRecord[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onWorkflowAgent: (record) => workflowRecords.push(record),
+        admitRecord: (record) => {
+          admitted.push(record);
+          return null;
+        },
+      });
+      processor.processEvents(agentCall('tu_held', 'sess-own'));
+
+      processor.replayRecord(admitted[0]!);
+
+      expect(admitted).toHaveLength(1);
+      expect(records.map((r) => r.toolUseId)).toEqual(['tu_held']);
+      expect(workflowRecords.map((r) => r.toolUseId)).toEqual(['tu_held']);
+    });
+
+    it('keeps the late post of a timed-out call admitRecord refused from onWorkflowAgent', () => {
+      const workflowRecords: ToolCallRecord[] = [];
+      const onRecordAmend = jest.fn();
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onRecordAmend,
+        drainAllSessions: true,
+        onWorkflowAgent: (record) => workflowRecords.push(record),
+        admitRecord: (record) => (record.sessionId === 'sess-001' ? record : null),
+      });
+      processor.processEvents([
+        makePreEvent({ tool: 'Agent', toolUseId: 'tu_other', sessionId: 'sess-other' }),
+        makePreEvent({ tool: 'Agent', toolUseId: 'tu_own', sessionId: 'sess-001' }),
+      ]);
+      processor.stop();
+
+      processor.processEvents([
+        makePostEvent({ tool: 'Agent', toolUseId: 'tu_other', sessionId: 'sess-other' }),
+        makePostEvent({ tool: 'Agent', toolUseId: 'tu_own', sessionId: 'sess-001' }),
+      ]);
+
+      expect(onRecordAmend).toHaveBeenCalledTimes(2);
+      expect(workflowRecords.map((r) => [r.toolUseId, r.errorType ?? null])).toEqual([
+        ['tu_own', 'timeout'],
+        ['tu_own', null],
+      ]);
     });
   });
 
