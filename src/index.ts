@@ -1873,6 +1873,48 @@ async function main(): Promise<void> {
 
     const liveBus = new LiveEventBus();
 
+    // Sets the budget and the live cost tile from one set of totals. Another
+    // session's cost counts through its saved file, never through CostTracker,
+    // so a saved report counts once. A pending --stdio engine owns no session
+    // yet, so its session budget follows the conversation it just saved a
+    // report for. A --local process keeps its own session total.
+    const publishCost = (savedSessionId?: string): void => {
+      const ownTotalUsd = costTracker.getMetrics().sessionTotalCostUsd;
+      const followed =
+        savedSessionId !== undefined && sessionTraceId.startsWith('pending-')
+          ? sessionStoreForCostBaseline.loadSession(savedSessionId)
+          : null;
+      if (savedSessionId === undefined) {
+        if (ownTotalUsd === null) return;
+        refreshPriorCostBaselineIfStale();
+      } else refreshPriorCostBaseline();
+      const todayKey = localDateKey();
+      const ownTodayUsd = costTracker.getCostForDay(todayKey);
+      const todayTotalUsd = priorCostCache.priorDailyCostUsd + ownTodayUsd;
+      const weeklyTotalUsd = priorCostCache.priorWeeklyCostUsd + (ownTotalUsd ?? 0);
+      const sessionTotalUsd = followed ? (followed.estimatedCostUsd ?? 0) : (ownTotalUsd ?? 0);
+      budgetTracker.updateCost(sessionTotalUsd, todayTotalUsd, weeklyTotalUsd);
+      // The followed conversation is already in the prior daily total, so a
+      // forecast built from it would count it twice.
+      const forecastEndOfDayUsd = followed
+        ? null
+        : buildCostForecastFromInputs({
+            sessionSpentUsd: sessionTotalUsd,
+            sessionStartMs: costTracker.getSessionStartMs(sessionStartMs),
+            dailySpentUsd: ownTodayUsd,
+            dailyFirstActivityMs: costTracker.getFirstActivityMsForDay(todayKey),
+          }).forecastEndOfDayUsd;
+      liveBus.emit('cost-update', {
+        sessionId: followed ? followed.sessionId : sessionTraceId,
+        sessionTotalUsd,
+        todayTotalUsd,
+        forecastEodUsd:
+          forecastEndOfDayUsd !== null
+            ? priorCostCache.priorDailyCostUsd + forecastEndOfDayUsd
+            : null,
+      });
+    };
+
     // Construct AuditTrailManager once and share it across NrIngestManager and the
     // DashboardServer. In local mode there is no NrIngestManager, but the dashboard
     // and McpServer still need an audit log.
@@ -2034,6 +2076,7 @@ async function main(): Promise<void> {
           qualityProxyTracker,
           toolSelectionScorer,
           modelUsageTracker,
+          modelUsageTrackerHoldsOnlyOwnSession: options.stdio === true,
           toolCallBuffer: toolCallBufferAccessor,
           liveSessionRegistry,
           gitEfficiencyTracker,
@@ -2577,34 +2620,7 @@ async function main(): Promise<void> {
           );
         }
 
-        const costMetrics = costTracker.getMetrics();
-        if (costMetrics.sessionTotalCostUsd !== null) {
-          refreshPriorCostBaselineIfStale();
-          const todayKey = localDateKey();
-          const sessionTodayUsd = costTracker.getCostForDay(todayKey);
-          const dailyFirstActivityMs = costTracker.getFirstActivityMsForDay(todayKey);
-          const todayTotalUsd = priorCostCache.priorDailyCostUsd + sessionTodayUsd;
-          const weeklyTotalUsd =
-            priorCostCache.priorWeeklyCostUsd + costMetrics.sessionTotalCostUsd;
-          budgetTracker.updateCost(costMetrics.sessionTotalCostUsd, todayTotalUsd, weeklyTotalUsd);
-          const sessionForecast = buildCostForecastFromInputs({
-            sessionSpentUsd: costMetrics.sessionTotalCostUsd,
-            sessionStartMs: costTracker.getSessionStartMs(sessionStartMs),
-            dailySpentUsd: sessionTodayUsd,
-            dailyFirstActivityMs,
-          });
-          liveBus.emit('cost-update', {
-            // sessionId is always the resolved Claude Code session_id for
-            // this MCP instance so cost totals can be attributed per-session.
-            sessionId: sessionTraceId,
-            sessionTotalUsd: costMetrics.sessionTotalCostUsd,
-            todayTotalUsd,
-            forecastEodUsd:
-              sessionForecast.forecastEndOfDayUsd !== null
-                ? priorCostCache.priorDailyCostUsd + sessionForecast.forecastEndOfDayUsd
-                : null,
-          });
-        }
+        publishCost();
 
         emitCompletedTasks?.();
         homelabForwarder?.enqueue(record);
@@ -2680,34 +2696,7 @@ async function main(): Promise<void> {
           if (isOwnEvent) capturedNrIngest?.ingestContextSnapshot(ctxSnapshot, ctxTopTools, sid);
         }
 
-        const costMetrics = costTracker.getMetrics();
-        if (costMetrics.sessionTotalCostUsd !== null) {
-          refreshPriorCostBaselineIfStale();
-          const todayKey = localDateKey();
-          const sessionTodayUsd = costTracker.getCostForDay(todayKey);
-          const dailyFirstActivityMs = costTracker.getFirstActivityMsForDay(todayKey);
-          const todayTotalUsd = priorCostCache.priorDailyCostUsd + sessionTodayUsd;
-          const weeklyTotalUsd =
-            priorCostCache.priorWeeklyCostUsd + costMetrics.sessionTotalCostUsd;
-          budgetTracker.updateCost(costMetrics.sessionTotalCostUsd, todayTotalUsd, weeklyTotalUsd);
-          const sessionForecast = buildCostForecastFromInputs({
-            sessionSpentUsd: costMetrics.sessionTotalCostUsd,
-            sessionStartMs: costTracker.getSessionStartMs(sessionStartMs),
-            dailySpentUsd: sessionTodayUsd,
-            dailyFirstActivityMs,
-          });
-          liveBus.emit('cost-update', {
-            // Same as the per-tool-call cost-update emission — tag with the
-            // MCP's owning session_id for per-session attribution.
-            sessionId: sessionTraceId,
-            sessionTotalUsd: costMetrics.sessionTotalCostUsd,
-            todayTotalUsd,
-            forecastEodUsd:
-              sessionForecast.forecastEndOfDayUsd !== null
-                ? priorCostCache.priorDailyCostUsd + sessionForecast.forecastEndOfDayUsd
-                : null,
-          });
-        }
+        publishCost();
       },
       onSelfReport: (report) => {
         const usage = {
@@ -2723,6 +2712,7 @@ async function main(): Promise<void> {
             timestampMs: report.timestamp,
           });
           modelUsageTracker.recordUsage(report.model, usage, breakdown.totalUsd);
+          publishCost();
           return;
         }
         localSessionAggregator.recordTokenUsage(report.sessionId, {
@@ -2733,6 +2723,13 @@ async function main(): Promise<void> {
           ...(report.platform !== undefined && { platform: report.platform }),
           selfReported: true,
         });
+        // Save now rather than at the next checkpoint, so the budget, Model
+        // Usage and the live tile read the report from the conversation's file.
+        saveRollups(
+          readRollups((id) => id === report.sessionId),
+          'running',
+        );
+        publishCost(report.sessionId);
       },
       // Feed each Agent-tool ToolCallRecord into the workflow tracker
       // so AiWorkflowRun events ship for `run_source='agent_tool'`.
@@ -3399,6 +3396,10 @@ async function main(): Promise<void> {
       applyAuthoritativeSessionName(realId);
       if (viaCwdOnly) cwdGuessRolledUpWhilePending = rolledUpWhilePending(realId);
       else saveRollups(rolledUpWhilePending(realId), 'running');
+      // Session thresholds fired so far belong to a conversation the engine
+      // followed while pending, or to a wrong guess. The rehydrate below seeds
+      // them again from the adopted session's saved total.
+      budgetTracker.resetSession();
       // viaCwdOnly means this id came from the collision-prone cwd fallback
       // and hasn't been confirmed by the PPID breadcrumb yet — mirrors the
       // resolvedViaCwdOnly gate on the synchronous resolution path's own
