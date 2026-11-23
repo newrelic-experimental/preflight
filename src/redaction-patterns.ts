@@ -8,7 +8,7 @@
 
 // JSON escapes, ANSI colour codes and percent-escapes end in a letter or digit, so a flag
 // right after one would otherwise look like the middle of a word.
-const AFTER_ESCAPE = String.raw`\\[nrt]|\\u[0-9a-fA-F]{4}|\x1b\[[0-9;]{0,20}m|%[0-9a-fA-F]{2}`;
+const AFTER_ESCAPE = String.raw`\\[nrtbf]|\\u[0-9a-fA-F]{4}|(?:\x1b|\\u001[bB])\[[0-9;]{0,20}m|%[0-9a-fA-F]{2}`;
 const CONTINUATION = String.raw`(?:\\\r?\n|\\\\\\n)`;
 
 export const REDACTION_PATTERNS: readonly RegExp[] = [
@@ -285,16 +285,31 @@ const nameValue: Redact = (text, match, quote, spans) => {
   return i;
 };
 
-const MYSQL = /\b(?:mysql(?:dump|admin)?|mariadb)\b/g;
+const MYSQL = /(?:mysql(?:dump|admin)?|mariadb)\b/g;
 const ESCAPED_P = new RegExp(String.raw`(?<=${AFTER_ESCAPE})-p`, 'y');
 const PORT_MAPPING = /[\d.]+:\d/y;
 const REDIRECT = /&>>?|[<>][<>&|]*/y;
+const ONLY_CONTINUATION = new RegExp(String.raw`^${CONTINUATION}$`);
 
-// -p is a port, parents or preserve flag elsewhere, so only a mysql client's -p<value> words count,
-// up to the end of its command, unless the value maps a port (-p3306:3306). A redirection such
-// as 2>&1 does not end the command, and a JSON-escaped line break only separates words.
-const mysqlPasswords: Redact = (text, match, quote, spans) => {
+// A command name starts a word, possibly right after an escape that ends in a letter (\ncurl).
+const WORD_START = new RegExp(String.raw`(?<!\w)|(?<=${AFTER_ESCAPE})`, 'y');
+
+function startsWord(text: string, index: number): boolean {
+  WORD_START.lastIndex = index;
+  return WORD_START.test(text);
+}
+
+// When the match starts a word, visits each word after it up to the end of its command, and returns
+// that end. A redirection such as 2>&1 does not end the command, and a JSON-escaped line break only separates
+// words.
+function commandWords(
+  text: string,
+  match: RegExpExecArray,
+  quote: Quote,
+  visit: (from: number, end: number) => void,
+): number {
   let i = match.index + match[0].length;
+  if (!startsWord(text, match.index)) return i;
   for (;;) {
     while (isSpace(unitAt(text, i, quote)) && text.charCodeAt(i) !== LF) {
       i += unitLength(text, i, quote);
@@ -306,11 +321,18 @@ const mysqlPasswords: Redact = (text, match, quote, spans) => {
     }
     const end = valueEnd(text, i, quote);
     if (end === i) return i;
-    const flag = passwordFlag(text, i, end);
-    if (flag >= 0) spans.push(flag, end);
+    if (!ONLY_CONTINUATION.test(text.slice(i, end))) visit(i, end);
     i = end;
   }
-};
+}
+
+// -p is a port, parents or preserve flag elsewhere, so only a mysql client's -p<value> words count,
+// unless the value maps a port (-p3306:3306).
+const mysqlPasswords: Redact = (text, match, quote, spans) =>
+  commandWords(text, match, quote, (from, end) => {
+    const flag = passwordFlag(text, from, end);
+    if (flag >= 0) spans.push(flag, end);
+  });
 
 function passwordFlag(text: string, from: number, end: number): number {
   for (let flag = from; flag + 2 < end; flag++) {
@@ -323,6 +345,45 @@ function passwordFlag(text: string, from: number, end: number): number {
   return -1;
 }
 
+const CURL = /curl\b/g;
+const CURL_LONG_CREDENTIAL = /--(?:proxy-)?user(?:=|$)/y;
+// curl's short options that take a value. The value is the rest of the word, or the next word.
+const CURL_TAKES_VALUE = charTable('AbcCdDeEFHKmoPQrtTuUwxXyYz');
+const CURL_CREDENTIAL = charTable('tuU');
+// A word such as -"u" ends in a closing quote, so its value is the next word.
+const ONLY_QUOTES = /^(?:\\*["'])*$/;
+
+// -u and -U hold user:password and -t holds a secret, with the value in the same word (-uuser:pw,
+// -sSu user:pw, --user=user:pw) or the next. Another option's value, as in -o -t.txt, is skipped.
+const curlCredentials: Redact = (text, match, quote, spans) => {
+  let pending: { start: number; credential: boolean } | undefined;
+  return commandWords(text, match, quote, (from, end) => {
+    if (pending !== undefined) {
+      if (pending.credential) spans.push(pending.start, end);
+      pending = undefined;
+      return;
+    }
+    const word = text.slice(from, end);
+    CURL_LONG_CREDENTIAL.lastIndex = 0;
+    if (CURL_LONG_CREDENTIAL.test(word)) {
+      if (word.includes('=')) spans.push(from, end);
+      else pending = { start: from, credential: true };
+      return;
+    }
+    if (word[0] !== '-' || word[1] === '-') return;
+    for (let k = 1; k < word.length; k++) {
+      const c = word.charCodeAt(k);
+      if (c >= 128 || CURL_TAKES_VALUE[c] !== 1) continue;
+      const start = k === 1 ? from : from + k;
+      const credential = CURL_CREDENTIAL[c] === 1;
+      if (!ONLY_QUOTES.test(word.slice(k + 1))) {
+        if (credential) spans.push(start, end);
+      } else pending = { start, credential };
+      return;
+    }
+  });
+};
+
 type RedactionRule = RegExp | ArgumentRule;
 
 const RULES: readonly RedactionRule[] = [
@@ -331,6 +392,7 @@ const RULES: readonly RedactionRule[] = [
   ...REDACTION_PATTERNS,
   { start: FLAG, redact: wordValue },
   { start: MYSQL, redact: mysqlPasswords },
+  { start: CURL, redact: curlCredentials },
 ];
 
 /** Whether a match starting at `index` counts. A match that does not resumes one character later. */
