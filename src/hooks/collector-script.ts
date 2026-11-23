@@ -353,6 +353,13 @@ function writePpidBreadcrumb(sessionId: string, root: string, legacyRoot?: strin
   }
 }
 
+function writeSessionIdBreadcrumb(sessionId: string, root: string): void {
+  if (!SESSION_ID_RE.test(sessionId)) return;
+  try {
+    writeOrTouch(resolve(root, 'session-by-id'), `${sessionId}.txt`, sessionId);
+  } catch {}
+}
+
 function writeCwdBreadcrumb(
   sessionId: string,
   cwd: string | undefined,
@@ -880,6 +887,7 @@ function processHook(raw: string, cliEvent?: string): void {
       }
     }
     const tagged = breadcrumbRoot(storageDir, writer);
+    writeSessionIdBreadcrumb(data.session_id, tagged);
     writePpidBreadcrumb(data.session_id, tagged, storageDir);
     writeCwdBreadcrumb(data.session_id, data.cwd, tagged, storageDir);
   }

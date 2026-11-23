@@ -130,7 +130,7 @@ describe('BudgetTracker', () => {
       onThreshold: (e) => events.push(e),
     });
 
-    const initialDate = new Date('2026-05-27T10:00:00Z');
+    const initialDate = new Date(2026, 4, 27, 10, 0);
     jest.setSystemTime(initialDate);
 
     // Fire 50% threshold on day 1
@@ -140,48 +140,16 @@ describe('BudgetTracker', () => {
     expect((events[0] as { period: string; thresholdPct: number }).thresholdPct).toBe(50);
 
     // Advance to next day without firing again
-    jest.setSystemTime(new Date('2026-05-27T20:00:00Z'));
+    jest.setSystemTime(new Date(2026, 4, 27, 20, 0));
     t.updateCost(0, 6, 0);
     expect(events).toHaveLength(1);
 
     // Advance past midnight to next day
-    jest.setSystemTime(new Date('2026-05-28T10:00:00Z'));
+    jest.setSystemTime(new Date(2026, 4, 28, 10, 0));
     // Reset daily spent to simulate new day, keep session spending
     t.updateCost(0, 5, 0);
     expect(events).toHaveLength(2);
     expect((events[1] as { period: string }).period).toBe('daily');
-
-    jest.useRealTimers();
-  });
-
-  it('re-arms weekly thresholds after week rollover', () => {
-    jest.useFakeTimers();
-    const events: unknown[] = [];
-    const t = new BudgetTracker({
-      sessionBudgetUsd: null,
-      dailyBudgetUsd: null,
-      weeklyBudgetUsd: 50,
-      onThreshold: (e) => events.push(e),
-    });
-
-    const initialDate = new Date('2026-05-27T10:00:00Z');
-    jest.setSystemTime(initialDate);
-
-    // Fire 50% threshold on week 1
-    t.updateCost(0, 0, 25);
-    expect(events).toHaveLength(1);
-    expect((events[0] as { period: string }).period).toBe('weekly');
-
-    // Advance within same week
-    jest.setSystemTime(new Date('2026-05-29T10:00:00Z'));
-    t.updateCost(0, 0, 30);
-    expect(events).toHaveLength(1);
-
-    // Advance to next week (Mon = week start)
-    jest.setSystemTime(new Date('2026-06-02T10:00:00Z'));
-    t.updateCost(0, 0, 25);
-    expect(events).toHaveLength(2);
-    expect((events[1] as { period: string }).period).toBe('weekly');
 
     jest.useRealTimers();
   });
@@ -313,6 +281,156 @@ describe('BudgetTracker', () => {
       });
       expect(() => t.seedPeriodSpend(1000, 5000)).not.toThrow();
       expect(t.getStatus().daily.pctUsed).toBeNull();
+    });
+  });
+  describe('period keys', () => {
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    const fired = (events: Array<{ period: string; thresholdPct: number }>) =>
+      events.map((e) => `${e.period}_${e.thresholdPct}`);
+
+    it('re-arms the daily threshold when the local day rolls over', () => {
+      jest.useFakeTimers();
+      const events: Array<{ period: string; thresholdPct: number }> = [];
+      const t = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: 10,
+        weeklyBudgetUsd: null,
+        onThreshold: (e) => events.push(e),
+      });
+      jest.setSystemTime(new Date(2026, 2, 10, 23, 30));
+      t.updateCost(0, 6, 0);
+      expect(fired(events)).toEqual(['daily_50']);
+
+      jest.setSystemTime(new Date(2026, 2, 11, 0, 10));
+      t.updateCost(0, 6, 0);
+      expect(fired(events)).toEqual(['daily_50', 'daily_50']);
+    });
+
+    it('does not re-fire a daily threshold within one local day', () => {
+      jest.useFakeTimers();
+      const events: Array<{ period: string; thresholdPct: number }> = [];
+      const t = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: 10,
+        weeklyBudgetUsd: null,
+        onThreshold: (e) => events.push(e),
+      });
+      jest.setSystemTime(new Date(2026, 2, 10, 0, 10));
+      t.updateCost(0, 6, 0);
+      jest.setSystemTime(new Date(2026, 2, 10, 23, 50));
+      t.updateCost(0, 7, 0);
+      expect(fired(events)).toEqual(['daily_50']);
+    });
+
+    it('does not re-fire the weekly threshold across a Sunday to Monday UTC boundary while spend stays above it', () => {
+      jest.useFakeTimers();
+      const events: Array<{ period: string; thresholdPct: number }> = [];
+      const t = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: null,
+        weeklyBudgetUsd: 10,
+        onThreshold: (e) => events.push(e),
+      });
+      jest.setSystemTime(new Date('2026-03-08T23:30:00Z'));
+      t.updateCost(0, 0, 9);
+      jest.setSystemTime(new Date('2026-03-09T00:30:00Z'));
+      t.updateCost(0, 0, 9);
+      expect(fired(events)).toEqual(['weekly_50', 'weekly_80']);
+    });
+
+    it('does not re-fire the weekly threshold across a local midnight while spend stays above it', () => {
+      jest.useFakeTimers();
+      const events: Array<{ period: string; thresholdPct: number }> = [];
+      const t = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: null,
+        weeklyBudgetUsd: 10,
+        onThreshold: (e) => events.push(e),
+      });
+      jest.setSystemTime(new Date(2026, 2, 10, 10, 0));
+      t.updateCost(0, 0, 9);
+      jest.setSystemTime(new Date(2026, 2, 11, 10, 0));
+      t.updateCost(0, 0, 9);
+      expect(fired(events)).toEqual(['weekly_50', 'weekly_80']);
+    });
+
+    it('does not re-arm a daily threshold when spend dips within the same local day', () => {
+      const events: Array<{ period: string; thresholdPct: number }> = [];
+      const t = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: 10,
+        weeklyBudgetUsd: null,
+        onThreshold: (e) => events.push(e),
+      });
+      t.updateCost(0, 6, 0);
+      t.updateCost(0, 4, 0);
+      t.updateCost(0, 6, 0);
+      expect(fired(events)).toEqual(['daily_50']);
+    });
+
+    it('re-arms a weekly threshold once rolling spend drops below it', () => {
+      const events: Array<{ period: string; thresholdPct: number }> = [];
+      const t = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: null,
+        weeklyBudgetUsd: 10,
+        onThreshold: (e) => events.push(e),
+      });
+      t.updateCost(0, 0, 9);
+      t.updateCost(0, 0, 9.5);
+      expect(fired(events)).toEqual(['weekly_50', 'weekly_80']);
+
+      t.updateCost(0, 0, 6);
+      t.updateCost(0, 0, 9);
+      expect(fired(events)).toEqual(['weekly_50', 'weekly_80', 'weekly_80']);
+    });
+
+    it('does not re-alert weekly when spend bounces across the threshold', () => {
+      const events: Array<{ period: string; thresholdPct: number }> = [];
+      const t = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: null,
+        weeklyBudgetUsd: 100,
+        onThreshold: (e) => events.push(e),
+      });
+      for (const spend of [79, 81, 79, 81, 79, 81, 79, 81, 79, 81]) {
+        t.updateCost(0, 0, spend);
+      }
+      expect(events.filter((e) => e.thresholdPct === 80)).toHaveLength(1);
+    });
+
+    it('re-alerts weekly after spend drops well below the threshold and rises again', () => {
+      const events: Array<{ period: string; thresholdPct: number }> = [];
+      const t = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: null,
+        weeklyBudgetUsd: 100,
+        onThreshold: (e) => events.push(e),
+      });
+      t.updateCost(0, 0, 81);
+      t.updateCost(0, 0, 60);
+      t.updateCost(0, 0, 81);
+      expect(events.filter((e) => e.thresholdPct === 80)).toHaveLength(2);
+    });
+
+    it('re-arms weekly only once spend is below the margin, not at it', () => {
+      const events: Array<{ period: string; thresholdPct: number }> = [];
+      const t = new BudgetTracker({
+        sessionBudgetUsd: null,
+        dailyBudgetUsd: null,
+        weeklyBudgetUsd: 100,
+        onThreshold: (e) => events.push(e),
+      });
+      t.updateCost(0, 0, 81);
+      t.updateCost(0, 0, 70);
+      t.updateCost(0, 0, 81);
+      expect(events.filter((e) => e.thresholdPct === 80)).toHaveLength(1);
+      t.updateCost(0, 0, 69);
+      t.updateCost(0, 0, 81);
+      expect(events.filter((e) => e.thresholdPct === 80)).toHaveLength(2);
     });
   });
 });
