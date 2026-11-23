@@ -78,7 +78,7 @@ export interface SessionMetrics {
 
 const MAX_TIMELINE_ENTRIES = 10_000;
 
-/** A call's key among the counted ones. Antigravity's ids are step numbers, which sessions may share. */
+/** A call's key among the counted ones. A tool use id is only promised unique within its session. */
 function countedKey(sessionId: string, toolUseId: string): string {
   return `${sessionId}\u0000${toolUseId}`;
 }
