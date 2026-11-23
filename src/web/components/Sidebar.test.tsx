@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { ReactElement } from 'react';
+import { render, screen } from '@testing-library/react';
 import { Sidebar, type SidebarProps } from './Sidebar';
 import { useLiveStore, type AlertEvent } from '../store/liveStore';
 import { useVersionInfo } from '../hooks/useVersionInfo';
@@ -37,13 +35,8 @@ function resetStore(): void {
   });
 }
 
-function renderWithQuery(ui: ReactElement) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
-}
-
 function renderSidebar(overrides: Partial<SidebarProps> = {}): void {
-  renderWithQuery(
+  render(
     <Sidebar
       currentPath="/"
       onNavigate={() => {}}
@@ -53,19 +46,6 @@ function renderSidebar(overrides: Partial<SidebarProps> = {}): void {
       {...overrides}
     />,
   );
-}
-
-function mockSettings(experimentalArtifacts: boolean) {
-  const fetchSpy = vi.fn(() =>
-    Promise.resolve(
-      new Response(JSON.stringify({ experimentalArtifacts }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }),
-    ),
-  );
-  globalThis.fetch = fetchSpy as unknown as typeof globalThis.fetch;
-  return fetchSpy;
 }
 
 describe('Sidebar', () => {
@@ -78,7 +58,7 @@ describe('Sidebar', () => {
   });
 
   it('renders all four nav items', () => {
-    renderWithQuery(
+    render(
       <Sidebar
         currentPath="/"
         onNavigate={() => {}}
@@ -94,7 +74,7 @@ describe('Sidebar', () => {
   });
 
   it('highlights the active item', () => {
-    renderWithQuery(
+    render(
       <Sidebar
         currentPath="/audit"
         onNavigate={() => {}}
@@ -108,7 +88,7 @@ describe('Sidebar', () => {
   });
 
   it('shows ● live when connected=true', () => {
-    renderWithQuery(
+    render(
       <Sidebar
         currentPath="/"
         onNavigate={() => {}}
@@ -121,7 +101,7 @@ describe('Sidebar', () => {
   });
 
   it('shows ● reconnecting when connected=false', () => {
-    renderWithQuery(
+    render(
       <Sidebar
         currentPath="/"
         onNavigate={() => {}}
@@ -134,7 +114,7 @@ describe('Sidebar', () => {
   });
 
   it('does not set aria-current on inactive items', () => {
-    renderWithQuery(
+    render(
       <Sidebar
         currentPath="/audit"
         onNavigate={() => {}}
@@ -150,7 +130,7 @@ describe('Sidebar', () => {
   });
 
   it('marks decorative icons aria-hidden inside nav buttons', () => {
-    const { container } = renderWithQuery(
+    const { container } = render(
       <Sidebar
         currentPath="/"
         onNavigate={() => {}}
@@ -167,7 +147,7 @@ describe('Sidebar', () => {
   });
 
   it('labels the nav landmarks as "Observe" and "Analyze"', () => {
-    renderWithQuery(
+    render(
       <Sidebar
         currentPath="/"
         onNavigate={() => {}}
@@ -181,7 +161,7 @@ describe('Sidebar', () => {
   });
 
   it('does not render an alert badge when no alerts are firing', () => {
-    renderWithQuery(
+    render(
       <Sidebar
         currentPath="/"
         onNavigate={() => {}}
@@ -196,7 +176,7 @@ describe('Sidebar', () => {
   it('shows a numeric badge on Today when alerts are firing', () => {
     fireOne({ id: 'a', severity: 'warning' });
     fireOne({ id: 'b', severity: 'warning' });
-    renderWithQuery(
+    render(
       <Sidebar
         currentPath="/"
         onNavigate={() => {}}
@@ -212,7 +192,7 @@ describe('Sidebar', () => {
 
   it('uses a singular aria-label when there is one alert', () => {
     fireOne({ id: 'a', severity: 'warning' });
-    renderWithQuery(
+    render(
       <Sidebar
         currentPath="/"
         onNavigate={() => {}}
@@ -227,7 +207,7 @@ describe('Sidebar', () => {
   it('tones the badge with the highest severity present', () => {
     fireOne({ id: 'a', severity: 'warning' });
     fireOne({ id: 'b', severity: 'critical' });
-    renderWithQuery(
+    render(
       <Sidebar
         currentPath="/"
         onNavigate={() => {}}
@@ -245,7 +225,7 @@ describe('Sidebar', () => {
     for (let i = 0; i < 100; i += 1) {
       fireOne({ id: `alert-${i}`, severity: 'warning' });
     }
-    renderWithQuery(
+    render(
       <Sidebar
         currentPath="/"
         onNavigate={() => {}}
@@ -263,7 +243,7 @@ describe('Sidebar', () => {
     for (let i = 0; i < 99; i += 1) {
       fireOne({ id: `alert-${i}`, severity: 'warning' });
     }
-    renderWithQuery(
+    render(
       <Sidebar
         currentPath="/"
         onNavigate={() => {}}
@@ -277,7 +257,7 @@ describe('Sidebar', () => {
 
   it('only shows the badge on the Today nav item, not on others', () => {
     fireOne({ id: 'a', severity: 'warning' });
-    renderWithQuery(
+    render(
       <Sidebar
         currentPath="/"
         onNavigate={() => {}}
@@ -329,19 +309,5 @@ describe('Sidebar', () => {
     });
     renderSidebar();
     expect(screen.queryByText(/available/)).not.toBeInTheDocument();
-  });
-
-  it('shows the Artifacts nav item only when experimentalArtifacts is on', async () => {
-    mockSettings(true);
-    renderSidebar();
-    await waitFor(() => expect(screen.getByText('Artifacts')).toBeInTheDocument());
-  });
-
-  it('hides the Artifacts nav item when experimentalArtifacts is off', async () => {
-    const fetchSpy = mockSettings(false);
-    renderSidebar();
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith('/api/settings', expect.anything()));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(screen.queryByText('Artifacts')).not.toBeInTheDocument();
   });
 });
