@@ -3,6 +3,7 @@ import { LocalAlertEngine, type AlertSnapshot } from './local-alert-engine.js';
 import type { LocalAlertRule } from './local-alert-rule.js';
 import type { AlertEvent } from '../dashboard/live-event-bus.js';
 import type { OsNotifier } from './os-notifier.js';
+import { BudgetTracker, type BudgetThresholdEvent } from '../metrics/budget-tracker.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -389,7 +390,7 @@ describe('LocalAlertEngine — budget rules', () => {
   });
 });
 
-describe('LocalAlertEngine — budget.daily / budget.weekly periodKey rollover', () => {
+describe('LocalAlertEngine — budget.daily / budget.weekly period rollover', () => {
   it('clears a firing budget.daily rule when the calendar day rolls over', () => {
     const engine = new LocalAlertEngine();
     engine.loadRules([makeBudgetRule({ id: 'daily-budget', type: 'budget.daily' })]);
@@ -406,36 +407,150 @@ describe('LocalAlertEngine — budget.daily / budget.weekly periodKey rollover',
     expect(events).toHaveLength(1);
     expect(events[0]!.state).toBe('firing');
 
-    // Day rolls over with no matching threshold — must clear, proving periodKey()'s
-    // 'daily' branch rolled over rather than treating the rule as still in-period.
+    // Day rolls over with no matching threshold — must clear, proving the daily
+    // period id rolled over rather than treating the rule as still in-period.
     events = engine.evaluate(makeSnapshot(), day2);
     expect(events).toHaveLength(1);
     expect(events[0]!.state).toBe('cleared');
     expect(engine.getFiringRuleIds()).toEqual([]);
   });
 
-  it('clears a firing budget.weekly rule across an ISO week boundary (Sun -> Mon)', () => {
+  it('keeps a firing budget.weekly rule across a calendar week boundary', () => {
     const engine = new LocalAlertEngine();
     engine.loadRules([makeBudgetRule({ id: 'weekly-budget', type: 'budget.weekly' })]);
 
     const sunday = new Date(2026, 5, 7, 10, 0, 0).getTime();
     const monday = new Date(2026, 5, 8, 10, 0, 0).getTime();
 
-    let events = engine.evaluate(
+    const events = engine.evaluate(
       makeSnapshot({
         budgetThresholds: [{ period: 'weekly', thresholdPct: 80, spentUsd: 40, budgetUsd: 50 }],
       }),
       sunday,
     );
     expect(events).toHaveLength(1);
-    expect(events[0]!.state).toBe('firing');
 
-    // Monday starts a new ISO week — must clear, proving periodKey()'s 'weekly'
-    // branch computed a different ISO week number.
-    events = engine.evaluate(makeSnapshot(), monday);
-    expect(events).toHaveLength(1);
-    expect(events[0]!.state).toBe('cleared');
+    expect(
+      engine.evaluate(makeSnapshot({ cost: { sessionUsd: 0, todayUsd: 0, weekUsd: 40 } }), monday),
+    ).toEqual([]);
+    expect(engine.getFiringRuleIds()).toEqual(['weekly-budget']);
+  });
+
+  it('clears a firing budget.weekly rule only once rolling spend is 10 points under the threshold', () => {
+    const engine = new LocalAlertEngine();
+    engine.loadRules([makeBudgetRule({ id: 'weekly-budget', type: 'budget.weekly' })]);
+    const t = new Date(2026, 5, 8, 10, 0, 0).getTime();
+
+    engine.evaluate(
+      makeSnapshot({
+        budgetThresholds: [{ period: 'weekly', thresholdPct: 80, spentUsd: 40, budgetUsd: 50 }],
+      }),
+      t,
+    );
+
+    // 35 of 50 is 70%, which is not below 80 - 10.
+    expect(
+      engine.evaluate(
+        makeSnapshot({ cost: { sessionUsd: 0, todayUsd: 0, weekUsd: 35 } }),
+        t + 1000,
+      ),
+    ).toEqual([]);
+    const events = engine.evaluate(
+      makeSnapshot({ cost: { sessionUsd: 0, todayUsd: 0, weekUsd: 34 } }),
+      t + 2000,
+    );
+    expect(events.map((e) => e.state)).toEqual(['cleared']);
     expect(engine.getFiringRuleIds()).toEqual([]);
+  });
+});
+
+describe('LocalAlertEngine — agrees with BudgetTracker on budget periods', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  function drive(
+    type: 'budget.daily' | 'budget.weekly',
+    steps: ReadonlyArray<{ at: Date; spend: number }>,
+  ): { tracker: string[]; engine: string[] } {
+    jest.useFakeTimers();
+    const budget = 100;
+    const engine = new LocalAlertEngine();
+    engine.loadRules([makeBudgetRule({ id: 'rule', type, threshold: 80 })]);
+    const tracker: string[] = [];
+    const engineFires: string[] = [];
+    const bt = new BudgetTracker({
+      sessionBudgetUsd: null,
+      dailyBudgetUsd: type === 'budget.daily' ? budget : null,
+      weeklyBudgetUsd: type === 'budget.weekly' ? budget : null,
+      onThreshold: (e: BudgetThresholdEvent) => {
+        if (e.thresholdPct !== 80) return;
+        tracker.push(`${e.period}_80`);
+        const events = engine.evaluateBudgetThreshold(
+          {
+            period: e.period,
+            thresholdPct: e.thresholdPct,
+            spentUsd: e.spentUsd,
+            budgetUsd: e.budgetUsd,
+          },
+          Date.now(),
+        );
+        for (const ev of events) if (ev.state === 'firing') engineFires.push(`${e.period}_80`);
+      },
+    });
+    for (const step of steps) {
+      jest.setSystemTime(step.at);
+      const daily = type === 'budget.daily' ? step.spend : 0;
+      const weekly = type === 'budget.weekly' ? step.spend : 0;
+      bt.updateCost(0, daily, weekly);
+      engine.evaluate(
+        makeSnapshot({
+          timestamp: step.at.getTime(),
+          cost: { sessionUsd: 0, todayUsd: daily, weekUsd: weekly },
+        }),
+        step.at.getTime(),
+      );
+    }
+    return { tracker, engine: engineFires };
+  }
+
+  it('re-alerts weekly after spend drops below the margin, like BudgetTracker', () => {
+    const { tracker, engine } = drive('budget.weekly', [
+      { at: new Date(2026, 2, 10, 9, 0), spend: 81 },
+      { at: new Date(2026, 2, 10, 9, 1), spend: 60 },
+      { at: new Date(2026, 2, 10, 9, 2), spend: 81 },
+    ]);
+    expect(tracker).toEqual(['weekly_80', 'weekly_80']);
+    expect(engine).toEqual(tracker);
+  });
+
+  it('does not re-alert weekly while spend stays inside the margin', () => {
+    const { tracker, engine } = drive('budget.weekly', [
+      { at: new Date(2026, 2, 10, 9, 0), spend: 81 },
+      { at: new Date(2026, 2, 10, 9, 1), spend: 70 },
+      { at: new Date(2026, 2, 10, 9, 2), spend: 81 },
+    ]);
+    expect(tracker).toEqual(['weekly_80']);
+    expect(engine).toEqual(tracker);
+  });
+
+  it('does not re-alert weekly at a calendar week boundary while spend stays high', () => {
+    const { tracker, engine } = drive('budget.weekly', [
+      { at: new Date(2026, 2, 8, 23, 30), spend: 90 },
+      { at: new Date(2026, 2, 9, 0, 30), spend: 90 },
+    ]);
+    expect(tracker).toEqual(['weekly_80']);
+    expect(engine).toEqual(tracker);
+  });
+
+  it('re-alerts daily once the local day rolls over, like BudgetTracker', () => {
+    const { tracker, engine } = drive('budget.daily', [
+      { at: new Date(2026, 2, 10, 23, 30), spend: 90 },
+      { at: new Date(2026, 2, 11, 0, 10), spend: 5 },
+      { at: new Date(2026, 2, 11, 0, 20), spend: 90 },
+    ]);
+    expect(tracker).toEqual(['daily_80', 'daily_80']);
+    expect(engine).toEqual(tracker);
   });
 });
 
