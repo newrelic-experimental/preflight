@@ -2024,6 +2024,93 @@ describe('HookEventProcessor', () => {
     });
   });
 
+  describe('admitRecord and replayRecord', () => {
+    const agentCall = (toolUseId: string, sessionId: string): HookEvent[] => [
+      makePreEvent({ tool: 'Agent', toolUseId, sessionId }),
+      makePostEvent({ tool: 'Agent', toolUseId, sessionId }),
+    ];
+
+    it('keeps a record admitRecord refuses from onRecord and onWorkflowAgent', () => {
+      const workflowRecords: ToolCallRecord[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onWorkflowAgent: (record) => workflowRecords.push(record),
+        admitRecord: (record) => (record.sessionId === 'sess-own' ? record : null),
+      });
+
+      processor.processEvents([
+        ...agentCall('tu_other', 'sess-other'),
+        ...agentCall('tu_own', 'sess-own'),
+      ]);
+
+      expect(records.map((r) => r.toolUseId)).toEqual(['tu_own']);
+      expect(workflowRecords.map((r) => r.toolUseId)).toEqual(['tu_own']);
+    });
+
+    it('hands on the record admitRecord returns', () => {
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        admitRecord: (record) => ({ ...record, agentType: 'reviewer' }),
+      });
+
+      processor.processEvents(agentCall('tu_1', 'sess-own'));
+
+      expect(records[0]!.agentType).toBe('reviewer');
+    });
+
+    it('replays a record to onRecord and onWorkflowAgent without asking admitRecord again', () => {
+      const workflowRecords: ToolCallRecord[] = [];
+      const admitted: ToolCallRecord[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onWorkflowAgent: (record) => workflowRecords.push(record),
+        admitRecord: (record) => {
+          admitted.push(record);
+          return null;
+        },
+      });
+      processor.processEvents(agentCall('tu_held', 'sess-own'));
+
+      processor.replayRecord(admitted[0]!);
+
+      expect(admitted).toHaveLength(1);
+      expect(records.map((r) => r.toolUseId)).toEqual(['tu_held']);
+      expect(workflowRecords.map((r) => r.toolUseId)).toEqual(['tu_held']);
+    });
+
+    it('keeps the late post of a timed-out call admitRecord refused from onWorkflowAgent', () => {
+      const workflowRecords: ToolCallRecord[] = [];
+      const onRecordAmend = jest.fn();
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onRecordAmend,
+        drainAllSessions: true,
+        onWorkflowAgent: (record) => workflowRecords.push(record),
+        admitRecord: (record) => (record.sessionId === 'sess-001' ? record : null),
+      });
+      processor.processEvents([
+        makePreEvent({ tool: 'Agent', toolUseId: 'tu_other', sessionId: 'sess-other' }),
+        makePreEvent({ tool: 'Agent', toolUseId: 'tu_own', sessionId: 'sess-001' }),
+      ]);
+      processor.stop();
+
+      processor.processEvents([
+        makePostEvent({ tool: 'Agent', toolUseId: 'tu_other', sessionId: 'sess-other' }),
+        makePostEvent({ tool: 'Agent', toolUseId: 'tu_own', sessionId: 'sess-001' }),
+      ]);
+
+      expect(onRecordAmend).toHaveBeenCalledTimes(2);
+      expect(workflowRecords.map((r) => [r.toolUseId, r.errorType ?? null])).toEqual([
+        ['tu_own', 'timeout'],
+        ['tu_own', null],
+      ]);
+    });
+  });
+
   describe('onWorkflowAgent callback', () => {
     it('fires for paired records with toolName === "Agent"', () => {
       const workflowRecords: ToolCallRecord[] = [];
