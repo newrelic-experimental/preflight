@@ -1740,7 +1740,9 @@ describe('stdio integration', () => {
         },
       });
       await connectToConfiguredEngine(client, transport);
-      return Object.assign(client, { pid: transport.pid as number });
+      const pid = transport.pid;
+      if (pid === null) throw new Error('engine has no pid: spawn failed');
+      return Object.assign(client, { pid });
     };
     let drainedCalls = 0;
     const drainCalls = async (storage: string, sessionId: string, count: number) => {
