@@ -42,11 +42,11 @@ function isWindsurfToolCallEvent(x: unknown): x is WindsurfToolCallEvent {
 export class WindsurfAdapter implements PlatformAdapter {
   readonly platformName = 'windsurf';
   readonly visibilityLevel = 'full-hooks' as const;
-  // https://docs.windsurf.com/windsurf/cascade/memories#rules — project rules
-  // live in `.windsurfrules`.
+  // https://docs.devin.ai/desktop/devin-local/customizations: legacy
+  // `.windsurfrules` project rules are still imported by default.
   readonly capabilities = {
     instructionFilePaths: ['.windsurfrules'] as const,
-    // docs.windsurf.com/windsurf/cascade/hooks: hooks send trajectory_id, never session_id, so they write no breadcrumb.
+    // docs.windsurf.com/de/windsurf/cascade/hooks: hooks send trajectory_id, never session_id, so they write no breadcrumb.
     sessionBreadcrumbWriters: [] as const,
     // https://docs.windsurf.com/de/windsurf/cascade/hooks: post_mcp_tool_use carries
     // trajectory_id and tool_info.mcp_server_name, mcp_tool_arguments and mcp_result,
@@ -68,7 +68,7 @@ export class WindsurfAdapter implements PlatformAdapter {
     // Cascade tool calls (file reads/writes, terminal commands, MCP calls)
     // arrive through Windsurf's real Cascade Hooks system (.windsurf/hooks.json),
     // handled by src/hooks/collector-script.ts — not through a file watcher
-    // or extension API. See https://docs.windsurf.com/windsurf/cascade/hooks.
+    // or extension API. See https://docs.windsurf.com/de/windsurf/cascade/hooks.
   }
 
   normalizeToolCall(raw: unknown): NormalizedToolCall {
@@ -115,7 +115,7 @@ export class WindsurfAdapter implements PlatformAdapter {
       '   b. Register pre_read_code, post_read_code, pre_write_code, post_write_code,',
       '      pre_run_command, post_run_command, and post_mcp_tool_use hooks, each running:',
       '      preflight-collector',
-      '   c. See https://docs.windsurf.com/windsurf/cascade/hooks for the full hooks.json schema',
+      '   c. See https://docs.windsurf.com/de/windsurf/cascade/hooks for the full hooks.json schema',
     ].join('\n');
   }
 

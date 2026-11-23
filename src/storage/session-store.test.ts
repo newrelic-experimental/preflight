@@ -1811,10 +1811,11 @@ describe('buildSessionSummary', () => {
   });
 
   it("mergeSummaries keeps an owner's completed against later saves", () => {
-    const owner = makeSummary({ outcome: 'completed' });
+    const endTime = 2_000;
+    const owner = makeSummary({ outcome: 'completed', endTime });
     for (const later of [
-      makeSummary({ outcome: 'in progress' }),
-      makeSummary({ outcome: 'completed', observerCompletedAt: 1_000 }),
+      makeSummary({ outcome: 'in progress', endTime }),
+      makeSummary({ outcome: 'completed', observerCompletedAt: 1_000, endTime }),
     ]) {
       expect(mergeSummaries(owner, later)).toMatchObject({
         outcome: 'completed',

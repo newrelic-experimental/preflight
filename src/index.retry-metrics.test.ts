@@ -45,7 +45,7 @@ describe('stdio engine in cloud mode', () => {
     ['a session known at launch', true],
     ['a session adopted after launch', false],
   ])(
-    'sends ai.retry.* metrics to the Metric API after repeated identical tool calls (%s)',
+    'sends ai.retry.* metrics to the Metric API after a failed tool call is retried identically (%s)',
     async (_label, knownAtLaunch) => {
       const root = mkdtempSync(join(tmpdir(), 'nr-retry-metrics-'));
       const home = join(root, 'home');
@@ -98,7 +98,7 @@ describe('stdio engine in cloud mode', () => {
         await sleep(4000);
 
         for (let i = 0; i < 4; i++) {
-          for (const event of ['PreToolUse', 'PostToolUse']) {
+          for (const event of ['PreToolUse', i === 0 ? 'PostToolUseFailure' : 'PostToolUse']) {
             const payload = {
               hook_event_name: event,
               session_id: sid,
@@ -109,6 +109,9 @@ describe('stdio engine in cloud mode', () => {
               permission_mode: 'default',
               ...(event === 'PostToolUse'
                 ? { tool_response: { success: true, stdout: '', exit_code: 0 } }
+                : {}),
+              ...(event === 'PostToolUseFailure'
+                ? { error: 'Command exited with non-zero status code 1', is_interrupt: false }
                 : {}),
             };
             const r = spawnSync(process.execPath, [join(dist, 'hooks', 'collector-script.js')], {

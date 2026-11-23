@@ -33,6 +33,7 @@ import { DEFAULT_MAX_PENDING, HookEventProcessor } from './hooks/index.js';
 import { isPlatformDetectionFellBack } from './hooks/platform-detection-health.js';
 import { ParentTranscriptWatcher } from './hooks/parent-transcript-watcher.js';
 import { BilledTurnLedger, pruneBilledTurns } from './hooks/billed-turn-ledger.js';
+import { pruneSelfReportClaims } from './hooks/self-report.js';
 import {
   isSyntheticSessionId,
   readJobState,
@@ -59,10 +60,7 @@ import { SessionResumeTracker } from './metrics/session-resume-tracker.js';
 import { BudgetTracker } from './metrics/budget-tracker.js';
 import { ClaudeMdTracker } from './metrics/claudemd-tracker.js';
 import { CollaborationProfiler } from './metrics/collaboration-profile.js';
-import {
-  isTokenEventForThisProcess,
-  shouldApplyCostEstimate,
-} from './metrics/cost-estimate-gate.js';
+import { isForThisProcess, shouldApplyCostEstimate } from './metrics/cost-estimate-gate.js';
 import { ContextCompositionTracker } from './metrics/context-composition-tracker.js';
 import { ContextTrackerRegistry } from './metrics/context-tracker.js';
 import { ContextWindowTracker } from './metrics/context-window-tracker.js';
@@ -124,6 +122,7 @@ import { TurnTracker } from './metrics/turn-tracker.js';
 import { WorkflowRunTracker } from './metrics/workflow-run-tracker.js';
 import { CLAUDE_CODE_PLATFORM_NAME } from './platforms/claude-code-adapter.js';
 import { ClaudeCodeAdapter, createDefaultRegistry, GenericMcpAdapter } from './platforms/index.js';
+import { canonicalPlatformName } from './platforms/platform-names.js';
 import { sessionBreadcrumbWriters } from './platforms/types.js';
 import type { ProxyRequestRecord, ProxyToolCallRecord } from './proxy/index.js';
 import { ProxyManager } from './proxy/index.js';
@@ -362,6 +361,8 @@ export function getPendingConfirmationCapMs(): number {
 }
 
 const RETENTION_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+// Matches the per-session record cap of the rollups the held calls also sit in.
+const MAX_HELD_STEPS_PER_SESSION = 10_000;
 
 export interface RetentionSweepDeps {
   readonly storagePath: string;
@@ -381,11 +382,18 @@ export function runRetentionSweep(deps: RetentionSweepDeps): void {
     deps.retainSessionsDays,
     Date.now(),
   );
-  if (deletedSessionFiles > 0 || deletedWeeklySummaryFiles > 0 || deletedBilledTurnDays > 0) {
+  const deletedSelfReportClaims = pruneSelfReportClaims(deps.storagePath, Date.now());
+  if (
+    deletedSessionFiles > 0 ||
+    deletedWeeklySummaryFiles > 0 ||
+    deletedBilledTurnDays > 0 ||
+    deletedSelfReportClaims > 0
+  ) {
     logger.info('Retention purge complete', {
       deletedSessionFiles,
       deletedWeeklySummaryFiles,
       deletedBilledTurnDays,
+      deletedSelfReportClaims,
     });
   }
 }
@@ -837,7 +845,9 @@ function hookRecordedReports(): HookRecordedReportOptions | undefined {
   if (!hook) return undefined;
   const options = { hook, homeDir: homedir(), projectDir: process.cwd() };
   // Ambient detection alone also matches hosts launched from Cursor's terminal, which inherit CURSOR_TRACE_ID.
-  const explicit = process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM;
+  const explicit = canonicalPlatformName(
+    process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM,
+  );
   return explicit === adapter.platformName || hooksDetected(options) ? options : undefined;
 }
 
@@ -1871,6 +1881,48 @@ async function main(): Promise<void> {
 
     const liveBus = new LiveEventBus();
 
+    // Sets the budget and the live cost tile from one set of totals. Another
+    // session's cost counts through its saved file, never through CostTracker,
+    // so a saved report counts once. A pending --stdio engine owns no session
+    // yet, so its session budget follows the conversation it just saved a
+    // report for. A --local process keeps its own session total.
+    const publishCost = (savedSessionId?: string): void => {
+      const ownTotalUsd = costTracker.getMetrics().sessionTotalCostUsd;
+      const followed =
+        savedSessionId !== undefined && sessionTraceId.startsWith('pending-')
+          ? sessionStoreForCostBaseline.loadSession(savedSessionId)
+          : null;
+      if (savedSessionId === undefined) {
+        if (ownTotalUsd === null) return;
+        refreshPriorCostBaselineIfStale();
+      } else refreshPriorCostBaseline();
+      const todayKey = localDateKey();
+      const ownTodayUsd = costTracker.getCostForDay(todayKey);
+      const todayTotalUsd = priorCostCache.priorDailyCostUsd + ownTodayUsd;
+      const weeklyTotalUsd = priorCostCache.priorWeeklyCostUsd + (ownTotalUsd ?? 0);
+      const sessionTotalUsd = followed ? (followed.estimatedCostUsd ?? 0) : (ownTotalUsd ?? 0);
+      budgetTracker.updateCost(sessionTotalUsd, todayTotalUsd, weeklyTotalUsd);
+      // The followed conversation is already in the prior daily total, so a
+      // forecast built from it would count it twice.
+      const forecastEndOfDayUsd = followed
+        ? null
+        : buildCostForecastFromInputs({
+            sessionSpentUsd: sessionTotalUsd,
+            sessionStartMs: costTracker.getSessionStartMs(sessionStartMs),
+            dailySpentUsd: ownTodayUsd,
+            dailyFirstActivityMs: costTracker.getFirstActivityMsForDay(todayKey),
+          }).forecastEndOfDayUsd;
+      liveBus.emit('cost-update', {
+        sessionId: followed ? followed.sessionId : sessionTraceId,
+        sessionTotalUsd,
+        todayTotalUsd,
+        forecastEodUsd:
+          forecastEndOfDayUsd !== null
+            ? priorCostCache.priorDailyCostUsd + forecastEndOfDayUsd
+            : null,
+      });
+    };
+
     // Construct AuditTrailManager once and share it across NrIngestManager and the
     // DashboardServer. In local mode there is no NrIngestManager, but the dashboard
     // and McpServer still need an audit log.
@@ -2032,6 +2084,7 @@ async function main(): Promise<void> {
           qualityProxyTracker,
           toolSelectionScorer,
           modelUsageTracker,
+          modelUsageTrackerHoldsOnlyOwnSession: options.stdio === true,
           toolCallBuffer: toolCallBufferAccessor,
           liveSessionRegistry,
           gitEfficiencyTracker,
@@ -2329,6 +2382,72 @@ async function main(): Promise<void> {
       }
     };
 
+    const isForThisEngine = (sessionId: string | null | undefined): boolean =>
+      isForThisProcess({
+        stdio: options.stdio === true,
+        sessionId: sessionId ?? null,
+        ownSessionId: sessionTraceId,
+      });
+    // A pending engine treats every named session as foreign, though one is its
+    // own. What the process-wide trackers would take from each session waits
+    // here in arrival order, and adoption replays the adopted session's steps,
+    // so its calls, token reports and prompt and Stop boundaries reach those
+    // trackers in the order they happened.
+    const heldUntilAdoption = new Map<string, Array<() => void>>();
+    const holdForAdoption = (sessionId: string | null | undefined, step: () => void): void => {
+      if (!sessionId || !sessionTraceId.startsWith('pending-')) return;
+      const steps = heldUntilAdoption.get(sessionId) ?? [];
+      if (steps.length >= MAX_HELD_STEPS_PER_SESSION) steps.shift();
+      steps.push(step);
+      heldUntilAdoption.set(sessionId, steps);
+    };
+    const runOrHold = (sessionId: string | null | undefined, step: () => void): void => {
+      if (isForThisEngine(sessionId)) step();
+      else holdForAdoption(sessionId, step);
+    };
+
+    const recordForEverySession = (incomingRecord: ToolCallRecord): ToolCallRecord => {
+      // Attributed before any consumer (notably auditTrail below) sees the
+      // record, so audit/security events carry agentId and agentType.
+      // The watcher's on-demand read is synchronous, which is what keeps it
+      // ahead of auditTrail.
+      const attributed = subagentAttribution.attributeAtIntake(
+        incomingRecord,
+        activeSubagentWatcher,
+      );
+      const activeSkill = skillActivationTracker.recordToolCall(attributed);
+      const rawRecord = activeSkill ? { ...attributed, activeSkill } : attributed;
+      if (staleIdActivity && rawRecord.sessionId === staleIdActivity.staleId) {
+        staleIdActivity.onActivity();
+      }
+      sessionTracker!.recordToolCall(rawRecord);
+      localSessionAggregator.recordToolCall(rawRecord);
+      if (rawRecord.sessionId) {
+        liveSessionRegistry!.touch(rawRecord.sessionId, rawRecord.cwd as string | undefined);
+      }
+      // Fallback type source: the parent's Agent call, for subagents whose
+      // transcript has no meta sidecar (see onSubagentTurn). Its PostToolUse
+      // normally fires only after a foreground subagent returns.
+      subagentAttribution.recordAgentToolCall(rawRecord);
+      contextTracker.recordToolCall(rawRecord);
+      // SSE consumers filter by sessionId for the per-session live tail.
+      // Records without a sessionId are legacy buffer entries that surfaced
+      // during the migrateLegacyBuffer() window on first boot — skip the
+      // live emit rather than fabricate a session by falling back to the
+      // MCP's resolved sessionTraceId, which would re-introduce the
+      // fictional-session-ID bug the session-ID resolver removed.
+      if (rawRecord.sessionId) {
+        liveBus.emit('tool-call', {
+          id: rawRecord.id,
+          sessionId: rawRecord.sessionId,
+          tool: rawRecord.toolName,
+          durationMs: rawRecord.durationMs ?? 0,
+          costUsd: 0,
+          ts: rawRecord.timestamp,
+        });
+      }
+      return rawRecord;
+    };
     eventProcessor = new HookEventProcessor({
       store: localStore,
       platformAdapter: activePlatform,
@@ -2344,39 +2463,23 @@ async function main(): Promise<void> {
         const index = toolCallBuffer.findIndex((r) => r.id === record.id);
         if (index >= 0) toolCallBuffer[index] = amendRecord(toolCallBuffer[index]!, record);
       },
-      onRecord: (incomingRecord) => {
-        // Attributed before any consumer (notably auditTrail below) sees the
-        // record, so audit/security events carry agentId and agentType.
-        // The watcher's on-demand read is synchronous, which is what keeps it
-        // ahead of auditTrail.
-        const attributed = subagentAttribution.attributeAtIntake(
-          incomingRecord,
-          activeSubagentWatcher,
-        );
-        const activeSkill = skillActivationTracker.recordToolCall(attributed);
-        const rawRecord = activeSkill ? { ...attributed, activeSkill } : attributed;
-        if (!config || !sessionTracker || !taskDetector) {
+      admitRecord: (incomingRecord) => {
+        const rawRecord = recordForEverySession(incomingRecord);
+        if (isForThisEngine(rawRecord.sessionId)) return rawRecord;
+        holdForAdoption(rawRecord.sessionId, () => eventProcessor!.replayRecord(rawRecord));
+        return null;
+      },
+      onRecord: (rawRecord) => {
+        if (!config || !taskDetector) {
           logger.warn('onRecord called before full initialization; skipping');
           return;
-        }
-        if (staleIdActivity && rawRecord.sessionId === staleIdActivity.staleId) {
-          staleIdActivity.onActivity();
         }
 
         // Capture active task ID before recordToolCall may close the current task
         const taskIdBeforeRecord =
           config.otlp.transport !== 'nr-events-api' ? taskDetector.getActiveTaskId() : null;
 
-        sessionTracker.recordToolCall(rawRecord);
         taskDetector.recordToolCall(rawRecord);
-        localSessionAggregator.recordToolCall(rawRecord);
-        if (rawRecord.sessionId) {
-          liveSessionRegistry!.touch(rawRecord.sessionId, rawRecord.cwd as string | undefined);
-        }
-        // Fallback type source: the parent's Agent call, for subagents whose
-        // transcript has no meta sidecar (see onSubagentTurn). Its PostToolUse
-        // normally fires only after a foreground subagent returns.
-        subagentAttribution.recordAgentToolCall(rawRecord);
         // Agent records reach the tracker through onWorkflowAgent, which also
         // covers the late-post amend path that skips onRecord.
         if (rawRecord.toolName !== 'Agent') workflowRunTracker.recordToolCall(rawRecord);
@@ -2396,7 +2499,6 @@ async function main(): Promise<void> {
         }
 
         contextWindowTracker.recordToolCall(rawRecord);
-        contextTracker.recordToolCall(rawRecord);
         latencyTracker.recordToolCall(rawRecord);
         const thrashingAlert = retryDetector.recordToolCall(rawRecord);
         if (thrashingAlert) {
@@ -2494,22 +2596,6 @@ async function main(): Promise<void> {
         // so the monitor counts them as untracked.
         unforwardedSessionMonitor?.recordToolCall(record.sessionId);
 
-        // SSE consumers filter by sessionId for the per-session live tail.
-        // Records without a sessionId are legacy buffer entries that surfaced
-        // during the migrateLegacyBuffer() window on first boot — skip the
-        // live emit rather than fabricate a session by falling back to the
-        // MCP's resolved sessionTraceId, which would re-introduce the
-        // fictional-session-ID bug the session-ID resolver removed.
-        if (record.sessionId) {
-          liveBus.emit('tool-call', {
-            id: record.id,
-            sessionId: record.sessionId,
-            tool: record.toolName,
-            durationMs: record.durationMs ?? 0,
-            costUsd: 0,
-            ts: record.timestamp,
-          });
-        }
         // Push into the alert collector's rolling tool-call buffer so
         // tool.failure rules have data to evaluate against.
         capturedAlertSnapshotCollector?.recordToolCall({
@@ -2542,34 +2628,7 @@ async function main(): Promise<void> {
           );
         }
 
-        const costMetrics = costTracker.getMetrics();
-        if (costMetrics.sessionTotalCostUsd !== null) {
-          refreshPriorCostBaselineIfStale();
-          const todayKey = localDateKey();
-          const sessionTodayUsd = costTracker.getCostForDay(todayKey);
-          const dailyFirstActivityMs = costTracker.getFirstActivityMsForDay(todayKey);
-          const todayTotalUsd = priorCostCache.priorDailyCostUsd + sessionTodayUsd;
-          const weeklyTotalUsd =
-            priorCostCache.priorWeeklyCostUsd + costMetrics.sessionTotalCostUsd;
-          budgetTracker.updateCost(costMetrics.sessionTotalCostUsd, todayTotalUsd, weeklyTotalUsd);
-          const sessionForecast = buildCostForecastFromInputs({
-            sessionSpentUsd: costMetrics.sessionTotalCostUsd,
-            sessionStartMs: costTracker.getSessionStartMs(sessionStartMs),
-            dailySpentUsd: sessionTodayUsd,
-            dailyFirstActivityMs,
-          });
-          liveBus.emit('cost-update', {
-            // sessionId is always the resolved Claude Code session_id for
-            // this MCP instance so cost totals can be attributed per-session.
-            sessionId: sessionTraceId,
-            sessionTotalUsd: costMetrics.sessionTotalCostUsd,
-            todayTotalUsd,
-            forecastEodUsd:
-              sessionForecast.forecastEndOfDayUsd !== null
-                ? priorCostCache.priorDailyCostUsd + sessionForecast.forecastEndOfDayUsd
-                : null,
-          });
-        }
+        publishCost();
 
         emitCompletedTasks?.();
         homelabForwarder?.enqueue(record);
@@ -2581,17 +2640,13 @@ async function main(): Promise<void> {
         // another session's tokens (drained while the id is still provisional)
         // are priced for that session's rollup only. --local owns no single
         // session and keeps folding everything.
-        const isOwnEvent = isTokenEventForThisProcess({
-          stdio: options.stdio === true,
-          eventSessionId: tokenEvent.sessionId ?? null,
-          ownSessionId: sessionTraceId,
+        const isOwnEvent = isForThisEngine(tokenEvent.sessionId);
+        const openRun = skillActivationTracker.openRun(tokenEvent.sessionId);
+        runOrHold(tokenEvent.sessionId, () => {
+          const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent, openRun);
+          skillRunLedger.recordClosedTurn(closedTurn);
+          if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
         });
-        const closedTurn = turnCostAttributor.recordTokenEvent(
-          tokenEvent,
-          skillActivationTracker.openRun(tokenEvent.sessionId),
-        );
-        skillRunLedger.recordClosedTurn(closedTurn);
-        if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
         seedLocalTrackersFromFile(tokenEvent.sessionId);
         const usage = tokenUsageFromTokenEvent(tokenEvent);
         let breakdown: CostBreakdown;
@@ -2649,34 +2704,7 @@ async function main(): Promise<void> {
           if (isOwnEvent) capturedNrIngest?.ingestContextSnapshot(ctxSnapshot, ctxTopTools, sid);
         }
 
-        const costMetrics = costTracker.getMetrics();
-        if (costMetrics.sessionTotalCostUsd !== null) {
-          refreshPriorCostBaselineIfStale();
-          const todayKey = localDateKey();
-          const sessionTodayUsd = costTracker.getCostForDay(todayKey);
-          const dailyFirstActivityMs = costTracker.getFirstActivityMsForDay(todayKey);
-          const todayTotalUsd = priorCostCache.priorDailyCostUsd + sessionTodayUsd;
-          const weeklyTotalUsd =
-            priorCostCache.priorWeeklyCostUsd + costMetrics.sessionTotalCostUsd;
-          budgetTracker.updateCost(costMetrics.sessionTotalCostUsd, todayTotalUsd, weeklyTotalUsd);
-          const sessionForecast = buildCostForecastFromInputs({
-            sessionSpentUsd: costMetrics.sessionTotalCostUsd,
-            sessionStartMs: costTracker.getSessionStartMs(sessionStartMs),
-            dailySpentUsd: sessionTodayUsd,
-            dailyFirstActivityMs,
-          });
-          liveBus.emit('cost-update', {
-            // Same as the per-tool-call cost-update emission — tag with the
-            // MCP's owning session_id for per-session attribution.
-            sessionId: sessionTraceId,
-            sessionTotalUsd: costMetrics.sessionTotalCostUsd,
-            todayTotalUsd,
-            forecastEodUsd:
-              sessionForecast.forecastEndOfDayUsd !== null
-                ? priorCostCache.priorDailyCostUsd + sessionForecast.forecastEndOfDayUsd
-                : null,
-          });
-        }
+        publishCost();
       },
       onSelfReport: (report) => {
         const usage = {
@@ -2692,6 +2720,7 @@ async function main(): Promise<void> {
             timestampMs: report.timestamp,
           });
           modelUsageTracker.recordUsage(report.model, usage, breakdown.totalUsd);
+          publishCost();
           return;
         }
         localSessionAggregator.recordTokenUsage(report.sessionId, {
@@ -2702,6 +2731,13 @@ async function main(): Promise<void> {
           ...(report.platform !== undefined && { platform: report.platform }),
           selfReported: true,
         });
+        // Save now rather than at the next checkpoint, so the budget, Model
+        // Usage and the live tile read the report from the conversation's file.
+        saveRollups(
+          readRollups((id) => id === report.sessionId),
+          'running',
+        );
+        publishCost(report.sessionId);
       },
       // Feed each Agent-tool ToolCallRecord into the workflow tracker
       // so AiWorkflowRun events ship for `run_source='agent_tool'`.
@@ -2730,9 +2766,9 @@ async function main(): Promise<void> {
         const agentType = subagentAttribution.agentTypeFor(turn.agentId);
         seedLocalTrackersFromFile(turn.parentSessionId);
         const usage = tokenUsageFromSubagentTurn(turn);
-        const isOwnTurn = isTokenEventForThisProcess({
+        const isOwnTurn = isForThisProcess({
           stdio: options.stdio === true,
-          eventSessionId: turn.parentSessionId || null,
+          sessionId: turn.parentSessionId || null,
           ownSessionId: sessionTraceId,
         });
         const breakdown = isOwnTurn
@@ -2872,14 +2908,18 @@ async function main(): Promise<void> {
           frame.slashCommand ?? null,
           frame.timestamp,
         );
-        if (slashRun) turnCostAttributor.recordSkillRun(frame.sessionId, slashRun);
-        taskDetector!.startTaskIfNone(frame.timestamp);
+        runOrHold(frame.sessionId, () => {
+          if (slashRun) turnCostAttributor.recordSkillRun(frame.sessionId, slashRun);
+          taskDetector!.startTaskIfNone(frame.timestamp);
+        });
         localSessionAggregator.startTask(frame.sessionId, frame.timestamp);
       },
       onStop: (frame) => {
         skillRunLedger.recordStop(frame.sessionId, frame.timestamp);
-        turnTracker.finalizeTurnAt(frame.timestamp);
-        taskDetector!.markBoundary(frame.timestamp);
+        runOrHold(frame.sessionId, () => {
+          turnTracker.finalizeTurnAt(frame.timestamp);
+          taskDetector!.markBoundary(frame.timestamp);
+        });
         localSessionAggregator.markTaskBoundary(frame.sessionId, frame.timestamp);
       },
     });
@@ -3344,6 +3384,8 @@ async function main(): Promise<void> {
       // this session's events going forward. Its final drain routes tokens by
       // realId, and runs before the tracker adopts realId, so adoptSessionId()
       // replays what it drains.
+      for (const step of heldUntilAdoption.get(realId) ?? []) step();
+      heldUntilAdoption.delete(realId);
       sessionTraceId = realId;
       // Keep this above replaceStore. Its halt() runs a final drain-all on the old
       // store, which must stay drain-all so the adopter gets the no-session buffer.
@@ -3362,6 +3404,10 @@ async function main(): Promise<void> {
       applyAuthoritativeSessionName(realId);
       if (viaCwdOnly) cwdGuessRolledUpWhilePending = rolledUpWhilePending(realId);
       else saveRollups(rolledUpWhilePending(realId), 'running');
+      // Session thresholds fired so far belong to a conversation the engine
+      // followed while pending, or to a wrong guess. The rehydrate below seeds
+      // them again from the adopted session's saved total.
+      budgetTracker.resetSession();
       // viaCwdOnly means this id came from the collision-prone cwd fallback
       // and hasn't been confirmed by the PPID breadcrumb yet — mirrors the
       // resolvedViaCwdOnly gate on the synchronous resolution path's own

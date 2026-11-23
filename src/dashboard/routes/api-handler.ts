@@ -623,6 +623,7 @@ export interface ApiHandlerDeps {
       breakdowns: ReadonlyArray<Readonly<Record<string, ModelBreakdownEntry>>>,
     ) => ModelUsageMetrics;
   };
+  readonly modelUsageTrackerHoldsOnlyOwnSession?: boolean;
   readonly toolCallBuffer?: { getRecords: () => readonly ToolCallRecord[] };
   readonly liveSessionRegistry?: {
     getLiveSessions: () => string[];
@@ -2602,7 +2603,11 @@ export function createApiHandler(
     // pattern as GET /api/tool-selection-score below: this process's live
     // breakdown is always included, and every today session NOT already held
     // by this process's live trackers is added on top.
-    const held = sessionIdsHeldByLiveTrackers(deps);
+    // A --stdio engine's tracker holds only its own session's usage, even for
+    // the sessions it drained while pending, so every other session reads from its file.
+    const held: ReadonlySet<string | undefined> = deps.modelUsageTrackerHoldsOnlyOwnSession
+      ? new Set([deps.sessionTracker?.getMetrics().sessionId])
+      : sessionIdsHeldByLiveTrackers(deps);
     const persistedBreakdowns = (deps.sessionStore?.loadTodaySessions() ?? [])
       .filter((s) => !held.has(s.sessionId))
       .map((s) => s.modelBreakdown ?? {});

@@ -367,7 +367,16 @@ var UNATTRIBUTED_BREADCRUMB_WRITER = "unattributed";
 
 // src/hooks/self-report.ts
 import { createHash } from "node:crypto";
-import { closeSync, constants, mkdirSync, openSync, unlinkSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  rmdirSync,
+  statSync,
+  unlinkSync
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 
 // src/hooks/synthetic-session-id.ts
@@ -472,14 +481,26 @@ function hookSelfReportLine(call, conversationId, timestamp, platform) {
 function claimPath(storageDir, line) {
   return resolve(storageDir, "self-reports", line.sessionId, reportKey(line));
 }
+function createClaim(path) {
+  closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 384));
+}
+var CLAIM_DIR_RETRIES = 3;
 function claimReport(storageDir, line) {
   const path = claimPath(storageDir, line);
-  try {
-    mkdirSync(dirname(path), { recursive: true, mode: 448 });
-    closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 384));
-    return true;
-  } catch {
-    return false;
+  for (let retries = 0; ; retries++) {
+    try {
+      createClaim(path);
+      return true;
+    } catch (err) {
+      if (err.code !== "ENOENT" || retries === CLAIM_DIR_RETRIES) {
+        return false;
+      }
+    }
+    try {
+      mkdirSync(dirname(path), { recursive: true, mode: 448 });
+    } catch {
+      return false;
+    }
   }
 }
 function releaseReport(storageDir, line) {
@@ -489,6 +510,7 @@ function releaseReport(storageDir, line) {
     return;
   }
 }
+var SELF_REPORT_CLAIM_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1e3;
 
 // src/hooks/session-breadcrumbs.ts
 import { resolve as resolve2 } from "node:path";
@@ -514,7 +536,7 @@ import {
   openSync as openSync2,
   readFileSync,
   readSync,
-  statSync,
+  statSync as statSync2,
   unlinkSync as unlinkSync2,
   writeSync
 } from "node:fs";
@@ -548,7 +570,7 @@ function offsetAfterWrite(fd) {
   }
 }
 function isAt(path, file) {
-  const now = statSync(path, { bigint: true, throwIfNoEntry: false });
+  const now = statSync2(path, { bigint: true, throwIfNoEntry: false });
   return now !== void 0 && now.ino === file.ino && now.dev === file.dev;
 }
 var LineWrittenError = class extends Error {
@@ -1051,7 +1073,7 @@ import {
   closeSync as closeSync3,
   mkdirSync as mkdirSync2,
   openSync as openSync3,
-  readdirSync,
+  readdirSync as readdirSync2,
   renameSync,
   unlinkSync as unlinkSync3,
   writeFileSync
@@ -1089,7 +1111,7 @@ function parseEntry(name) {
 }
 function listEntries(dir) {
   try {
-    return readdirSync(dir).sort().flatMap((name) => parseEntry(name) ?? []);
+    return readdirSync2(dir).sort().flatMap((name) => parseEntry(name) ?? []);
   } catch {
     return void 0;
   }
@@ -1330,6 +1352,13 @@ function writePpidBreadcrumb(sessionId, root, legacyRoot) {
       `[preflight-collector] Warning: cannot write PPID breadcrumb: ${String(err)}
 `
     );
+  }
+}
+function writeSessionIdBreadcrumb(sessionId, root) {
+  if (!SESSION_ID_RE.test(sessionId)) return;
+  try {
+    writeOrTouch(resolve3(root, "session-by-id"), `${sessionId}.txt`, sessionId);
+  } catch {
   }
 }
 function writeCwdBreadcrumb(sessionId, cwd, root, legacyRoot) {
@@ -1628,6 +1657,7 @@ function processHook(raw, cliEvent) {
       }
     }
     const tagged = breadcrumbRoot(storageDir, writer);
+    writeSessionIdBreadcrumb(data.session_id, tagged);
     writePpidBreadcrumb(data.session_id, tagged, storageDir);
     writeCwdBreadcrumb(data.session_id, data.cwd, tagged, storageDir);
   }
@@ -1643,7 +1673,7 @@ function processHook(raw, cliEvent) {
   const agyCliEvent = hookEventFromArg(cliEvent);
   const isAntigravityPost = isAntigravityShape && (agyCliEvent === "PostToolUse" || agyCliEvent !== "PreToolUse" && (data.error !== void 0 || data.toolCall === void 0));
   const isAntigravityPre = isAntigravityShape && !isAntigravityPost;
-  const agyToolUseId = typeof data.stepIdx === "number" ? { toolUseId: String(data.stepIdx) } : {};
+  const agyToolUseId = typeof data.stepIdx === "number" ? { toolUseId: sessionId ? `${sessionId}:${data.stepIdx}` : String(data.stepIdx) } : {};
   let event;
   let selfReportCall;
   if (eventName === "pretooluse") {
