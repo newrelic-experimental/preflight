@@ -955,9 +955,8 @@ function mayHoldDroppedEntries(capped: FullSessionSummary, other: FullSessionSum
 }
 
 /**
- * Files connected by shared activity, directly or through another file. Split
- * files hold separate activity and share no timeline entry; copies of one
- * stretch share entries.
+ * Files connected by shared activity, directly or through another file. Split files hold separate
+ * activity and share no timeline entry; copies of one stretch share entries.
  */
 function groupBySharedActivity(files: readonly FullSessionSummary[]): FullSessionSummary[][] {
   const ungrouped = new Set(files);
@@ -1187,9 +1186,13 @@ function addAttribution(a: SessionAttribution, b: SessionAttribution): SessionAt
   };
 }
 
-/** A side with cost but no dollar split would leave the summed split short of the summed cost. */
+/** A side with tokens or cost but no split would leave the summed split short of the sum. */
 function addBucket(x: AttributionBucket, y: AttributionBucket): AttributionBucket {
-  const breakdown = addOptional(x.breakdown, y.breakdown, addFields);
+  const tokensCovered = (s: AttributionBucket) => s.breakdown !== undefined || s.tokens === 0;
+  const breakdown =
+    tokensCovered(x) && tokensCovered(y)
+      ? addOptional(x.breakdown, y.breakdown, addFields)
+      : undefined;
   const splitCoversCost = (s: AttributionBucket) => s.breakdownUsd !== undefined || s.costUsd === 0;
   const breakdownUsd =
     splitCoversCost(x) && splitCoversCost(y)

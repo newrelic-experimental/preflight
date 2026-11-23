@@ -29,13 +29,17 @@ const sum: Rule = (x, y) => x + y;
 const max: Rule = (x, y) => Math.max(x, y);
 const min: Rule = (x, y) => Math.min(x, y);
 const weighted: Rule = (x, y) => (x * x + y * y) / (x + y);
+const twiceSum: Rule = (x, y) => 2 * (x + y);
+const twiceMax: Rule = (x, y) => 2 * Math.max(x, y);
 
+const words = (text: string) => text.trim().split(/\s+/);
+const under = (prefix: string, names: string) => names.replace(/(\S+)/g, `${prefix}.$1`);
 const rows = (whenSeparate: Rule, whenCopies: Rule, paths: string) =>
-  paths
-    .trim()
-    .split(/\s+/)
-    .map((path): [string, Rule, Rule] => [path, whenSeparate, whenCopies]);
+  words(paths).map((path): [string, Rule, Rule] => [path, whenSeparate, whenCopies]);
 
+const BUCKET = `costUsd tokens count durationMs breakdown.inputTokens breakdown.outputTokens
+  breakdown.cacheReadTokens breakdown.cacheCreationTokens breakdownUsd.inputUsd breakdownUsd.outputUsd
+  breakdownUsd.cacheReadUsd breakdownUsd.cacheCreationUsd`;
 const COUNTERS = `
   toolCallCount toolBreakdown.Read skillBreakdown.s linesAdded linesRemoved bashCommandCount
   testRunCount testPassCount buildRunCount buildPassCount subagentCostUsd subagentCostByDayUsd.d
@@ -48,23 +52,15 @@ const COUNTERS = `
   qualityProxy.totalSignals qualityProxy.diffApplyCleanCount qualityProxy.diffFailCount
   qualityProxy.testPassCount qualityProxy.testFailCount qualityProxy.backtrackCount
   qualityProxy.selfCorrectionCount
-  attribution.buckets.tool.Read.costUsd attribution.buckets.tool.Read.tokens
-  attribution.buckets.tool.Read.count attribution.buckets.tool.Read.durationMs
-  attribution.buckets.tool.Read.breakdown.inputTokens attribution.buckets.tool.Read.breakdown.outputTokens
-  attribution.buckets.tool.Read.breakdown.cacheReadTokens
-  attribution.buckets.tool.Read.breakdown.cacheCreationTokens
-  attribution.buckets.tool.Read.breakdownUsd.inputUsd
-  attribution.buckets.tool.Read.breakdownUsd.outputUsd
-  attribution.buckets.tool.Read.breakdownUsd.cacheReadUsd
-  attribution.buckets.tool.Read.breakdownUsd.cacheCreationUsd
-  attribution.highContextCostUsd attribution.apiDurationMs`;
+  attribution.highContextCostUsd attribution.apiDurationMs
+  ${under('attribution.buckets.tool.Read', BUCKET)}`;
 const CALL_USAGE = `
   unpricedByModel.m.calls unpricedByModel.m.tokens estimatedByModel.m.calls estimatedByModel.m.tokens
   unpricedByDay.d.m.calls unpricedByDay.d.m.tokens estimatedByDay.d.m.calls estimatedByDay.d.m.tokens`;
 const LEDGER = `
   byteEstimates.costUsd byteEstimates.inputTokens byteEstimates.outputTokens
   byteEstimates.costByModel.m byteEstimates.costByDayUsd.d
-  ${CALL_USAGE.replace(/(\S+)/g, 'byteEstimates.$1')}`;
+  ${under('byteEstimates', CALL_USAGE)}`;
 /** Each is exact plus ledger, so the fixture sets them to twice its counters. */
 const TOTALS = `estimatedCostUsd tokensInput tokensOutput costByDayUsd.d ${CALL_USAGE}`;
 const NEVER_ADDED = `
@@ -79,18 +75,14 @@ const SCORES = `
 const RULES: ReadonlyArray<[string, Rule, Rule]> = [
   ...rows(sum, max, COUNTERS),
   ...rows(sum, max, LEDGER),
-  ...rows(
-    (x, y) => 2 * (x + y),
-    (x, y) => 2 * Math.max(x, y),
-    TOTALS,
-  ),
+  ...rows(twiceSum, twiceMax, TOTALS),
   ...rows(max, max, NEVER_ADDED),
   ...rows(weighted, max, SCORES),
   ...rows(min, min, 'firstActivityByDayMs.d'),
   ...rows(() => 1, max, 'taskSuccessRate'),
   ...rows(weighted, max, 'toolSuccessRate'),
 ];
-const TOTAL_PATHS = new Set(TOTALS.trim().split(/\s+/));
+const TOTAL_PATHS = new Set(words(TOTALS));
 
 function setPath(target: Record<string, unknown>, path: string, value: unknown): void {
   const keys = path.split('.');
@@ -310,7 +302,7 @@ describe('combining fields that do not always exist', () => {
 
   const optional = `costByDayUsd subagentCostByDayUsd unpricedByModel estimatedByModel
     unpricedByDay estimatedByDay byteEstimates attribution selfReportCount`;
-  it.each(optional.split(/\s+/))(
+  it.each(words(optional))(
     'keeps %s absent when neither file has it, since absent and empty read differently',
     (k) => {
       expect(pair({}, {})[k]).toBeUndefined();
@@ -351,30 +343,35 @@ describe('combining fields that do not always exist', () => {
     expect(pair({}, split).unpricedByDay?.d.m.calls).toBe(2);
   });
 
-  it('drops a bucket dollar split that one file with cost does not have', () => {
-    const usd = (inputUsd: number) => ({
-      inputUsd,
-      outputUsd: 0,
-      cacheReadUsd: 0,
-      cacheCreationUsd: 0,
-    });
-    const bucket = (costUsd: number, breakdownUsd?: ReturnType<typeof usd>) => ({
-      attribution: {
-        buckets: { tool: { Read: { costUsd, tokens: 1, count: 1, durationMs: 1, breakdownUsd } } },
-        highContextCostUsd: 0,
-        apiDurationMs: null,
-      },
-    });
-    const split = (a: Record<string, unknown>, b: Record<string, unknown>) =>
-      pair(a, b).attribution?.buckets.tool?.Read;
-    expect(split(bucket(1, usd(1)), bucket(2))?.breakdownUsd).toBeUndefined();
-    expect(split(bucket(2), bucket(1, usd(1)))?.breakdownUsd).toBeUndefined();
-    expect(split(bucket(1, usd(1)), bucket(0))?.breakdownUsd?.inputUsd).toBe(1);
-    expect(split(bucket(1, usd(1)), bucket(2, usd(2)))?.breakdownUsd?.inputUsd).toBe(3);
-    expect(split(bucket(1, usd(1)), bucket(2, usd(2)))?.costUsd).toBe(3);
-    expect(pair(bucket(1), bucket(2)).attribution?.apiDurationMs).toBeNull();
+  it('drops a bucket split that one file with tokens or cost does not have', () => {
+    const bucket = (costUsd: number, tokens: number, split = false) => {
+      const breakdown = { inputTokens: tokens, outputTokens: 0, cacheReadTokens: 0 };
+      const breakdownUsd = { inputUsd: costUsd, outputUsd: 0, cacheReadUsd: 0 };
+      const parts = {
+        breakdown: { ...breakdown, cacheCreationTokens: 0 },
+        breakdownUsd: { ...breakdownUsd, cacheCreationUsd: 0 },
+      };
+      const Read = { costUsd, tokens, count: 1, durationMs: 1, ...(split && parts) };
+      return {
+        attribution: { buckets: { tool: { Read } }, highContextCostUsd: 0, apiDurationMs: null },
+      };
+    };
+    const splits = (a: Record<string, unknown>, b: Record<string, unknown>) => {
+      const read = pair(a, b).attribution?.buckets.tool?.Read;
+      return [read?.breakdown?.inputTokens, read?.breakdownUsd?.inputUsd];
+    };
+    const one = bucket(1, 1, true);
+    expect(splits(one, bucket(2, 2))).toEqual([undefined, undefined]);
+    expect(splits(bucket(2, 2), one)).toEqual([undefined, undefined]);
+    expect(splits(bucket(1, 1), bucket(2, 2))).toEqual([undefined, undefined]);
+    expect(splits(one, bucket(0, 0))).toEqual([1, 1]);
+    expect(splits(one, bucket(1, 0))).toEqual([1, undefined]);
+    expect(splits(one, bucket(0, 1))).toEqual([undefined, 1]);
+    expect(splits(one, bucket(2, 2, true))).toEqual([3, 3]);
+    expect(pair(one, bucket(2, 2, true)).attribution?.buckets.tool?.Read.costUsd).toBe(3);
+    expect(pair(bucket(1, 1), bucket(2, 2)).attribution?.apiDurationMs).toBeNull();
     const timed = { attribution: { buckets: {}, highContextCostUsd: 0, apiDurationMs: 5 } };
-    expect(pair(bucket(1), timed).attribution?.apiDurationMs).toBe(5);
+    expect(pair(bucket(1, 1), timed).attribution?.apiDurationMs).toBe(5);
   });
 
   it('weights rates and scores only where both files can be weighted', () => {
