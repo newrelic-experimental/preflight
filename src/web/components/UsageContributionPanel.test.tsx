@@ -57,6 +57,7 @@ const SAMPLE_USAGE_INSIGHTS: UsageInsightsReport = {
   pluginsTotalCount: 1,
   loopsTotalCount: 1,
   attributionRatePct: 40,
+  sessions: [],
 };
 
 const SAMPLE_TOOL_SESSIONS: Array<{ toolBreakdown: Record<string, number> }> = [

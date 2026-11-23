@@ -147,6 +147,23 @@ describe('windowed dashboard views and resumed sessions', () => {
     expect(skills.find((r) => r.key === 'unslop')?.costUsd).toBeCloseTo(0.5, 10);
   });
 
+  it("usage insights' session rows add up to its total and put a resumed session's cost on its day", async () => {
+    const report = await get(store, '/api/usage-insights?days=7');
+    const rows = report.sessions as Array<{
+      sessionId: string;
+      estimatedCostUsd: number;
+      costByDayUsd: Record<string, number>;
+    }>;
+    expect(rows.map((r) => r.sessionId).sort()).toEqual(['fresh', 'resumed']);
+    const rowsUsd = rows.reduce((sum, r) => sum + r.estimatedCostUsd, 0);
+    expect(rowsUsd).toBeCloseTo(report.totalCostUsd as number, 10);
+    const daysUsd = rows.flatMap((r) => Object.values(r.costByDayUsd)).reduce((a, b) => a + b, 0);
+    expect(daysUsd).toBeCloseTo(report.totalCostUsd as number, 10);
+    expect(rows.find((r) => r.sessionId === 'resumed')?.costByDayUsd).toEqual({
+      [localDateKey(noonDaysAgo(2))]: 1,
+    });
+  });
+
   it('cost per tool counts only the in-window part of a resumed session', async () => {
     const result = await get(store, '/api/cost-per-tool?days=7');
     expect(result.totalSessionCount).toBe(2);
