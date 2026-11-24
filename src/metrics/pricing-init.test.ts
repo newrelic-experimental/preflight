@@ -1,7 +1,7 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
 jest.mock('./pricing-overlay.js', () => ({
-  applyPricingOverlay: jest.fn(),
+  applyCustomPricing: jest.fn(),
 }));
 jest.mock('./pricing-refresh.js', () => ({
   startPricingRefresh: jest.fn(async () => undefined),
@@ -9,10 +9,10 @@ jest.mock('./pricing-refresh.js', () => ({
 }));
 
 import { initModelPricing } from './pricing-init.js';
-import { applyPricingOverlay } from './pricing-overlay.js';
+import { applyCustomPricing } from './pricing-overlay.js';
 import { schedulePricingRecheck, startPricingRefresh } from './pricing-refresh.js';
 
-const mockedApply = applyPricingOverlay as jest.MockedFunction<typeof applyPricingOverlay>;
+const mockedApply = applyCustomPricing as jest.MockedFunction<typeof applyCustomPricing>;
 const mockedRefresh = startPricingRefresh as jest.MockedFunction<typeof startPricingRefresh>;
 const mockedRecheck = schedulePricingRecheck as jest.MockedFunction<typeof schedulePricingRecheck>;
 

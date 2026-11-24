@@ -9,7 +9,7 @@ Preflight supports 18 named AI coding platforms plus a generic MCP fallback, eac
 
 This doc is the canonical reference for what each adapter can and can't observe, how detection and setup actually work, and where the gaps are. It mirrors `src/platforms/*.ts` and the hook-event handling in `src/hooks/collector-script.ts` — if you change either, update this doc in the same PR.
 
-> **Telemetry mode in the setup examples:** the examples below set `NR_AI_MODE=cloud` (New Relic only) together with `NEW_RELIC_LICENSE_KEY` and `NEW_RELIC_ACCOUNT_ID`; a license key with no mode makes the server refuse to start, and the account ID is required in `cloud` and `both`. `cloud` turns off the localhost dashboard and the local alert rules. Use `NR_AI_MODE=both` to keep them.
+> **Telemetry mode in the setup examples:** the examples below set `NR_AI_MODE=cloud` (New Relic only) together with `NEW_RELIC_LICENSE_KEY` and `NEW_RELIC_ACCOUNT_ID`; a license key with no mode makes the server refuse to start, and the account ID is optional. `cloud` turns off the localhost dashboard and the local alert rules. Use `NR_AI_MODE=both` to keep them.
 
 > **Maintenance note:** every adapter implements `getHookInstallInstructions()`, which returns the setup text reproduced below. That method is not currently called from any CLI command (`preflight doctor --platform <x>` explicitly skips it and tells the user to verify manually) — this document is presently the only place that text is surfaced to a user. If a CLI surface is added later, keep this doc and the adapter methods in sync, or replace the relevant section here with a pointer to the command output.
 
@@ -35,7 +35,7 @@ Every `PlatformAdapter` (`src/platforms/types.ts`) declares a `visibilityLevel` 
 
 Detection order matters: `createDefaultRegistry()` (`src/platforms/platform-registry.ts`) registers adapters in a fixed order — Claude Code, Cursor, Windsurf, Copilot, Copilot App, Copilot SDK, Zed, Continue, Amazon Q, Kiro, Droid, Gemini CLI, Cline, Codex, opencode, Kilo Code, Pi, Antigravity, then the generic MCP fallback (always last, `isSupported()` always `true`). `PlatformRegistry.detect()` returns the **first** adapter whose `isSupported()` returns `true`; there is no `NEW_RELIC_AI_PLATFORM`-driven override for most platforms (see per-platform detection below).
 
-Each `MCP_CLIENT === '<name>'` or `NEW_RELIC_AI_PLATFORM === '<name>'` check below compares the registered platform name ignoring case and punctuation, so `Kiro`, `KIRO`, and `claude_code` match `kiro` and `claude-code` (`canonicalPlatformName()` in `src/platforms/platform-names.ts`). The hook collector tags events and files breadcrumbs under the registered name. The adapters' `isSupported()` checks compare the raw variable, so in the MCP server they match another spelling only because `PlatformRegistry.detect()` first rewrites both variables to the registered name (`normalizeEngineEnv()`). A name that matches no platform, such as an inherited `MCP_CLIENT=vscode`, is skipped, and detection falls through to `NEW_RELIC_AI_PLATFORM` and then the ambient signals.
+Each `MCP_CLIENT === '<name>'` or `NEW_RELIC_AI_PLATFORM === '<name>'` check below compares the registered platform name ignoring case and punctuation, so `Kiro`, `KIRO`, and `claude_code` match `kiro` and `claude-code` (`canonicalPlatformName()` in `src/platforms/platform-names.ts`). The hook collector tags events and files breadcrumbs under the registered name. Each adapter's `isSupported()` compares the variable through `canonicalPlatformName()` itself, so an adapter matches another spelling whether or not it runs under `PlatformRegistry.detect()`, and detection leaves both variables as set. A name that matches no platform, such as an inherited `MCP_CLIENT=vscode`, is skipped, and detection falls through to `NEW_RELIC_AI_PLATFORM` and then the ambient signals.
 
 ---
 
@@ -43,7 +43,7 @@ Each `MCP_CLIENT === '<name>'` or `NEW_RELIC_AI_PLATFORM === '<name>'` check bel
 
 **Mechanism:** Native `PreToolUse`/`PostToolUse`/`PostToolUseFailure` hooks, installed by Preflight itself, plus six separate top-level settings.json hooks keys (not `PostToolUse` payload variants): `StopFailure`, which feeds `ApiFailureTracker` with model-API-call failures; `SessionStart`, which fires on every session but is only actionable when Claude Code reports resume-cost fields (`source: 'resume'`/`'fork'` with a prior response) — those feed `SessionResumeTracker`, surfaced in `nr_observe_get_cost_forecast`'s `resumeContext`; `InstructionsLoaded`, which feeds `InstructionDriftTracker` the exact moment a CLAUDE.md/`.claude/rules/*.md` file enters context — including session-start eager loads, which have no visible `Read` tool call at all; `PostModelSwitch`, which feeds `ModelUsageTracker` a discrete switch event (deliberate `/model` changes, and persistent automatic changes tagged `source: 'auto'`) — `PreModelSwitch` is intentionally not installed, since Preflight has no reason to block or confirm a switch; and `UserPromptSubmit`/`Stop`, which feed precise turn/task-boundary timestamps into `TurnTracker.finalizeTurnAt()`/`TaskDetector.startTaskIfNone()`/`TaskDetector.markBoundary()` — corroborating signals for the existing idle-gap heuristics, not replacements (`Stop` doesn't fire on a user interrupt, so the heuristics stay as the fallback). No prompt/response content is captured from either hook, only timestamp and session ID.
 
-**Detection (`isSupported()`):** any of `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, or `CLAUDE_CODE_SESSION_ID` set (the vars current Claude Code actually sets in child process envs), or the legacy `CLAUDE_CODE`/`CLAUDE_CODE_VERSION`, or `MCP_CLIENT === 'claude-code'` in any spelling. An unrecognized `MCP_CLIENT` doesn't hide those signals. The list is the exported `CLAUDE_CODE_ENV_SIGNALS` const, shared with `collector-script.ts`'s hook-time platform stamping.
+**Detection (`isSupported()`):** any of `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, or `CLAUDE_CODE_SESSION_ID` set (the vars current Claude Code actually sets in child process envs), or the legacy `CLAUDE_CODE`/`CLAUDE_CODE_VERSION`, or `MCP_CLIENT === 'claude-code'` in any spelling. An unrecognized `MCP_CLIENT` doesn't hide those signals. The list is the exported `CLAUDE_CODE_ENV_SIGNALS` const, shared with `collector-script.ts`'s hook-time platform stamping. Any process started from a Claude Code shell inherits these signals, so the collector stamps a hook `claude-code` only when `CLAUDE_CODE_SESSION_ID` is unset or equals the hook's `session_id`. Otherwise the hook files as `unattributed`.
 
 **Setup:**
 
@@ -67,13 +67,15 @@ Each `MCP_CLIENT === '<name>'` or `NEW_RELIC_AI_PLATFORM === '<name>'` check bel
 1. Per-action hook events — `beforeShellExecution`, `afterShellExecution`, `beforeMCPExecution`, `afterMCPExecution`, `beforeReadFile`, `afterFileEdit` — carry no generic `tool_name` field; the collector derives the tool name from the event name itself. `CURSOR_TOOL_MAP` is never consulted for these.
 2. Generic `preToolUse`/`postToolUse` events (confirmed to exist, payload only partially documented) — carry `tool_name` as one of `Shell`/`Read`/`Write`/`Task`/`MCP`. `MCP` is deliberately left unmapped (collapsing an arbitrary downstream MCP tool into the literal string "MCP" would discard information); it falls through to `'Unknown'` with the original name preserved.
 
-**Known gaps:** Cursor has no `afterReadFile` event (`beforeReadFile` is emitted as a completed read directly) and no `beforeFileEdit` event (`afterFileEdit` is post-only). `afterShellExecution`/`afterMCPExecution` have no documented failure-outcome field, so success is reported unconditionally `true`.
+**Self-reported tokens:** `afterMCPExecution` carries `conversation_id`, `mcp_server_name` (the server's key in `mcp.json`), `tool_input` and `result_json`. When the call is `nr_observe_report_tokens` to a server whose key contains `preflight` (or is exactly `nr-ai-observability`), and the reply accepted the report for the hook, the collector writes the report into that conversation's buffer, so it is saved to the chat that made the call. Every event from these Cursor-only hooks is stamped `cursor`, even when the hook inherits Claude Code's environment. A report recorded this way counts in the local budget, Model Usage and the live cost tile, but is not sent to New Relic.
+
+**Known gaps:** Cursor has no `afterReadFile` event (`beforeReadFile` is emitted as a completed read directly) and no `beforeFileEdit` event (`afterFileEdit` is post-only). `afterShellExecution`/`afterMCPExecution` have no documented failure-outcome field, so success is reported unconditionally `true`. A self-report sent to a server registered under any other key, or by a Cursor version that sends no `mcp_server_name`, is not recorded.
 
 **Pairing:** None of these events carries a `tool_use_id`, so the collector mints one at `beforeShellExecution` or `beforeMCPExecution` and hands it to the oldest open pre of the same tool at `afterShellExecution` or `afterMCPExecution`. A denied command or MCP call fires no `after*` event, so its pre is recorded as a timeout once its wait runs out (11 minutes for a shell command, 60 seconds otherwise). Until then, the next `after*` event of the same tool pairs with it, as the processor's own FIFO does for any call without an id. `beforeReadFile` and `afterFileEdit` have no pre to pair with.
 
 **Setup:**
 
-1. Register the Preflight MCP server for `nr_observe_*` tools: Cursor Settings → MCP → add server, command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, `NR_AI_MODE=cloud`
+1. Register the Preflight MCP server for `nr_observe_*` tools: Cursor Settings → MCP → add server under a key that contains `preflight`, such as `newrelic-preflight` (no installer writes Cursor's `mcp.json`, so you register the key by hand), command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, `NR_AI_MODE=cloud`
 2. Configure Cursor hooks so tool-call activity is captured — create `.cursor/hooks.json` (project) or `~/.cursor/hooks.json` (global):
    ```json
    {
@@ -95,13 +97,15 @@ Each `MCP_CLIENT === '<name>'` or `NEW_RELIC_AI_PLATFORM === '<name>'` check bel
 
 ## Windsurf (`windsurf`)
 
-**Mechanism:** Windsurf's real Cascade Hooks system (`.windsurf/hooks.json`) — [docs.windsurf.com/windsurf/cascade/hooks](https://docs.windsurf.com/windsurf/cascade/hooks). Not a file watcher or extension API. Windsurf also supports MCP natively via `mcp_config.json`.
+**Mechanism:** Windsurf's real Cascade Hooks system (`.windsurf/hooks.json`) — [docs.windsurf.com/de/windsurf/cascade/hooks](https://docs.windsurf.com/de/windsurf/cascade/hooks). Not a file watcher or extension API. Windsurf also supports MCP natively via `mcp_config.json`.
 
 **Detection (`isSupported()`):** `WINDSURF_SESSION_ID` set, or `WINDSURF_CONTEXT_ID` set, or `MCP_CLIENT === 'windsurf'`.
 
-**Event vocabulary handled by `collector-script.ts`:** `pre_read_code`, `post_read_code`, `pre_write_code`, `post_write_code`, `pre_run_command`, `post_run_command`. Windsurf sends the event name as `agent_action_name`, not `hook_event_name` — the collector checks both.
+**Event vocabulary handled by `collector-script.ts`:** `pre_read_code`, `post_read_code`, `pre_write_code`, `post_write_code`, `pre_run_command`, `post_run_command`, `pre_mcp_tool_use`, `post_mcp_tool_use`. Windsurf sends the event name as `agent_action_name`, not `hook_event_name` — the collector checks both. Every event from these hooks is stamped `windsurf`.
 
-**Known gaps:** `post_read_code`/`post_run_command` report success `true` unconditionally, the same gap as Cursor's `afterShellExecution`. `pre_write_code` maps to `'Edit'` (it's typically a partial edit, not a full-file write).
+**Self-reported tokens:** `post_mcp_tool_use` carries `trajectory_id` and `tool_info.mcp_server_name`, `mcp_tool_arguments` and `mcp_result`. The collector records an `nr_observe_report_tokens` report from it under the same rules as Cursor's `afterMCPExecution`.
+
+**Known gaps:** `post_read_code`/`post_run_command` report success `true` unconditionally, the same gap as Cursor's `afterShellExecution`. `pre_write_code` maps to `'Edit'` (it's typically a partial edit, not a full-file write). Self-report recording from `post_mcp_tool_use` follows Windsurf's docs and has not been checked against a real Windsurf run: that `mcp_result` holds the reply text, that `mcp_server_name` is the `mcp_config.json` key, and that the hook does not fire for a denied call.
 
 **Pairing:** Cascade Hooks carry no tool-use id, so the collector mints one at each `pre_*` event and hands it to the oldest open pre of the same tool at the matching `post_*` event.
 
@@ -109,8 +113,8 @@ Each `MCP_CLIENT === '<name>'` or `NEW_RELIC_AI_PLATFORM === '<name>'` check bel
 
 1. Windsurf Settings → MCP Servers → add server, command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, `NR_AI_MODE=cloud`
 2. MCP tool calls via Cascade are captured automatically through the MCP connection
-3. Built-in tool calls (file reads/writes, terminal commands) require Cascade Hooks — create `.windsurf/hooks.json` and register `pre_read_code`, `post_read_code`, `pre_write_code`, `post_write_code`, `pre_run_command`, `post_run_command`, each running `preflight-collector`
-4. See [docs.windsurf.com/windsurf/cascade/hooks](https://docs.windsurf.com/windsurf/cascade/hooks) for the full schema
+3. Built-in tool calls (file reads/writes, terminal commands) and self-reported tokens require Cascade Hooks — create `.windsurf/hooks.json` (or `~/.codeium/windsurf/hooks.json`) and register `pre_read_code`, `post_read_code`, `pre_write_code`, `post_write_code`, `pre_run_command`, `post_run_command`, `post_mcp_tool_use`, each running `preflight-collector`. Register the MCP server under a key that contains `preflight`.
+4. See [docs.windsurf.com/de/windsurf/cascade/hooks](https://docs.windsurf.com/de/windsurf/cascade/hooks) for the full schema
 
 ---
 
@@ -344,14 +348,21 @@ Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md). It provisio
    {
      "hooks": {
        "PreToolUse": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "MCP_CLIENT=droid preflight-collector" }]
+         }
        ],
        "PostToolUse": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "MCP_CLIENT=droid preflight-collector" }]
+         }
        ]
      }
    }
    ```
+   The `MCP_CLIENT=droid` prefix is required. Hook commands run as a separate process from the MCP server and never see the env set by `mcp add`, so an unstamped command files its breadcrumbs under `unattributed`, a pool every unstamped engine shares. On Windows the `VAR=value` prefix is not valid in `cmd.exe` or PowerShell, so use `"command": "cmd /c \"set MCP_CLIENT=droid&& preflight-collector\""` (no space before `&&`, or the space becomes part of the value).
 2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
 3. Register the Preflight MCP server:
    ```
@@ -388,14 +399,21 @@ Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md). It provisio
    {
      "hooks": {
        "BeforeTool": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "MCP_CLIENT=gemini-cli preflight-collector" }]
+         }
        ],
        "AfterTool": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "MCP_CLIENT=gemini-cli preflight-collector" }]
+         }
        ]
      }
    }
    ```
+   The `MCP_CLIENT=gemini-cli` prefix is required. Hook commands run as a separate process from the MCP server and never see the env set by `mcp add`, so an unstamped command files its breadcrumbs under `unattributed`, a pool every unstamped engine shares. On Windows the `VAR=value` prefix is not valid in `cmd.exe` or PowerShell, so use `"command": "cmd /c \"set MCP_CLIENT=gemini-cli&& preflight-collector\""` (no space before `&&`, or the space becomes part of the value).
 2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
 3. Register the Preflight MCP server:
    ```
@@ -430,14 +448,21 @@ Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md). It provisio
    {
      "hooks": {
        "PreToolUse": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "MCP_CLIENT=codex preflight-collector" }]
+         }
        ],
        "PostToolUse": [
-         { "matcher": "*", "hooks": [{ "type": "command", "command": "preflight-collector" }] }
+         {
+           "matcher": "*",
+           "hooks": [{ "type": "command", "command": "MCP_CLIENT=codex preflight-collector" }]
+         }
        ]
      }
    }
    ```
+   The `MCP_CLIENT=codex` prefix is required. Hook commands run as a separate process from the MCP server and never see the env set by `mcp add`, so an unstamped command files its breadcrumbs under `unattributed`, a pool every unstamped engine shares. On Windows the `VAR=value` prefix is not valid in `cmd.exe` or PowerShell, so use `"command": "cmd /c \"set MCP_CLIENT=codex&& preflight-collector\""` (no space before `&&`, or the space becomes part of the value).
 2. Run `/hooks` in the Codex CLI to review and trust this hook definition — non-managed hooks are skipped until reviewed.
 3. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
 4. Register the Preflight MCP server:
@@ -487,7 +512,7 @@ Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md). It provisio
    }
    ```
 2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
-3. Create `.opencode/plugins/preflight.js` (project) or `~/.config/opencode/plugins/preflight.js` (global) with the snippet in `OpencodeAdapter.getHookInstallInstructions()` (`src/platforms/opencode-adapter.ts`) — reproduced there in full.
+3. Create `.opencode/plugins/preflight.js` (project) or `~/.config/opencode/plugins/preflight.js` (global) with the snippet in `OpencodeAdapter.getHookInstallInstructions()` (`src/platforms/opencode-adapter.ts`) — reproduced there in full. The snippet sets `MCP_CLIENT` in the collector spawn's `env`, which is required: without it the collector files breadcrumbs under `unattributed`, a pool every unstamped engine shares. It needs no shell syntax, so the stamp itself is not platform specific.
 4. Restart opencode.
 
 ---
@@ -528,7 +553,7 @@ Alternatively, install Preflight as a [Kiro Power](./KIRO_POWER.md). It provisio
    }
    ```
 2. Ensure `preflight-collector` is on `PATH` (`npm link`, or `npm install -g @newrelic/preflight`)
-3. Create `.kilo/plugin/preflight.ts` (project) or `~/.config/kilo/plugin/preflight.ts` (global) with the snippet in `KiloCodeAdapter.getHookInstallInstructions()` (`src/platforms/kilo-code-adapter.ts`) — reproduced there in full, using Kilo's current plugin module descriptor shape (`export default { id, server }`).
+3. Create `.kilo/plugin/preflight.ts` (project) or `~/.config/kilo/plugin/preflight.ts` (global) with the snippet in `KiloCodeAdapter.getHookInstallInstructions()` (`src/platforms/kilo-code-adapter.ts`) — reproduced there in full, using Kilo's current plugin module descriptor shape (`export default { id, server }`). The snippet sets `MCP_CLIENT` in the collector spawn's `env`, which is required: without it the collector files breadcrumbs under `unattributed`, a pool every unstamped engine shares. It needs no shell syntax, so the stamp itself is not platform specific.
 4. Restart Kilo Code.
 
 ---
@@ -565,7 +590,7 @@ Pi has **no MCP client support at all**, confirmed as deliberate, stated philoso
 
 **Mechanism:** Google Antigravity (2.0 / IDE / CLI — the Python SDK is out of scope, see Known gaps) ships a real, first-party, documented `hooks.json` mechanism: [antigravity.google/docs/hooks](https://antigravity.google/docs/hooks) (identical content on [/docs/ide/hooks](https://antigravity.google/docs/ide/hooks)). `PreToolUse`/`PostToolUse` fire around every built-in tool call, matched by regex against tool name; handlers receive JSON on stdin and must reply with JSON on stdout. This is a `full-hooks` mechanism, not the `mcp-tools-only` tier a platform lacking any hook mechanism would get — Antigravity's `hooks.json` is real, first-party, and documented, confirmed by fetching Google's own docs directly. Antigravity also supports MCP separately and natively — [/docs/mcp](https://antigravity.google/docs/mcp) — via `mcp_config.json`.
 
-Antigravity's hook payloads have **no field naming the event type at all**, and per the [Input/Output Contract](https://antigravity.google/docs/hooks#inputoutput-contract) both events carry the same keys: `PreToolUse` is `{ toolCall: { name, args }, stepIdx, conversationId, ... }` and `PostToolUse` is the same plus an optional `error` ("Empty if successful"). Payload shape therefore cannot tell them apart, so the setup below registers `preflight-collector PreToolUse` and `preflight-collector PostToolUse` as separate `hooks.json` commands and `collector-script.ts` reads the event from that argument. The replies differ too: `PreToolUse` must return a `decision` (Preflight always sends `{"decision":"allow"}`), while `PostToolUse` returns `{}` — its schema has no `decision` field, and sending one fails Antigravity's protojson unmarshaling and the tool call with it ([#793](https://github.com/newrelic-experimental/preflight/issues/793)). A `hooks.json` without the argument still works on a best-effort basis: a payload carrying an `error` key is read as `PostToolUse`, anything else with `toolCall` as `PreToolUse` — so a successful `PostToolUse` that omits `error` is misread and gets the `decision` reply. Both events set `toolUseId` from `stepIdx` when it is a number, so `HookEventProcessor` pairs them by ID; when it is not, the collector mints a `toolUseId` at the pre and hands it to the post of the same tool, so the pair still matches by ID across processes. With an ID, a misread `PostToolUse` replaces its real `PreToolUse` in `HookEventProcessor`'s pending map, so the call is recorded as a timed-out failure.
+Antigravity's hook payloads have **no field naming the event type at all**, and per the [Input/Output Contract](https://antigravity.google/docs/hooks#inputoutput-contract) both events carry the same keys: `PreToolUse` is `{ toolCall: { name, args }, stepIdx, conversationId, ... }` and `PostToolUse` is the same plus an optional `error` ("Empty if successful"). Payload shape therefore cannot tell them apart, so the setup below registers `preflight-collector PreToolUse` and `preflight-collector PostToolUse` as separate `hooks.json` commands and `collector-script.ts` reads the event from that argument. The replies differ too: `PreToolUse` must return a `decision` (Preflight always sends `{"decision":"allow"}`), while `PostToolUse` returns `{}` — its schema has no `decision` field, and sending one fails Antigravity's protojson unmarshaling and the tool call with it ([#793](https://github.com/newrelic-experimental/preflight/issues/793)). A `hooks.json` without the argument still works on a best-effort basis: a payload carrying an `error` key is read as `PostToolUse`, anything else with `toolCall` as `PreToolUse` — so a successful `PostToolUse` that omits `error` is misread and gets the `decision` reply. Both events set `toolUseId` to `<conversationId>:<stepIdx>` when `stepIdx` is a number, so `HookEventProcessor` pairs them by ID. `stepIdx` counts steps within one conversation, so the `conversationId` prefix keeps two conversations at the same step from pairing with each other in an engine that drains both. When `stepIdx` is not a number, the collector mints a `toolUseId` at the pre and hands it to the post of the same tool, so the pair still matches by ID across processes. With an ID, a misread `PostToolUse` replaces its real `PreToolUse` in `HookEventProcessor`'s pending map, so the call is recorded as a timed-out failure.
 
 **Detection (`isSupported()`):** `MCP_CLIENT === 'antigravity'`. No ambient environment variable is confirmed to exist for Antigravity (checked `/docs/cli/reference`, `/docs/cli/settings`, `/docs/ide/settings`, `/docs/cli/sandbox`, `/docs/sidecars`) — explicit opt-in only, same as opencode/Kilo Code/Codex.
 
@@ -577,6 +602,7 @@ Antigravity's hook payloads have **no field naming the event type at all**, and 
 - **`PostToolUse` carries no output content/exit-code field at all** (only `toolCall`/`stepIdx`/`error`) — `toolOutput` metadata (e.g. Bash exit codes) can never be populated for Antigravity, a platform limitation, not an implementation gap.
 - **The Antigravity SDK (Python, for building custom agents on Antigravity's own runtime) is out of scope** — it documents MCP support but no interactive hooks surface of its own.
 - **No confirmed ambient env var** — detection is explicit-opt-in only (`MCP_CLIENT=antigravity`).
+- **Self-reported cost is not recorded while the engine is pending.** Antigravity's docs do not say its hooks fire for MCP tools, and `tools/call` carries no documented conversation id, so a report cannot be routed to its own conversation. The adapter declares no `tokenReportHook`, and a pending engine does not list `nr_observe_report_tokens`.
 
 **Setup:**
 
@@ -686,7 +712,7 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
 
 **Instruction files:** `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md` (repo-relative, matched against a tool call's file path). The host also reads a user-level `$HOME/.copilot/copilot-instructions.md` and glob-based `.github/instructions/**/*.instructions.md`, neither of which is modeled here — every other adapter's `instructionFilePaths` entry is a repo-relative exact filename, which supports neither a global per-user path nor a glob pattern.
 
-**Token-exact cost (optional):** tool-call hooks alone don't carry per-call token counts. A small, hand-written plain-JavaScript Copilot SDK extension (`copilot-sdk-extension/extension.mjs`, shipped alongside Preflight and installable into `~/.copilot/extensions/preflight/`) subscribes to the SDK's `assistant.usage` event and appends a `mode: 'token'` buffer line per API call — the same buffer-line contract `CopilotUsageWatcher` uses for VS Code. It captures usage only (no tool calls, to avoid double-counting against the hooks above). Copilot SDK extensions must be plain JavaScript — TypeScript isn't supported — so this file hand-mirrors the tested logic in `src/hooks/copilot-sdk-usage-mapper.ts`; keep the two in sync when changing either. Extensions are an experimental feature, requiring `--experimental` or `/experimental on`.
+**Token-exact cost (optional):** tool-call hooks alone don't carry per-call token counts. A small plain-JavaScript Copilot SDK extension (`copilot-sdk-extension/extension.mjs`, shipped alongside Preflight and installable into `~/.copilot/extensions/preflight/`) subscribes to the SDK's `assistant.usage` event and appends a `mode: 'token'` buffer line per API call — the same buffer-line contract `CopilotUsageWatcher` uses for VS Code. It captures usage only (no tool calls, to avoid double-counting against the hooks above). Copilot SDK extensions must be plain JavaScript with no build step, so the file is bundled by `npm run build:copilot-extension` from `src/hooks/copilot-sdk-extension.ts`, which reuses `src/hooks/copilot-sdk-usage-mapper.ts` and the drain-safe `appendToHookBuffer`. Edit the source, not the bundle; `npm run verify:copilot-extension` fails on drift. Extensions are an experimental feature, requiring `--experimental` or `/experimental on`.
 
 **Known gap:** without the extension above, cost is estimated from tool-call counts rather than exact tokens (same limitation as most other hook-based adapters).
 

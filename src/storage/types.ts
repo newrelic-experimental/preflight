@@ -80,6 +80,18 @@ export interface PermissionDeniedHookEvent extends HookEventBase {
   readonly deniedReason?: string;
 }
 
+export interface SelfReportHookEvent extends HookEventBase {
+  readonly mode: 'self_report';
+  readonly sessionId: string;
+  readonly reportId: string;
+  readonly model: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly thinkingTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheCreationTokens: number;
+}
+
 /** Emitted per LLM API turn with token usage; feeds CostTracker. */
 export interface TokenHookEvent extends HookEventBase {
   readonly mode: 'token';
@@ -259,6 +271,7 @@ export type HookEvent =
   | PermissionRequestHookEvent
   | PermissionDeniedHookEvent
   | TokenHookEvent
+  | SelfReportHookEvent
   | SubagentTokenHookEvent
   | WorkflowRunEvent
   | ObservabilityHealthHookEvent
@@ -378,6 +391,8 @@ export interface ToolCallRecord {
   readonly skillArgsLength?: number;
   /** Number of the PR a `gh pr create` or MCP create_pull_request call opened, parsed from the PR URL in its output. */
   readonly createdPrNumber?: string;
+  /** Lowercased `owner/repo` of the PR `createdPrNumber` names, from the same URL. */
+  readonly createdPrRepo?: string;
   /** Number of the PR a GitHub MCP update_pull_request or merge_pull_request call named, from its `pullNumber` input. */
   readonly mcpPrNumber?: string;
   /** `owner/repo` a GitHub MCP PR tool call named, from its `owner` and `repo` inputs. */
@@ -418,6 +433,8 @@ export interface ReplayTimelineEntry {
   readonly agentType?: string;
   /** Same as `ToolCallRecord.createdPrNumber`; absent in sessions persisted before it existed. */
   readonly createdPrNumber?: string;
+  /** Same as `ToolCallRecord.createdPrRepo`; absent in sessions persisted before it existed. */
+  readonly createdPrRepo?: string;
   /** Same as `ToolCallRecord.mcpPrNumber`; absent in sessions persisted before it existed. */
   readonly mcpPrNumber?: string;
   /** Same as `ToolCallRecord.mcpPrRepo`; absent in sessions persisted before it existed. */

@@ -19,24 +19,33 @@ import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { cutAtWord, redactSecrets } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
-import {
-  CLAUDE_CODE_ENV_SIGNALS,
-  CLAUDE_CODE_PLATFORM_NAME,
-} from '../platforms/claude-code-adapter.js';
+import { CLAUDE_CODE_PLATFORM_NAME } from '../platforms/claude-code-adapter.js';
 import { hookEventFromArg } from '../hook-subcommands.js';
 import { canonicalPlatformName, ENGINE_ENV_KEYS } from '../platforms/platform-names.js';
 import { UNATTRIBUTED_BREADCRUMB_WRITER } from '../platforms/types.js';
-import { breadcrumbRoot, breadcrumbWriter } from './session-breadcrumbs.js';
-import { appendToHookBuffer } from '../storage/hook-buffer.js';
+import {
+  claimReport,
+  hookSelfReportLine,
+  releaseReport,
+  SESSION_ID_RE,
+  type HookReportCall,
+} from './self-report.js';
+import { breadcrumbRoot, breadcrumbWriter, isClaudeCodeHook } from './session-breadcrumbs.js';
+import { appendToHookBuffer, LineWrittenError } from '../storage/hook-buffer.js';
 import { mcpPrToolAction } from '../metrics/mcp-pr-tools.js';
+import { classifyBash } from './bash-classifier.js';
+import { parsePrRepo } from '../metrics/pr-ref.js';
 import { mintToolUseId, takeMintedToolUseId } from './minted-tool-use-ids.js';
 
 // ---------------------------------------------------------------------------
 // Lightweight config (env vars only — no file reads)
 // ---------------------------------------------------------------------------
 
-const SESSION_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 const DEFAULT_STORAGE_DIR = resolve(homedir(), '.newrelic-preflight');
+
+function getStorageDir(): string {
+  return process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+}
 
 /**
  * Resolve the per-session buffer path. Validates sessionId against
@@ -52,7 +61,7 @@ function getBufferPath(sessionId?: string): string {
   if (process.env.NEW_RELIC_AI_MCP_BUFFER_PATH !== undefined) {
     return process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
   }
-  const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+  const storageDir = getStorageDir();
   const safeId =
     typeof sessionId === 'string' && SESSION_ID_RE.test(sessionId) ? sessionId : 'unknown';
   return resolve(storageDir, `buffer-${safeId}.jsonl`);
@@ -106,19 +115,35 @@ export function getMaxContentLength(): number {
   return parsed;
 }
 
+// These event names exist on only one platform, so the event itself names it.
+const HOOK_EVENT_PLATFORM: Readonly<Record<string, string>> = {
+  beforeshellexecution: 'cursor',
+  aftershellexecution: 'cursor',
+  beforemcpexecution: 'cursor',
+  aftermcpexecution: 'cursor',
+  beforereadfile: 'cursor',
+  afterfileedit: 'cursor',
+  pre_read_code: 'windsurf',
+  post_read_code: 'windsurf',
+  pre_write_code: 'windsurf',
+  post_write_code: 'windsurf',
+  pre_run_command: 'windsurf',
+  post_run_command: 'windsurf',
+  pre_mcp_tool_use: 'windsurf',
+  post_mcp_tool_use: 'windsurf',
+};
+
 /**
  * Ambient stamping is deliberately limited to Claude Code, the only platform
  * whose hook-process env signal is verified; other platforms stamp via
  * explicit MCP_CLIENT in their generated hook commands.
  */
-function detectStampPlatform(): string | undefined {
+function detectStampPlatform(sessionId: unknown): string | undefined {
   for (const key of ENGINE_ENV_KEYS) {
     const name = canonicalPlatformName(process.env[key]);
     if (name !== undefined) return name;
   }
-  if (CLAUDE_CODE_ENV_SIGNALS.some((key) => process.env[key] !== undefined)) {
-    return CLAUDE_CODE_PLATFORM_NAME;
-  }
+  if (isClaudeCodeHook(process.env, sessionId)) return CLAUDE_CODE_PLATFORM_NAME;
   return (process.env.MCP_CLIENT ?? process.env.NEW_RELIC_AI_PLATFORM) || undefined;
 }
 
@@ -127,6 +152,17 @@ function detectStampPlatform(): string | undefined {
 // ---------------------------------------------------------------------------
 
 const MAX_REDACT_BYTES = 1_048_576; // 1 MB
+
+// The classifier backtracks quadratically on long single-line commands, so the
+// hook only classifies a command up to this length. A longer one carries no
+// flags and the processor classifies its stored text, as it did before.
+const MAX_CLASSIFY_CHARS = 16_384;
+
+function bashCommandInput(command: string): Record<string, unknown> {
+  if (command.length > MAX_CLASSIFY_CHARS) return { command: redact(command) };
+  const { isDestructive, isNetwork } = classifyBash(command);
+  return { command: redact(command), bashDestructive: isDestructive, bashNetwork: isNetwork };
+}
 
 function redact(value: string): string {
   // Truncate by byte count, not character count — 4-byte emoji chars would otherwise
@@ -159,9 +195,49 @@ function sizeOf(value: unknown): number {
   }
 }
 
+const TRUNCATED = '...[truncated]';
+
 function truncate(value: string, maxLen: number): string {
   if (value.length <= maxLen) return value;
-  return value.slice(0, maxLen) + '...[truncated]';
+  return value.slice(0, maxLen) + TRUNCATED;
+}
+
+// Redacts each string, keys included, before JSON encoding, so an escape the encoding adds
+// (\n, \u001b, \") cannot hide a secret from the pass, and before the cap, so the cut cannot shorten
+// a secret below its pattern. A string is stored as itself and any other value as its JSON. Strings
+// that start past the cap are replaced unread by the truncation marker; redaction can shorten what
+// comes before them, so the marker can land inside the cap. Each string costs at least its length
+// plus its two quotes. Values and keys each count toward their own cap, because serialization visits
+// each kind in order. Keys that redact to the same text are numbered so no entry is dropped.
+function recordedContent(value: unknown, maxLen: number): string {
+  const redactUpTo = (): ((text: string) => string) => {
+    let left = maxLen;
+    return (text) => {
+      const kept = left > 0 ? redact(text) : TRUNCATED;
+      left -= text.length + 2;
+      return kept;
+    };
+  };
+  const redactValue = redactUpTo();
+  const redactKey = redactUpTo();
+  const content =
+    typeof value === 'string'
+      ? redactValue(value)
+      : JSON.stringify(value, (_key, v: unknown) => {
+          if (typeof v === 'string') return redactValue(v);
+          if (v === null || typeof v !== 'object' || Array.isArray(v)) return v;
+          const keys = new Set<string>();
+          return Object.fromEntries(
+            Object.entries(v).map(([k, x]) => {
+              const base = redactKey(k);
+              let key = base;
+              for (let n = 2; keys.has(key); n++) key = `${base} (${n})`;
+              keys.add(key);
+              return [key, x];
+            }),
+          );
+        });
+  return truncate(content, maxLen);
 }
 
 function countLines(text: string): number {
@@ -245,8 +321,6 @@ export function getLinuxAncestorPids(startPpid: number, maxDepth = 5): number[] 
   return pids;
 }
 
-let _breadcrumbWriteFailed = false;
-
 function touch(path: string): void {
   const now = new Date();
   try {
@@ -254,7 +328,39 @@ function touch(path: string): void {
   } catch {}
 }
 
-let _unknownEngineWarned = false;
+/**
+ * Files `sessionId` at `dir/name`. An unchanged breadcrumb is only touched, not
+ * rewritten: resolveFromBreadcrumb() (session-resolver.ts) rejects a
+ * breadcrumb older than the reading process's own start time, so an
+ * actively-hooked session's breadcrumb must keep looking fresh across an MCP
+ * server restart (same ppid, same session_id, content unchanged) or that
+ * restart would permanently lose ppid-based resolution for the rest of the
+ * session. A breadcrumb from a session that's over stops getting touched, so
+ * it still goes stale and gets rejected as intended. The directory is created
+ * only when the write finds it missing.
+ */
+function writeOrTouch(dir: string, name: string, sessionId: string): void {
+  const path = resolve(dir, name);
+  let current: string | undefined;
+  try {
+    current = readFileSync(path, 'utf-8').trim();
+  } catch {}
+  if (current === sessionId) {
+    touch(path);
+    return;
+  }
+  try {
+    writeFileSync(path, sessionId, { mode: 0o600 });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(path, sessionId, { mode: 0o600 });
+  }
+}
+
+function breadcrumbRoots(root: string, legacyRoot?: string): string[] {
+  return legacyRoot === undefined ? [root] : [root, legacyRoot];
+}
 
 function writePpidBreadcrumb(sessionId: string, root: string, legacyRoot?: string): void {
   if (!SESSION_ID_RE.test(sessionId)) return;
@@ -270,47 +376,24 @@ function writePpidBreadcrumb(sessionId: string, root: string, legacyRoot?: strin
     // sessions sharing a common ancestor PID may overwrite each other there.
     const pids = getLinuxAncestorPids(ppid);
 
-    for (const dir of legacyRoot === undefined ? [root] : [root, legacyRoot]) {
-      const breadcrumbDir = resolve(dir, 'session-by-ppid');
-      mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
+    for (const dir of breadcrumbRoots(root, legacyRoot)) {
       for (const pid of pids) {
-        const breadcrumbPath = resolve(breadcrumbDir, `${pid}.txt`);
-        // Short-circuit: no content rewrite needed if it already matches, but
-        // still touch mtime — resolveFromBreadcrumb() (session-resolver.ts)
-        // rejects a breadcrumb older than the reading process's own start
-        // time, so an actively-hooked session's breadcrumb must keep looking
-        // fresh across an MCP server restart (same ppid, same session_id,
-        // content genuinely unchanged) or that restart would permanently lose
-        // ppid-based resolution for the rest of the session. A breadcrumb from
-        // a session that's actually over stops getting touched here (nothing
-        // calls this with its old ppid+session_id again), so it still goes
-        // stale and gets rejected exactly as intended.
-        if (existsSync(breadcrumbPath)) {
-          try {
-            if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) {
-              touch(breadcrumbPath);
-              continue;
-            }
-          } catch {
-            // Fall through to rewrite if the read failed.
-          }
-        }
-        writeFileSync(breadcrumbPath, sessionId, { mode: 0o600 });
+        writeOrTouch(resolve(dir, 'session-by-ppid'), `${pid}.txt`, sessionId);
       }
     }
-
-    _breadcrumbWriteFailed = false;
   } catch (err) {
-    if (!_breadcrumbWriteFailed) {
-      process.stderr.write(
-        `[preflight-collector] Warning: cannot write PPID breadcrumb: ${String(err)}\n`,
-      );
-      _breadcrumbWriteFailed = true;
-    }
+    process.stderr.write(
+      `[preflight-collector] Warning: cannot write PPID breadcrumb: ${String(err)}\n`,
+    );
   }
 }
 
-let _cwdBreadcrumbWriteFailed = false;
+function writeSessionIdBreadcrumb(sessionId: string, root: string): void {
+  if (!SESSION_ID_RE.test(sessionId)) return;
+  try {
+    writeOrTouch(resolve(root, 'session-by-id'), `${sessionId}.txt`, sessionId);
+  } catch {}
+}
 
 function writeCwdBreadcrumb(
   sessionId: string,
@@ -331,31 +414,29 @@ function writeCwdBreadcrumb(
   const sanitizedCwd = cwd.replace(/[\\/:]/g, '-');
 
   try {
-    for (const dir of legacyRoot === undefined ? [root] : [root, legacyRoot]) {
-      const breadcrumbDir = resolve(dir, 'session-by-cwd');
-      mkdirSync(breadcrumbDir, { recursive: true, mode: 0o700 });
-      const breadcrumbPath = resolve(breadcrumbDir, `${sanitizedCwd}.txt`);
-      if (existsSync(breadcrumbPath)) {
-        try {
-          if (readFileSync(breadcrumbPath, 'utf-8').trim() === sessionId) {
-            touch(breadcrumbPath);
-            continue;
-          }
-        } catch {
-          // Fall through to rewrite if the read failed.
-        }
-      }
-      writeFileSync(breadcrumbPath, sessionId, { mode: 0o600 });
+    for (const dir of breadcrumbRoots(root, legacyRoot)) {
+      writeOrTouch(resolve(dir, 'session-by-cwd'), `${sanitizedCwd}.txt`, sessionId);
     }
-    _cwdBreadcrumbWriteFailed = false;
   } catch (err) {
-    if (!_cwdBreadcrumbWriteFailed) {
-      process.stderr.write(
-        `[preflight-collector] Warning: cannot write cwd breadcrumb: ${String(err)}\n`,
-      );
-      _cwdBreadcrumbWriteFailed = true;
-    }
+    process.stderr.write(
+      `[preflight-collector] Warning: cannot write cwd breadcrumb: ${String(err)}\n`,
+    );
   }
+}
+
+const UNKNOWN_ENGINE_MARKER = 'unknown-engine-warned';
+
+/** True unless this install was already warned about exactly these names. */
+function claimUnknownEngineWarning(storageDir: string, names: string): boolean {
+  const marker = resolve(storageDir, UNKNOWN_ENGINE_MARKER);
+  try {
+    if (readFileSync(marker, 'utf-8') === names) return false;
+  } catch {}
+  try {
+    mkdirSync(storageDir, { recursive: true, mode: 0o700 });
+    writeFileSync(marker, names, { mode: 0o600 });
+  } catch {}
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -455,7 +536,7 @@ interface HookInput {
   file_path?: string;
   content?: string;
   edits?: { old_string?: string; new_string?: string }[];
-  // Windsurf (https://docs.windsurf.com/windsurf/cascade/hooks) sends a
+  // Windsurf (https://docs.windsurf.com/de/windsurf/cascade/hooks) sends a
   // completely different envelope from every other platform: the event name
   // itself is `agent_action_name`, not `hook_event_name`, and all
   // event-specific data lives nested under `tool_info` rather than flat
@@ -558,7 +639,7 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
       if (Array.isArray(obj.replacements)) meta.replacementsCount = obj.replacements.length;
       break;
     case 'run_in_terminal':
-      if (typeof obj.command === 'string') meta.command = redact(obj.command);
+      if (typeof obj.command === 'string') Object.assign(meta, bashCommandInput(obj.command));
       if (typeof obj.explanation === 'string') meta.description = redact(obj.explanation);
       if (typeof obj.isBackground === 'boolean') meta.run_in_background = obj.isBackground;
       break;
@@ -615,7 +696,7 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
     // input shape as Bash.
     case 'Bash':
     case 'PowerShell':
-      if (typeof obj.command === 'string') meta.command = redact(obj.command);
+      if (typeof obj.command === 'string') Object.assign(meta, bashCommandInput(obj.command));
       if (typeof obj.description === 'string') meta.description = redact(obj.description);
       if (typeof obj.timeout === 'number') meta.timeout = obj.timeout;
       if (typeof obj.run_in_background === 'boolean')
@@ -664,25 +745,34 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
 
 // `https://<host>/<owner>/<repo>/pull/<N>`: what `gh pr create` prints on
 // success and what an MCP create_pull_request result carries as html_url.
-const PR_URL_RE = /https?:\/\/[^\s"'/]+\/[^\s"'/]+\/[^\s"'/]+\/pull\/(\d{1,9})\b/g;
+const PR_URL_RE = /https?:\/\/[^\s"'/]+\/([^\s"'/]+)\/([^\s"'/]+)\/pull\/(\d{1,9})\b/g;
 const GH_PR_CREATE_RE = /(?:^|[\s;&|(])gh\s+pr\s+create\b/;
 
-/** The PR number named by the PR URLs in a tool's output text, or undefined
- *  when they name none or several, since then the created one is unknown (a
- *  second create, or a `gh pr comment` URL on another PR). Only the digits
- *  leave this function; the output itself is never kept. */
-function findCreatedPrNumber(output: Record<string, unknown> | unknown[]): string | undefined {
+/** The PR named by the PR URLs in a tool's output text, as its number and
+ *  (when the owner and repo are plain names) its lowercased `owner/repo`, or
+ *  undefined when they name none or several, since then the created one is
+ *  unknown (a second create, or a `gh pr comment` URL on another PR). Only
+ *  these leave this function; the output itself is never kept. */
+function findCreatedPr(
+  output: Record<string, unknown> | unknown[],
+): { createdPrNumber: string; createdPrRepo?: string } | undefined {
   const texts: string[] = [];
   const blocks = Array.isArray(output) ? output : output.content;
   if (!Array.isArray(output) && typeof output.stdout === 'string') texts.push(output.stdout);
   if (Array.isArray(blocks)) {
     for (const block of blocks) if (hasStringText(block)) texts.push(block.text);
   }
-  const prNumbers = new Set<string>();
+  const prs = new Map<string, { createdPrNumber: string; createdPrRepo?: string }>();
   for (const text of texts) {
-    for (const match of text.matchAll(PR_URL_RE)) prNumbers.add(match[1]);
+    for (const [, owner, repo, createdPrNumber] of text.matchAll(PR_URL_RE)) {
+      const createdPrRepo = parsePrRepo(`${owner}/${repo}`);
+      prs.set(`${owner}/${repo}#${createdPrNumber}`.toLowerCase(), {
+        createdPrNumber,
+        ...(createdPrRepo !== undefined && { createdPrRepo }),
+      });
+    }
   }
-  return prNumbers.size === 1 ? [...prNumbers][0] : undefined;
+  return prs.size === 1 ? [...prs.values()][0] : undefined;
 }
 
 /**
@@ -698,8 +788,7 @@ function extractOutputMeta(
   const obj = output as Record<string, unknown>;
 
   if (mcpPrToolAction(toolName) === 'create') {
-    const createdPrNumber = findCreatedPrNumber(output as Record<string, unknown> | unknown[]);
-    return createdPrNumber === undefined ? undefined : { createdPrNumber };
+    return findCreatedPr(output as Record<string, unknown> | unknown[]);
   }
 
   if (toolName === 'Bash') {
@@ -715,8 +804,7 @@ function extractOutputMeta(
         ? (input as Record<string, unknown>).command
         : undefined;
     if (typeof command === 'string' && GH_PR_CREATE_RE.test(command)) {
-      const createdPrNumber = findCreatedPrNumber(obj);
-      if (createdPrNumber !== undefined) meta.createdPrNumber = createdPrNumber;
+      Object.assign(meta, findCreatedPr(obj));
     }
     if (Object.keys(meta).length > 0) return meta;
   }
@@ -770,7 +858,7 @@ function extractOutputMeta(
 
 /**
  * Windsurf nests all event-specific data under `tool_info` instead of flat
- * top-level fields (https://docs.windsurf.com/windsurf/cascade/hooks).
+ * top-level fields (https://docs.windsurf.com/de/windsurf/cascade/hooks).
  * Returns an empty object when tool_info is missing or malformed so callers
  * can destructure without null checks.
  */
@@ -801,7 +889,7 @@ function processHook(raw: string, cliEvent?: string): void {
   // conversation_id is its closest analog (one per chat, like a Claude Code
   // session). Claude Code and Kiro always send session_id, so this only
   // takes effect for Cursor events.
-  // Windsurf (https://docs.windsurf.com/windsurf/cascade/hooks) never sends
+  // Windsurf (https://docs.windsurf.com/de/windsurf/cascade/hooks) never sends
   // session_id either — trajectory_id is its closest analog, the same role
   // conversation_id plays for Cursor.
   // Antigravity (https://antigravity.google/docs/hooks) never sends
@@ -819,20 +907,22 @@ function processHook(raw: string, cliEvent?: string): void {
   // ancestry-based session-resolution model, so extending this to
   // conversation_id would be a guess, not a fix.
   if (typeof data.session_id === 'string' && data.session_id.length > 0) {
-    const writer = breadcrumbWriter(process.env);
-    if (writer === UNATTRIBUTED_BREADCRUMB_WRITER && !_unknownEngineWarned) {
+    const writer = breadcrumbWriter(process.env, data.session_id);
+    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
+    if (writer === UNATTRIBUTED_BREADCRUMB_WRITER) {
       const unknownNames = ENGINE_ENV_KEYS.filter(
         (key) => process.env[key] && canonicalPlatformName(process.env[key]) === undefined,
-      ).map((key) => `${key}=${JSON.stringify(process.env[key])}`);
-      if (unknownNames.length > 0) {
+      )
+        .map((key) => `${key}=${JSON.stringify(process.env[key])}`)
+        .join(', ');
+      if (unknownNames.length > 0 && claimUnknownEngineWarning(storageDir, unknownNames)) {
         process.stderr.write(
-          `[preflight-collector] Warning: ${unknownNames.join(', ')} names no engine Preflight knows; filing the session breadcrumb as unattributed\n`,
+          `[preflight-collector] Warning: ${unknownNames} names no engine Preflight knows; filing the session breadcrumb as unattributed\n`,
         );
-        _unknownEngineWarned = true;
       }
     }
-    const storageDir = process.env.NEW_RELIC_AI_MCP_STORAGE_PATH ?? DEFAULT_STORAGE_DIR;
     const tagged = breadcrumbRoot(storageDir, writer);
+    writeSessionIdBreadcrumb(data.session_id, tagged);
     writePpidBreadcrumb(data.session_id, tagged, storageDir);
     writeCwdBreadcrumb(data.session_id, data.cwd, tagged, storageDir);
   }
@@ -843,7 +933,7 @@ function processHook(raw: string, cliEvent?: string): void {
   // spellings here (this file intentionally has no platform-adapter import —
   // see the file's own "no heavy imports" design constraint).
   // Windsurf sends the event name as agent_action_name, not hook_event_name
-  // (https://docs.windsurf.com/windsurf/cascade/hooks) — already lowercase
+  // (https://docs.windsurf.com/de/windsurf/cascade/hooks) — already lowercase
   // with underscores (e.g. "pre_read_code"), but .toLowerCase() is harmless
   // and keeps this line uniform with every other platform's derivation.
   const eventName = (data.hook_event_name ?? data.agent_action_name)?.toLowerCase();
@@ -888,9 +978,15 @@ function processHook(raw: string, cliEvent?: string): void {
   // Both Antigravity branches spread this, so a pre and its post agree on
   // whether they carry a toolUseId: HookEventProcessor pairs a post by its
   // toolUseId whenever it has one, and a pre without one is keyed by a UUID.
-  const agyToolUseId = typeof data.stepIdx === 'number' ? { toolUseId: String(data.stepIdx) } : {};
+  // stepIdx counts within one conversation, so the id leads with the
+  // conversation to stay unique for an engine that drains several.
+  const agyToolUseId =
+    typeof data.stepIdx === 'number'
+      ? { toolUseId: sessionId ? `${sessionId}:${data.stepIdx}` : String(data.stepIdx) }
+      : {};
 
   let event: Record<string, unknown>;
+  let selfReportCall: HookReportCall | undefined;
 
   if (eventName === 'pretooluse') {
     event = {
@@ -906,9 +1002,7 @@ function processHook(raw: string, cliEvent?: string): void {
     if (inputMeta !== undefined) event.toolInput = inputMeta;
 
     if (recordContent && data.tool_input !== undefined) {
-      const content =
-        typeof data.tool_input === 'string' ? data.tool_input : JSON.stringify(data.tool_input);
-      event.inputContent = redact(truncate(content, maxContentLen));
+      event.inputContent = recordedContent(data.tool_input, maxContentLen);
     }
   } else if (eventName === 'posttooluse') {
     // Claude Code generally signals tool failure via a separate
@@ -973,9 +1067,7 @@ function processHook(raw: string, cliEvent?: string): void {
     if (outputMeta !== undefined) event.toolOutput = outputMeta;
 
     if (recordContent && toolResponse !== undefined) {
-      const content =
-        typeof toolResponse === 'string' ? toolResponse : JSON.stringify(toolResponse);
-      event.outputContent = redact(truncate(content, maxContentLen));
+      event.outputContent = recordedContent(toolResponse, maxContentLen);
     }
   } else if (eventName === 'posttoolusefailure') {
     event = {
@@ -1030,9 +1122,7 @@ function processHook(raw: string, cliEvent?: string): void {
     if (inputMeta !== undefined) event.toolInput = inputMeta;
 
     if (recordContent && data.tool_input !== undefined) {
-      const content =
-        typeof data.tool_input === 'string' ? data.tool_input : JSON.stringify(data.tool_input);
-      event.inputContent = redact(truncate(content, maxContentLen));
+      event.inputContent = recordedContent(data.tool_input, maxContentLen);
     }
   } else if (eventName === 'aftertool') {
     // Gemini CLI has no tool_response.success boolean (unlike Kiro/Amazon Q) —
@@ -1061,11 +1151,7 @@ function processHook(raw: string, cliEvent?: string): void {
     if (outputMeta !== undefined) event.toolOutput = outputMeta;
 
     if (recordContent && data.tool_response !== undefined) {
-      const content =
-        typeof data.tool_response === 'string'
-          ? data.tool_response
-          : JSON.stringify(data.tool_response);
-      event.outputContent = redact(truncate(content, maxContentLen));
+      event.outputContent = recordedContent(data.tool_response, maxContentLen);
     }
   } else if (eventName === 'beforeshellexecution') {
     // Cursor's shell hooks carry no tool_name field — the event name itself
@@ -1078,7 +1164,7 @@ function processHook(raw: string, cliEvent?: string): void {
       timestamp,
       inputSize: sizeOf(command),
       inputHash: hashInput(command),
-      toolInput: { command: redact(command) },
+      toolInput: bashCommandInput(command),
     };
   } else if (eventName === 'aftershellexecution') {
     // Cursor doesn't document a distinct failure event for shell (unlike
@@ -1115,6 +1201,13 @@ function processHook(raw: string, cliEvent?: string): void {
       timestamp,
       success: true,
     };
+    // afterMCPExecution names the server from mcp.json (https://cursor.com/docs/agent/hooks).
+    selfReportCall = {
+      tool: mcpTool,
+      server: data.mcp_server_name,
+      args: data.tool_input,
+      result: data.result_json,
+    };
   } else if (eventName === 'beforereadfile') {
     // Cursor has no "afterReadFile" event — beforeReadFile is the only file-read
     // hook that exists (confirmed: https://blog.gitbutler.com/cursor-hooks-deep-dive
@@ -1133,7 +1226,7 @@ function processHook(raw: string, cliEvent?: string): void {
     // buffer unless recordContent is enabled, same as Claude Code's existing
     // tool_response/tool_input content handling.
     if (recordContent && data.content !== undefined) {
-      event.outputContent = redact(truncate(data.content, maxContentLen));
+      event.outputContent = recordedContent(data.content, maxContentLen);
     }
   } else if (eventName === 'afterfileedit') {
     // Cursor has no "beforeFileEdit" event — afterFileEdit is post-only,
@@ -1147,7 +1240,7 @@ function processHook(raw: string, cliEvent?: string): void {
       ...(data.file_path !== undefined && { toolInput: { file_path: data.file_path } }),
     };
   } else if (eventName === 'pre_read_code') {
-    // Confirmed payload: https://docs.windsurf.com/windsurf/cascade/hooks#pre_read_code
+    // Confirmed payload: https://docs.windsurf.com/de/windsurf/cascade/hooks#pre_read_code
     const filePath = getWindsurfToolInfo(data).file_path;
     event = {
       mode: 'pre' as const,
@@ -1191,7 +1284,7 @@ function processHook(raw: string, cliEvent?: string): void {
       ...(typeof filePath === 'string' && { toolInput: { file_path: filePath } }),
     };
   } else if (eventName === 'pre_run_command') {
-    // Confirmed payload: https://docs.windsurf.com/windsurf/cascade/hooks#pre_run_command
+    // Confirmed payload: https://docs.windsurf.com/de/windsurf/cascade/hooks#pre_run_command
     const commandLineRaw = getWindsurfToolInfo(data).command_line;
     const commandLine = typeof commandLineRaw === 'string' ? commandLineRaw : '';
     event = {
@@ -1200,7 +1293,7 @@ function processHook(raw: string, cliEvent?: string): void {
       timestamp,
       inputSize: sizeOf(commandLine),
       inputHash: hashInput(commandLine),
-      toolInput: { command: redact(commandLine) },
+      toolInput: bashCommandInput(commandLine),
     };
   } else if (eventName === 'post_run_command') {
     // No source documents an exit-code/output field for this event —
@@ -1233,6 +1326,13 @@ function processHook(raw: string, cliEvent?: string): void {
       timestamp,
       success: true,
     };
+    // tool_info.mcp_server_name names the server (https://docs.windsurf.com/de/windsurf/cascade/hooks).
+    selfReportCall = {
+      tool: mcpTool,
+      server: toolInfo.mcp_server_name,
+      args: toolInfo.mcp_tool_arguments,
+      result: toolInfo.mcp_result,
+    };
   } else if (isAntigravityPre) {
     // Antigravity PreToolUse — see isAntigravityPre above for how it is told
     // apart from PostToolUse.
@@ -1254,7 +1354,7 @@ function processHook(raw: string, cliEvent?: string): void {
     if (inputMeta !== undefined) event.toolInput = inputMeta;
 
     if (recordContent && data.toolCall?.args !== undefined) {
-      event.inputContent = redact(truncate(JSON.stringify(data.toolCall.args), maxContentLen));
+      event.inputContent = recordedContent(data.toolCall.args, maxContentLen);
     }
   } else if (isAntigravityPost) {
     // Antigravity PostToolUse — carries the same `toolCall` as PreToolUse
@@ -1291,14 +1391,10 @@ function processHook(raw: string, cliEvent?: string): void {
     // (a safe closed enum), so both are gated behind recordContent.
     if (recordContent) {
       if (data.error_details !== undefined) {
-        const details =
-          typeof data.error_details === 'string'
-            ? data.error_details
-            : JSON.stringify(data.error_details);
-        event.errorDetails = redact(truncate(details, maxContentLen));
+        event.errorDetails = recordedContent(data.error_details, maxContentLen);
       }
       if (typeof data.last_assistant_message === 'string') {
-        event.lastAssistantMessage = redact(truncate(data.last_assistant_message, maxContentLen));
+        event.lastAssistantMessage = recordedContent(data.last_assistant_message, maxContentLen);
       }
     }
   } else if (eventName === 'sessionstart') {
@@ -1403,13 +1499,19 @@ function processHook(raw: string, cliEvent?: string): void {
   // only the light claude-code-adapter const, not the full registry) instead
   // of going through PlatformRegistry — registry-based detection adds
   // measurable overhead on this hot, pre+post-per-tool-call path.
-  const stampedPlatform = detectStampPlatform();
+  const stampedPlatform = HOOK_EVENT_PLATFORM[eventName ?? ''] ?? detectStampPlatform(sessionId);
   if (stampedPlatform) event.platform = stampedPlatform;
+  const selfReport =
+    selfReportCall &&
+    stampedPlatform &&
+    hookSelfReportLine(selfReportCall, sessionId, timestamp, stampedPlatform);
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;
 
+  const newReport = selfReport && claimReport(getStorageDir(), selfReport) ? selfReport : undefined;
   // Write to buffer — wrapped in try/catch for resilience.
+  let reportAttempted = false;
   try {
     const bufferPath = getBufferPath(sessionId);
     const bufferDir = dirname(bufferPath);
@@ -1432,7 +1534,15 @@ function processHook(raw: string, cliEvent?: string): void {
     const line = JSON.stringify(event) + '\n';
 
     appendToHookBuffer(bufferPath, line);
+    if (newReport) {
+      reportAttempted = true;
+      appendToHookBuffer(bufferPath, JSON.stringify(newReport) + '\n');
+    }
   } catch (err) {
+    // A report line a drain can read keeps its claim. Any other failure frees it for a retry.
+    if (newReport && !(reportAttempted && err instanceof LineWrittenError)) {
+      releaseReport(getStorageDir(), newReport);
+    }
     // A closed stderr (EPIPE) must not turn a dropped event into a failed hook.
     if (!stderrSinkInstalled) {
       stderrSinkInstalled = true;

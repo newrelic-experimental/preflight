@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import { BoundedMap } from '../lib/bounded-map.js';
 import type { SkillStamp, ToolCallRecord } from '../storage/types.js';
 import type { Resettable } from './tracker-contracts.js';
 
@@ -7,6 +8,7 @@ const NULL_SESSION_KEY = '__no_session__';
 const MAIN_AGENT_KEY = '';
 const DEFAULT_MAX_SESSIONS = 50;
 const MAX_AGENTS_PER_SESSION = 100;
+const MAX_STARTED_CALLS = 2000;
 
 export interface SkillActivationMetrics {
   /** Every open run, main agent and subagents, across the sessions in view. */
@@ -17,6 +19,8 @@ export interface SkillRunOpenContext {
   readonly sessionId: string | null;
   readonly timestamp: number | undefined;
   readonly platform?: string;
+  /** The subagent whose Skill call opened the run. Absent for the main agent. */
+  readonly agentId?: string;
 }
 
 export interface SkillActivationTrackerOptions {
@@ -33,13 +37,22 @@ export interface SkillActivationTrackerOptions {
  * named `Skill` tool call or a `/<skill>` prompt and lasts until the next
  * prompt or the next skill (last wins: there is no signal for a nested skill
  * returning, so the new run records the one it replaced as its parent
- * instead). A subagent keeps whatever run the main agent had open when the
- * subagent first appeared, since that skill is what spawned it; later prompts
- * and skills on the main agent don't move it.
+ * instead). A subagent keeps the run the main agent had open when its
+ * spawning call started, once its transcript sidecar names that call, and
+ * until then the run open when the subagent first appeared; later prompts and
+ * skills on the main agent don't move it. A main-agent call whose start
+ * was seen keeps the run open at its start, since its record can arrive after
+ * a later prompt.
  */
 export class SkillActivationTracker implements Resettable {
   /** Per session, per agent; `null` pins a subagent that appeared outside any run. */
   private readonly sessions = new Map<string, Map<string, SkillStamp | null>>();
+  /** Runs a subagent's own Skill call opened, which a spawn pin must not replace. */
+  private readonly subagentOpenedRuns = new WeakSet<SkillStamp>();
+  /** The main agent's open run when each call started, by session and toolUseId. */
+  private readonly runAtStart = new BoundedMap<string, SkillStamp | null>({
+    maxEntries: MAX_STARTED_CALLS,
+  });
 
   constructor(private readonly options: SkillActivationTrackerOptions = {}) {}
 
@@ -59,20 +72,22 @@ export class SkillActivationTracker implements Resettable {
     return runs;
   }
 
+  /** Remembers the run open as a call starts, for its record to carry. */
+  recordToolStart(sessionId: string | null | undefined, toolUseId: string): void {
+    this.runAtStart.set(startKey(sessionId, toolUseId), this.openRun(sessionId));
+  }
+
   recordToolCall(record: ToolCallRecord): SkillStamp | null {
     const runs = this.runsFor(record.sessionId);
     const agentKey = record.agentId ?? MAIN_AGENT_KEY;
     if (agentKey !== MAIN_AGENT_KEY && !runs.has(agentKey)) {
-      if (runs.size > MAX_AGENTS_PER_SESSION) {
-        for (const key of runs.keys()) {
-          if (key === MAIN_AGENT_KEY) continue;
-          runs.delete(key);
-          break;
-        }
-      }
-      runs.set(agentKey, runs.get(MAIN_AGENT_KEY) ?? null);
+      admitAgent(runs, agentKey, runs.get(MAIN_AGENT_KEY) ?? null);
     }
-    const open = runs.get(agentKey) ?? null;
+    const atStart =
+      agentKey === MAIN_AGENT_KEY
+        ? this.runAtStart.get(startKey(record.sessionId, record.toolUseId))
+        : undefined;
+    const open = atStart !== undefined ? atStart : (runs.get(agentKey) ?? null);
     // An interrupted or failed Skill call never loaded the skill, and the
     // orphan sweep can emit it after later prompts; neither should open a run.
     if (record.toolName === 'Skill' && record.skillName && record.success) {
@@ -86,14 +101,43 @@ export class SkillActivationTracker implements Resettable {
         ...(open && { parentRunId: open.runId }),
       };
       runs.set(agentKey, stamp);
+      if (agentKey !== MAIN_AGENT_KEY) this.subagentOpenedRuns.add(stamp);
       this.options.onRunOpened?.(stamp, {
         sessionId: record.sessionId ?? null,
         timestamp: record.timestamp,
         ...(typeof record.platform === 'string' && { platform: record.platform }),
+        ...(agentKey !== MAIN_AGENT_KEY && { agentId: agentKey }),
       });
       return stamp;
     }
     return open;
+  }
+
+  /**
+   * Pins a subagent to the run the main agent had open when the subagent's
+   * spawning call started. A background subagent's first call can be
+   * recorded after a later prompt, so the main run open then is not its
+   * spawner. Replaces that guess, but not a run the subagent opened itself.
+   * Does nothing when the spawning call's start was not seen.
+   */
+  pinSubagent(sessionId: string | null | undefined, agentId: string, spawnToolUseId: string): void {
+    const spawnRun = this.runAtStart.get(startKey(sessionId, spawnToolUseId));
+    if (spawnRun === undefined) return;
+    const runs = this.runsFor(sessionId);
+    const current = runs.get(agentId);
+    if (current && this.subagentOpenedRuns.has(current)) return;
+    if (runs.has(agentId)) runs.set(agentId, spawnRun);
+    else admitAgent(runs, agentId, spawnRun);
+  }
+
+  /** Whether a subagent already has a run (or `null`) pinned, without touching eviction order. */
+  hasAgent(sessionId: string | null | undefined, agentId: string): boolean {
+    return this.sessions.get(sessionId ?? NULL_SESSION_KEY)?.has(agentId) ?? false;
+  }
+
+  /** The run the main agent has open in a session, without touching the session's eviction order. */
+  openRun(sessionId: string | null | undefined): SkillStamp | null {
+    return this.sessions.get(sessionId ?? NULL_SESSION_KEY)?.get(MAIN_AGENT_KEY) ?? null;
   }
 
   /** Closes the main agent's run and returns the slash run it opens, if any. */
@@ -124,4 +168,24 @@ export class SkillActivationTracker implements Resettable {
   reset(_sessionId?: string): void {
     this.sessions.clear();
   }
+}
+
+function startKey(sessionId: string | null | undefined, toolUseId: string): string {
+  return `${sessionId ?? NULL_SESSION_KEY}\0${toolUseId}`;
+}
+
+/** Adds a subagent's run, evicting the oldest subagent past the per-session cap. */
+function admitAgent(
+  runs: Map<string, SkillStamp | null>,
+  agentKey: string,
+  stamp: SkillStamp | null,
+): void {
+  if (runs.size > MAX_AGENTS_PER_SESSION) {
+    for (const key of runs.keys()) {
+      if (key === MAIN_AGENT_KEY) continue;
+      runs.delete(key);
+      break;
+    }
+  }
+  runs.set(agentKey, stamp);
 }

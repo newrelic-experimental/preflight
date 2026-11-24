@@ -28,9 +28,14 @@ import {
   type DrainClaim,
 } from './drain-claims.js';
 import { AGENT_ID_PATTERN } from '../lib/agent-id.js';
-import { BREADCRUMBS_DIR, breadcrumbRoot } from '../hooks/session-breadcrumbs.js';
+import {
+  BREADCRUMBS_DIR,
+  STALE_CWD_BREADCRUMB_MS,
+  breadcrumbRoot,
+} from '../hooks/session-breadcrumbs.js';
 import { countMintedToolUseId, MINTED_IDS_DIR_PREFIX } from '../hooks/minted-tool-use-ids.js';
 import { appendToHookBuffer, readSealed, sealHookBuffer, textBeforeSeal } from './hook-buffer.js';
+import { renameIntoPlace } from './rename-into-place.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
 
@@ -115,7 +120,7 @@ function parseHookEvents(raw: string): HookEvent[] {
  * we have rights to signal. ESRCH = dead, EPERM = alive (different uid),
  * anything else (e.g. EINVAL on a malformed PID) = treat as dead.
  */
-function isPidAlive(pid: number): boolean {
+export function isPidAlive(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -174,6 +179,7 @@ export class LocalStore {
   private readonly ownCountedIds = new Map<string, Set<string>>();
   private readonly holds = new Map<string, DrainHold>();
   private giveUpOrder = false;
+  private ownIdPending = false;
 
   /**
    * @param storagePath The base storage directory (e.g. ~/.newrelic-preflight).
@@ -284,6 +290,15 @@ export class LocalStore {
   }
 
   /**
+   * While this engine's own session id is pending, `buffer-unknown.jsonl` is
+   * left to an engine that can save its calls: a pending engine saves no
+   * tracker counts, so a call it drained and then exited with would be lost.
+   */
+  setOwnIdPending(pending: boolean): void {
+    this.ownIdPending = pending;
+  }
+
+  /**
    * Drain every per-session buffer file under the storage path. Used by
    * `--local` standalone mode where the dashboard owner sees all live
    * sessions' events. Each file is drained atomically (rename-then-read) so a
@@ -305,6 +320,7 @@ export class LocalStore {
     }
     const drains = this.bufferDrains(entries);
     for (const [name, drain] of drains) {
+      if (this.ownIdPending && name === 'buffer-unknown.jsonl') continue;
       const ownerLive = (): boolean => name !== 'buffer.jsonl' && this.hasLiveOwner(name);
       for (const event of this.drainPath(resolve(this.storagePath, name), drain, ownerLive)) {
         all.push(event);
@@ -504,7 +520,15 @@ export class LocalStore {
       if (!existsSync(this.storagePath)) {
         mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
       }
-      writeFileSync(heartbeatPath, String(pid), { mode: 0o600 });
+      // Rename into place: a sibling engine reading a half-written heartbeat
+      // sees no live owner, then archives this session's buffer as an orphan.
+      const tmpPath = `${heartbeatPath}.${process.pid}.tmp`;
+      try {
+        writeFileSync(tmpPath, String(pid), { mode: 0o600 });
+        renameIntoPlace(tmpPath, heartbeatPath, String(pid));
+      } finally {
+        rmSync(tmpPath, { force: true });
+      }
       // Sidecar metadata for listActiveStdioInstances() — kept separate from
       // the heartbeat's own bare-PID content so hasLiveOwner(),
       // getActiveSessionIdsFromHeartbeats(), and gcOrphanBuffers() (which all
@@ -1178,19 +1202,29 @@ export class LocalStore {
    * `<storage>/breadcrumbs/<writer>/session-by-ppid/<pid>.txt`, and at
    * `<storage>/session-by-ppid/<pid>.txt` where older collectors wrote
    * them. A breadcrumb is stale when its PID names a process that no longer
-   * exists (its engine's session ended).
+   * exists (its engine's session ended). A cwd breadcrumb at
+   * `session-by-cwd/<cwd>.txt` names no process, so it is stale when it and
+   * every same-root ppid breadcrumb naming its session are older than
+   * `STALE_CWD_BREADCRUMB_MS`. A collector that never refreshes an unchanged
+   * cwd breadcrumb still touches the ppid one on each event. A writer's
+   * `session-by-id/<session>.txt` goes by the same rule.
    *
    * @returns the number of breadcrumb files deleted
    */
   gcStaleBreadcrumbs(): number {
-    const breadcrumbDirs = [
-      resolve(this.storagePath, 'session-by-ppid'),
+    const roots = [
+      this.storagePath,
       ...breadcrumbWriters(this.storagePath).map((writer) =>
-        resolve(breadcrumbRoot(this.storagePath, writer), 'session-by-ppid'),
+        breadcrumbRoot(this.storagePath, writer),
       ),
     ];
+    const breadcrumbDirs = roots.map((root) => resolve(root, 'session-by-ppid'));
 
     let deleted = 0;
+    for (const root of roots) {
+      for (const kind of ['session-by-cwd', 'session-by-id'])
+        deleted += this.gcIdleBreadcrumbs(resolve(root, kind), resolve(root, 'session-by-ppid'));
+    }
     for (const breadcrumbDir of breadcrumbDirs) {
       let entries: string[];
       try {
@@ -1217,6 +1251,53 @@ export class LocalStore {
     }
     if (deleted > 0) {
       logger.info('Cleaned up stale breadcrumbs', { deleted });
+    }
+    return deleted;
+  }
+
+  private gcIdleBreadcrumbs(dir: string, ppidDir: string): number {
+    const cutoff = Date.now() - STALE_CWD_BREADCRUMB_MS;
+    let names: string[];
+    try {
+      names = readdirSync(dir).filter((name) => name.endsWith('.txt'));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logger.warn('Failed to enumerate breadcrumb dir', { error: String(err) });
+      }
+      return 0;
+    }
+    const readFresh = (path: string): string | null => {
+      try {
+        return statSync(path).mtimeMs >= cutoff ? readFileSync(path, 'utf-8').trim() : null;
+      } catch {
+        return null;
+      }
+    };
+    let liveSessions: Set<string> | undefined;
+    const liveSessionIds = () => {
+      if (liveSessions) return liveSessions;
+      liveSessions = new Set();
+      try {
+        for (const name of readdirSync(ppidDir)) {
+          const id = readFresh(resolve(ppidDir, name));
+          if (id) liveSessions.add(id);
+        }
+      } catch {
+        // no ppid dir means no fresh ppid breadcrumbs
+      }
+      return liveSessions;
+    };
+    let deleted = 0;
+    for (const name of names) {
+      const path = resolve(dir, name);
+      try {
+        if (statSync(path).mtimeMs >= cutoff) continue;
+        if (liveSessionIds().has(readFileSync(path, 'utf-8').trim())) continue;
+        unlinkSync(path);
+        deleted++;
+      } catch (err) {
+        logger.debug('Failed to delete idle breadcrumb', { name, error: String(err) });
+      }
     }
     return deleted;
   }

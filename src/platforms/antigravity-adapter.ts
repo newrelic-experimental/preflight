@@ -4,6 +4,7 @@ import type {
   PlatformConfig,
   PlatformSessionMetadata,
 } from './types.js';
+import { canonicalPlatformName } from './platform-names.js';
 
 /**
  * Maps Antigravity's built-in tool names (confirmed from the Hooks page's
@@ -146,6 +147,6 @@ export class AntigravityAdapter implements PlatformAdapter {
   }
 
   isSupported(): boolean {
-    return process.env.MCP_CLIENT === 'antigravity';
+    return canonicalPlatformName(process.env.MCP_CLIENT) === 'antigravity';
   }
 }

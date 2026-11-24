@@ -12,18 +12,22 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { loadMcpConfig } from '../../config.js';
-import { getIsoWeekId } from '../../storage/weekly-summary.js';
+import { WeeklySummaryGenerator, getIsoWeekId } from '../../storage/weekly-summary.js';
 import {
   ToolSelectionScorer,
   toToolSelectionSummary,
 } from '../../metrics/tool-selection-scorer.js';
 import { LiveSessionRegistry } from '../../metrics/live-session-registry.js';
 import { ModelUsageTracker } from '../../metrics/model-usage-tracker.js';
+import { TaskCompletionTracker } from '../../metrics/task-completion-tracker.js';
+import type { AiCodingTask } from '../../metrics/task-detector.js';
+import { handleGetTaskCompletionRate } from '../../tools/analytics-tools.js';
 import { makeUsage } from '../../__test-utils__/token-usage.js';
 import { QualityProxyTracker } from '../../metrics/quality-proxy-tracker.js';
 import { localStartOfDay, localDateKey } from '../../lib/date.js';
 import { WorktreeIdentityResolver } from '../../metrics/git-workspace-identity.js';
 import { CostTracker } from '../../metrics/cost-tracker.js';
+import { BudgetTracker } from '../../metrics/budget-tracker.js';
 import { buildCostForecastFromInputs } from '../../metrics/cost-forecast.js';
 import { buildCostTrackerSeed } from '../../metrics/cost-tracker-seed.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from '../../metrics/quality-proxy-tracker.js';
@@ -228,6 +232,83 @@ describe('api-handler GET /api/sessions', () => {
     await handler(req, res);
     const ids = (JSON.parse(body()) as Array<{ sessionId: string }>).map((s) => s.sessionId);
     expect(ids).toEqual(['chat-only', 'tools']);
+  });
+
+  describe('ids filter', () => {
+    const makeHandler = () => {
+      const fakeSessions = Array.from({ length: 120 }, (_v, i) => ({
+        sessionId: `sess-${i}`,
+        toolCallCount: i + 1,
+      }));
+      return createApiHandler({
+        sessionStore: {
+          loadTodaySessions: () => [],
+          listSessions: () => fakeSessions,
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+    };
+
+    it('returns a session outside the newest page when requested by id', async () => {
+      const req = { method: 'GET', url: '/api/sessions?ids=sess-0' } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeHandler()(req, res);
+      const result = JSON.parse(body()) as Array<{ sessionId: string }>;
+      expect(result.map((s) => s.sessionId)).toEqual(['sess-0']);
+    });
+
+    it('returns every requested session even past the default limit of 50', async () => {
+      const ids = Array.from({ length: 80 }, (_v, i) => `sess-${i}`);
+      const req = { method: 'GET', url: `/api/sessions?ids=${ids.join(',')}` } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeHandler()(req, res);
+      const result = JSON.parse(body()) as Array<{ sessionId: string }>;
+      expect(result).toHaveLength(80);
+    });
+
+    it('returns an empty list for an unknown id', async () => {
+      const req = { method: 'GET', url: '/api/sessions?ids=nope' } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeHandler()(req, res);
+      expect(JSON.parse(body())).toEqual([]);
+    });
+
+    const makeLiveHandler = () =>
+      createApiHandler({
+        sessionStore: {
+          loadTodaySessions: () => [],
+          listSessions: () => [{ sessionId: 'sess-0', toolCallCount: 1 }],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+        sessionTracker: {
+          getMetrics: () => ({
+            sessionId: 'live-session',
+            sessionName: null,
+            sessionStartTime: 1000,
+            sessionDurationMs: 500,
+            toolCallCount: 3,
+          }),
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionTracker'],
+      });
+
+    it('leaves out the live session when its id is not requested', async () => {
+      const req = { method: 'GET', url: '/api/sessions?ids=sess-0' } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeLiveHandler()(req, res);
+      const result = JSON.parse(body()) as Array<{ sessionId: string }>;
+      expect(result.map((s) => s.sessionId)).toEqual(['sess-0']);
+    });
+
+    it('includes the live session when its id is requested', async () => {
+      const req = {
+        method: 'GET',
+        url: '/api/sessions?ids=sess-0,live-session',
+      } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await makeLiveHandler()(req, res);
+      const result = JSON.parse(body()) as Array<{ sessionId: string }>;
+      expect(result.map((s) => s.sessionId)).toEqual(['sess-0', 'live-session']);
+    });
   });
 
   it('uses default limit of 50 when not specified', async () => {
@@ -466,6 +547,32 @@ describe('api-handler GET /api/sessions', () => {
     expect(status()).toBe(200);
     const result = JSON.parse(body()) as Array<{ sessionId: string }>;
     expect(result.some((s) => s.sessionId === 'other-process-session')).toBe(true);
+  });
+
+  it('omits unrequested live stub rows when filtering by ids', async () => {
+    const now = Date.now();
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadAllSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      liveSessionRegistry: {
+        getLiveSessions: () => [],
+        getLastActivity: () => null,
+        getSessionName: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['liveSessionRegistry'],
+      localStore: {
+        peekAllBuffers: () => [
+          { mode: 'post', sessionId: 'other-process-session', timestamp: now - 1_000 },
+        ],
+      } as unknown as Parameters<typeof createApiHandler>[0]['localStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions?ids=someone-else' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    expect(JSON.parse(body())).toEqual([]);
   });
 
   it('keeps a session in the list once it goes idle past the 3-minute live window', async () => {
@@ -2595,6 +2702,7 @@ describe('api-handler GET /api/cost-per-tool', () => {
       sessionId: 'attributed',
       startTime: Date.now() - 2 * 86_400_000,
       estimatedCostUsd: 1,
+      toolCallCount: 5,
       attribution: {
         buckets: {
           tool: { Read: { costUsd: 0.5, tokens: 200, count: 4, durationMs: 100 } },
@@ -2609,8 +2717,8 @@ describe('api-handler GET /api/cost-per-tool', () => {
       sessionId: 'unattributed',
       startTime: Date.now() - 3 * 86_400_000,
       estimatedCostUsd: 2,
+      toolCallCount: 1,
     };
-    let receivedSince: Date | undefined;
     const handler = createApiHandler({
       turnCostAttributor: {
         getMetrics: () => {
@@ -2623,8 +2731,7 @@ describe('api-handler GET /api/cost-per-tool', () => {
         },
         listSessions: () => [],
         loadSession: () => null,
-        loadAllSessions: (opts?: { since?: Date }) => {
-          receivedSince = opts?.since;
+        loadAllSessions: () => {
           return [attributedSession, unattributedSession];
         },
       } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
@@ -2633,10 +2740,6 @@ describe('api-handler GET /api/cost-per-tool', () => {
     const { res, status, body } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(200);
-    expect(receivedSince).toBeInstanceOf(Date);
-    // Widened by one extra day past the 7-day window, same as usage-insights.
-    const ageMs = Date.now() - (receivedSince as Date).getTime();
-    expect(ageMs).toBeGreaterThanOrEqual(8 * 86_400_000);
     const result = JSON.parse(body());
     expect(result.turns).toEqual([]);
     expect(result.costByToolType.Read).toEqual({
@@ -2660,7 +2763,6 @@ describe('api-handler GET /api/cost-per-tool', () => {
   });
 
   it('clamps ?days= to [1,90], same as GET /api/usage-insights', async () => {
-    let receivedSince: Date | undefined;
     const handler = createApiHandler({
       turnCostAttributor: {
         getMetrics: () => ({
@@ -2675,8 +2777,7 @@ describe('api-handler GET /api/cost-per-tool', () => {
         loadTodaySessions: () => [],
         listSessions: () => [],
         loadSession: () => null,
-        loadAllSessions: (opts?: { since?: Date }) => {
-          receivedSince = opts?.since;
+        loadAllSessions: () => {
           return [];
         },
       } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
@@ -2684,9 +2785,6 @@ describe('api-handler GET /api/cost-per-tool', () => {
     const req = { method: 'GET', url: '/api/cost-per-tool?days=9999' } as IncomingMessage;
     const { res, body } = fakeRes();
     await handler(req, res);
-    expect(receivedSince).toBeInstanceOf(Date);
-    const ageMs = Date.now() - (receivedSince as Date).getTime();
-    expect(ageMs).toBeGreaterThanOrEqual(90 * 86_400_000);
     const result = JSON.parse(body());
     expect(result.totalSessionCount).toBe(0);
     expect(result.attributedSessionCount).toBe(0);
@@ -2755,6 +2853,7 @@ describe('api-handler GET /api/usage-insights', () => {
             sessionId: 's1',
             startTime: Date.now() - 86_400_000,
             estimatedCostUsd: 2,
+            toolCallCount: 1,
             durationMs: 0,
             subagentCostUsd: 0,
             tokensInput: 0,
@@ -2762,6 +2861,7 @@ describe('api-handler GET /api/usage-insights', () => {
             tokensCacheRead: 0,
             tokensCacheCreation: 0,
             toolBreakdown: {},
+            antiPatterns: [],
           },
         ],
       } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
@@ -2777,14 +2877,12 @@ describe('api-handler GET /api/usage-insights', () => {
   });
 
   it('clamps the days parameter to [1,90]', async () => {
-    let receivedSince: Date | undefined;
     const handler = createApiHandler({
       sessionStore: {
         loadTodaySessions: () => [],
         listSessions: () => [],
         loadSession: () => null,
-        loadAllSessions: (opts?: { since?: Date }) => {
-          receivedSince = opts?.since;
+        loadAllSessions: () => {
           return [];
         },
       } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
@@ -2794,9 +2892,6 @@ describe('api-handler GET /api/usage-insights', () => {
     await handler(req, res);
     const result = JSON.parse(body());
     expect(result.windowDays).toBe(90);
-    expect(receivedSince).toBeInstanceOf(Date);
-    const ageMs = Date.now() - (receivedSince as Date).getTime();
-    expect(ageMs).toBeGreaterThanOrEqual(90 * 86_400_000);
   });
 
   it('clamps a sub-1 or non-numeric days parameter up to 1', async () => {
@@ -2832,6 +2927,7 @@ describe('api-handler GET /api/usage-insights', () => {
             {
               ...sinceLastMidnight,
               estimatedCostUsd: 2,
+              toolCallCount: 1,
               durationMs: 0,
               subagentCostUsd: 0,
               tokensInput: 0,
@@ -2839,6 +2935,7 @@ describe('api-handler GET /api/usage-insights', () => {
               tokensCacheRead: 0,
               tokensCacheCreation: 0,
               toolBreakdown: {},
+              antiPatterns: [],
             },
             {
               ...beforeMidnight,
@@ -2850,6 +2947,7 @@ describe('api-handler GET /api/usage-insights', () => {
               tokensCacheRead: 0,
               tokensCacheCreation: 0,
               toolBreakdown: {},
+              antiPatterns: [],
             },
           ];
         },
@@ -2859,13 +2957,60 @@ describe('api-handler GET /api/usage-insights', () => {
     const { res, status, body } = fakeRes();
     await handler(req, res);
     expect(status()).toBe(200);
-    expect(receivedSince).toBeInstanceOf(Date);
-    const sinceAgeMs = Date.now() - (receivedSince as Date).getTime();
-    expect(sinceAgeMs).toBeGreaterThanOrEqual(2 * 86_400_000 - 1000);
+    // The fetch reaches back past local midnight, so no file dated today is skipped.
+    expect((receivedSince as Date).getTime()).toBeLessThan(todayStart);
     const result = JSON.parse(body());
     expect(result.windowDays).toBe(1);
     expect(result.sessionCount).toBe(1);
     expect(result.totalCostUsd).toBe(2);
+  });
+
+  it.each([
+    ['/api/usage-insights?window=today', 1],
+    ['/api/usage-insights?days=7', 7],
+    ['/api/cost-per-tool?days=7', 7],
+    ['/api/usage-insights?days=9999', 90],
+    ['/api/cost-per-tool?days=9999', 90],
+  ])(
+    '%s loads files written since its first local midnight, or dated a day before',
+    async (url, days) => {
+      jest.useFakeTimers({ now: new Date(2026, 5, 10, 15).getTime(), doNotFake: ['nextTick'] });
+      const loadAllSessions = jest.fn(() => []);
+      const handler = createApiHandler({
+        turnCostAttributor: {} as Parameters<typeof createApiHandler>[0]['turnCostAttributor'],
+        sessionStore: { loadAllSessions } as unknown as Parameters<
+          typeof createApiHandler
+        >[0]['sessionStore'],
+      });
+      await handler({ method: 'GET', url } as IncomingMessage, fakeRes().res);
+      jest.useRealTimers();
+      const startMs = new Date(2026, 5, 10 - (days - 1)).getTime();
+      expect(loadAllSessions).toHaveBeenCalledWith({
+        since: new Date(startMs - 86_400_000),
+        includeModifiedSince: new Date(startMs),
+      });
+    },
+  );
+
+  it('window=today also loads older-dated session files modified since local midnight', async () => {
+    let receivedOpts: { since?: Date; includeModifiedSince?: Date } | undefined;
+    const handler = createApiHandler({
+      sessionStore: {
+        loadTodaySessions: () => [],
+        listSessions: () => [],
+        loadSession: () => null,
+        loadAllSessions: (opts?: { since?: Date; includeModifiedSince?: Date }) => {
+          receivedOpts = opts;
+          return [];
+        },
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/usage-insights?window=today' } as IncomingMessage;
+    const { res } = fakeRes();
+    await handler(req, res);
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    expect(receivedOpts?.includeModifiedSince?.getTime()).toBe(startOfToday.getTime());
   });
 
   it('window=today takes precedence over days, which stays unaffected when omitted', async () => {
@@ -4345,10 +4490,10 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
         endTime: startMs + 10_000,
         estimatedCostUsd: 10,
         timeline: [
-          { timestamp: startMs - 30 * 60 * 1000 },
-          { timestamp: startMs + 1_000 },
-          { timestamp: startMs + 2_000 },
-          { timestamp: startMs + 3_000 },
+          { timestamp: startMs - 30 * 60 * 1000, toolName: 'Read' },
+          { timestamp: startMs + 1_000, toolName: 'Read' },
+          { timestamp: startMs + 2_000, toolName: 'Read' },
+          { timestamp: startMs + 3_000, toolName: 'Read' },
         ],
       };
 
@@ -4395,9 +4540,9 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       costByDayUsd: { [olderKey]: 7, [todayKey]: 1.25 },
       antiPatterns: [{}, {}, {}],
       timeline: [
-        { timestamp: todayStart - 3 * 24 * 60 * 60 * 1000 },
-        { timestamp: todayStart - 24 * 60 * 60 * 1000 },
-        { timestamp: todayStart + 1_000 },
+        { timestamp: todayStart - 3 * 24 * 60 * 60 * 1000, toolName: 'Read' },
+        { timestamp: todayStart - 24 * 60 * 60 * 1000, toolName: 'Read' },
+        { timestamp: todayStart + 1_000, toolName: 'Read' },
       ],
     };
     const handler = createApiHandler({
@@ -4431,8 +4576,8 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       costByDayUsd: { [todayKey]: 2 },
       antiPatterns: [{}, {}],
       timeline: [
-        { timestamp: todayStart - 12 * 60 * 60 * 1000 },
-        { timestamp: todayStart + 1_000 },
+        { timestamp: todayStart - 12 * 60 * 60 * 1000, toolName: 'Read' },
+        { timestamp: todayStart + 1_000, toolName: 'Read' },
       ],
     };
     const handler = createApiHandler({
@@ -4790,6 +4935,7 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
       repoName?: string;
       cwd?: string;
       createdPrNumber?: string;
+      createdPrRepo?: string;
       success?: boolean;
       runInBackground?: boolean;
     },
@@ -4808,6 +4954,7 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
           command,
           cwd: extra.cwd,
           createdPrNumber: extra.createdPrNumber,
+          createdPrRepo: extra.createdPrRepo,
           runInBackground: extra.runInBackground,
         },
       ],
@@ -4904,6 +5051,164 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
         mcpPrSession('creator', 10_000, { ...mcpCreate, mcpPrRepo: 'acme/app' }, root),
         mcpPrSession('merger', 20_000, { ...mcpMerge, mcpPrRepo: 'acme/other' }, root),
       ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    });
+  });
+
+  describe('two separate clones of one GitHub repo', () => {
+    let roots: string[];
+    const clone = (remote: string): string => {
+      const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pr-874-')));
+      const env = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
+      spawnSync('git', ['init', '-q'], { cwd: root, env, stdio: 'ignore' });
+      spawnSync('git', ['remote', 'add', 'origin', remote], { cwd: root, env, stdio: 'ignore' });
+      roots.push(root);
+      return root;
+    };
+    beforeEach(() => {
+      roots = [];
+    });
+    afterEach(() => {
+      for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
+    });
+    const create = { createdPrNumber: '42', createdPrRepo: 'acme/app' };
+
+    it('clears ready_for_review when the PR created in one clone is merged from the other', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const b = clone('git@github.com:Acme/App.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, ...create }),
+        prSession('merger', 20_000, 'gh pr merge 42 --squash', { cwd: b }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+      expect([...parsed.sessionStatus.sessionIds.completed].sort()).toEqual(['creator', 'merger']);
+    });
+
+    it('clears ready_for_review when the merge names the repo with -R from outside any clone', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, ...create }),
+        prSession('merger', 20_000, 'gh pr merge 42 -R acme/app', { cwd: os.tmpdir() }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    });
+
+    it('keeps ready_for_review when the other clone merges the same number in another repo', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const b = clone('https://github.com/acme/other.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, ...create }),
+        prSession('merger', 20_000, 'gh pr merge 42', { cwd: b }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    });
+
+    it('keeps ready_for_review when a merge in the same clone names another repo with -R', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, ...create }),
+        prSession('merger', 20_000, 'gh pr merge 42 -R acme/other', { cwd: a }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    });
+
+    it('keeps ready_for_review when a PR created against another repo shares a number with a merge in the same clone', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', {
+          cwd: a,
+          createdPrNumber: '42',
+          createdPrRepo: 'acme/upstream',
+        }),
+        prSession('merger', 20_000, 'gh pr merge 42', { cwd: a }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    });
+
+    it('clears ready_for_review when its own clone has several remotes and no default, so the merge has no repo', async () => {
+      const a = clone('https://github.com/fork/app.git');
+      const env = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
+      spawnSync('git', ['remote', 'add', 'upstream', 'https://github.com/acme/app.git'], {
+        cwd: a,
+        env,
+        stdio: 'ignore',
+      });
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, ...create }),
+        prSession('merger', 20_000, 'gh pr merge 42', { cwd: a }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    });
+
+    it('keeps ready_for_review for a create saved before its repo was recorded', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const b = clone('https://github.com/acme/app.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, createdPrNumber: '42' }),
+        prSession('merger', 20_000, 'gh pr merge 42', { cwd: b }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
+    });
+
+    it('still clears a create saved before its repo was recorded when its own clone merges it', async () => {
+      const a = clone('https://github.com/acme/app.git');
+      const parsed = await statusFor([
+        prSession('creator', 10_000, 'gh pr create --fill', { cwd: a, createdPrNumber: '42' }),
+        prSession('merger', 20_000, 'gh pr merge 42', { cwd: a }),
+      ]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+    });
+  });
+
+  describe('sessions that started before today', () => {
+    const statusWithEarlierSessions = async (
+      today: unknown[],
+      withActivityToday: unknown[],
+    ): Promise<SessionStatusPayload> => {
+      const handler = createApiHandler({
+        localStore: { peekAllBuffers: () => [] },
+        sessionStore: {
+          loadTodaySessions: () => today,
+          loadSessionsWithActivityToday: () => withActivityToday,
+          listSessions: () => [],
+          loadSession: () => null,
+        } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+      });
+      const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+      const { res, body } = fakeRes();
+      await handler(req, res);
+      return JSON.parse(body()) as SessionStatusPayload;
+    };
+    const startedYesterday = <T extends { timeline: object[] }>(session: T) => {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      const startTime = startOfDay.getTime() - 3_600_000;
+      return { ...session, startTime, endTime: 0 };
+    };
+
+    it("clears ready_for_review when a session that started yesterday merges today's PR", async () => {
+      const creator = prSession('creator', 10_000, 'gh pr create --fill', {
+        repoName: 'acme/app',
+        createdPrNumber: '42',
+        createdPrRepo: 'acme/app',
+      });
+      const merger = startedYesterday(
+        prSession('merger', 20_000, 'gh pr merge 42 -R acme/app', { repoName: 'acme/app' }),
+      );
+      const parsed = await statusWithEarlierSessions([creator], [creator, merger]);
+      expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual([]);
+      expect([...parsed.sessionStatus.sessionIds.completed].sort()).toEqual(['creator', 'merger']);
+    });
+
+    it('marks a session that started yesterday and opened a PR today as ready_for_review', async () => {
+      const creator = startedYesterday(
+        prSession('creator', 10_000, 'gh pr create --fill', {
+          repoName: 'acme/app',
+          createdPrNumber: '42',
+          createdPrRepo: 'acme/app',
+        }),
+      );
+      const parsed = await statusWithEarlierSessions([], [creator]);
       expect(parsed.sessionStatus.sessionIds.ready_for_review).toEqual(['creator']);
     });
   });
@@ -6600,7 +6905,7 @@ describe('api-handler PATCH /api/settings', () => {
     },
   );
 
-  it('accepts retainSessionsDays as integer 1-365 or null, rejects out-of-range/non-integer', async () => {
+  it('accepts retainSessionsDays as integer 1-2190 or null, rejects out-of-range/non-integer', async () => {
     const configFilePath = makeConfigFilePath({});
     const handler = createApiHandler({ configFilePath });
 
@@ -6609,18 +6914,23 @@ describe('api-handler PATCH /api/settings', () => {
     await handler(reqOk, resOk);
     expect(statusOk()).toBe(200);
 
+    const reqMax = makePatchRequest({ retainSessionsDays: 2190 });
+    const { res: resMax, status: statusMax } = fakeRes();
+    await handler(reqMax, resMax);
+    expect(statusMax()).toBe(200);
+
     const reqNull = makePatchRequest({ retainSessionsDays: null });
     const { res: resNull, status: statusNull } = fakeRes();
     await handler(reqNull, resNull);
     expect(statusNull()).toBe(200);
 
-    const reqTooHigh = makePatchRequest({ retainSessionsDays: 366 });
+    const reqTooHigh = makePatchRequest({ retainSessionsDays: 2191 });
     const { res: resTooHigh, status: statusTooHigh, body: bodyTooHigh } = fakeRes();
     await handler(reqTooHigh, resTooHigh);
     expect(statusTooHigh()).toBe(400);
     expect(JSON.parse(bodyTooHigh())).toEqual({
       error: 'validation_failed',
-      errors: ['retainSessionsDays must be integer 1-365 or null'],
+      errors: ['retainSessionsDays must be integer 1-2190 or null'],
     });
 
     const reqFloat = makePatchRequest({ retainSessionsDays: 1.5 });
@@ -6697,17 +7007,14 @@ describe('api-handler PATCH /api/settings', () => {
     expect(JSON.parse(body())).toEqual({ ok: true, restartRequired: true });
   });
 
-  it('rejects a non-string digestSchedule', async () => {
+  it('ignores a digestSchedule PATCH like any other unknown key', async () => {
     const configFilePath = makeConfigFilePath({});
     const handler = createApiHandler({ configFilePath });
-    const req = makePatchRequest({ digestSchedule: 42 });
+    const req = makePatchRequest({ digestSchedule: '0 8 * * 2' });
     const { res, status, body } = fakeRes();
     await handler(req, res);
-    expect(status()).toBe(400);
-    expect(JSON.parse(body())).toEqual({
-      error: 'validation_failed',
-      errors: ['digestSchedule must be a string'],
-    });
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual({ ok: true, restartRequired: false });
   });
 
   it('validates alerts.personal.* fields, merging into any existing personal thresholds', async () => {
@@ -6804,7 +7111,7 @@ describe('api-handler PATCH /api/settings', () => {
       errors: [
         'developer must be a string',
         'teamId must be string or null',
-        'retainSessionsDays must be integer 1-365 or null',
+        'retainSessionsDays must be integer 1-2190 or null',
       ],
     });
   });
@@ -6876,6 +7183,13 @@ describe('api-handler GET /api/settings', () => {
       highSecurity: false,
       licenseKey: 'NRAK-ABCDEFGHIJKLMNOP1234',
       secretSources: { licenseKey: 'file', nrApiKey: 'unset', digestWebhookUrl: 'file' },
+      tiers: [
+        {
+          name: 'personal',
+          destination: { type: 'nr', licenseKey: 'NRAK-ABCDEFGHIJKLMNOP1234', accountId: '12345' },
+          eventTypes: ['*'],
+        },
+      ],
     } as unknown as Parameters<typeof createApiHandler>[0]['config'];
   }
 
@@ -6889,6 +7203,15 @@ describe('api-handler GET /api/settings', () => {
     await handler(req, res);
     return JSON.parse(body()) as Record<string, unknown>;
   }
+
+  it('reports the resolved tiers without their license keys', async () => {
+    const result = await getSettings(fakeStartupConfig(), makeConfigFile({}));
+
+    expect(result.primaryTier).toBe('personal');
+    expect(result.tiers).toEqual([
+      { name: 'personal', type: 'nr', accountId: '12345', primary: true, eventTypes: ['*'] },
+    ]);
+  });
 
   it('reports the file as the webhook source when nothing overrides it', async () => {
     const configFilePath = makeConfigFile({
@@ -7021,7 +7344,7 @@ describe('api-handler GET /api/settings', () => {
     expect(result.retainSessionsDays).toBe(30);
     expect(result.digestWebhookUrl).toBeNull();
     expect(result.digestWebhookUrlSource).toBe('unset');
-    expect(result.digestSchedule).toBe('0 9 * * 1');
+    expect(result).not.toHaveProperty('digestSchedule');
     expect(result.alerts.personal).toEqual({
       dailyCostUsd: 2,
       sessionCostUsd: 0.5,
@@ -7064,7 +7387,7 @@ describe('api-handler GET /api/settings', () => {
     expect(result.weeklyBudgetUsd).toBe(9999);
     expect(result.retainSessionsDays).toBe(7);
     expect(result.digestWebhookUrl).toBe('https://hooks.slack.com/services/T/B/DISK');
-    expect(result.digestSchedule).toBe('0 8 * * 2');
+    expect(result).not.toHaveProperty('digestSchedule');
     expect(result.alerts.personal).toEqual({
       dailyCostUsd: 1,
       sessionCostUsd: 0.1,
@@ -7115,6 +7438,116 @@ describe('api-handler GET /api/settings', () => {
     await handler(req, res);
     expect(status()).toBe(200);
     expect(JSON.parse(body()).licenseKey).toBeNull();
+  });
+});
+
+describe('api-handler GET /api/digest/preview', () => {
+  const tmpDirs: string[] = [];
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    for (const dir of tmpDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    global.fetch = originalFetch;
+  });
+
+  const fixtureSummary = {
+    week: '2026-W29',
+    totalCostUsd: 12.5,
+    avgEfficiencyScore: 0.8,
+    sessionCount: 4,
+    antiPatternCounts: { loop: 2 },
+  };
+
+  function fakeGenerator(summary: unknown) {
+    return {
+      generate: () => summary,
+      loadRecentWeeks: () => [],
+    } as unknown as Parameters<typeof createApiHandler>[0]['weeklySummaryGenerator'];
+  }
+
+  function makeConfigFile(content: Record<string, unknown>): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-digest-preview-test-'));
+    tmpDirs.push(dir);
+    const filePath = path.join(dir, 'config.json');
+    fs.writeFileSync(filePath, JSON.stringify(content, null, 2));
+    return filePath;
+  }
+
+  it('returns 503 when weeklySummaryGenerator is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/digest/preview' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'digest' });
+  });
+
+  it('returns the digest content with no webhook configured and makes no outbound request', async () => {
+    const fetchMock = jest.fn(async (_url: string, _init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+    }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const handler = createApiHandler({ weeklySummaryGenerator: fakeGenerator(fixtureSummary) });
+    const req = { method: 'GET', url: '/api/digest/preview' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const inner = JSON.parse(JSON.parse(body()).content[0].text);
+    expect(inner.week).toMatch(/^\d{4}-W\d{2}$/);
+    expect(inner.text).toContain('Total Cost: $12.5000');
+    expect(inner.blocks[0].type).toBe('header');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('shows the same Block Kit payload that the send route posts for the same summary', async () => {
+    const configFilePath = makeConfigFile({
+      digestWebhookUrl: 'https://hooks.slack.com/services/T/B/X',
+    });
+    const fetchMock = jest.fn(async (_url: string, _init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+    }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const handler = createApiHandler({
+      configFilePath,
+      weeklySummaryGenerator: fakeGenerator(fixtureSummary),
+    });
+
+    const previewRes = fakeRes();
+    await handler({ method: 'GET', url: '/api/digest/preview' } as IncomingMessage, previewRes.res);
+    const previewInner = JSON.parse(JSON.parse(previewRes.body()).content[0].text);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const sendRes = fakeRes();
+    await handler({ method: 'POST', url: '/api/digest/send' } as IncomingMessage, sendRes.res);
+    expect(sendRes.status()).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const sent = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(previewInner.blocks).toEqual(sent.blocks);
+  });
+
+  it('writes no weekly summary file on preview and writes one on send', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-digest-persist-test-'));
+    tmpDirs.push(dir);
+    const generator = new WeeklySummaryGenerator({
+      storagePath: dir,
+      sessionStore: new SessionStore({ storagePath: dir }),
+    });
+    const summariesDir = path.join(dir, 'weekly_summaries');
+    const configFilePath = makeConfigFile({
+      digestWebhookUrl: 'https://hooks.slack.com/services/T/B/X',
+    });
+    global.fetch = jest.fn(async () => ({ ok: true, status: 200 })) as unknown as typeof fetch;
+    const handler = createApiHandler({ configFilePath, weeklySummaryGenerator: generator });
+
+    await handler({ method: 'GET', url: '/api/digest/preview' } as IncomingMessage, fakeRes().res);
+    expect(fs.existsSync(summariesDir)).toBe(false);
+
+    await handler({ method: 'POST', url: '/api/digest/send' } as IncomingMessage, fakeRes().res);
+    expect(fs.readdirSync(summariesDir)).toEqual([`${getIsoWeekId(new Date())}.json`]);
   });
 });
 
@@ -9972,5 +10405,236 @@ describe('api-handler Today aggregate git identity reuse', () => {
       Date.now = realNow;
     }
     expect(gitCallCount(logFile)).toBe(afterFirst);
+  });
+});
+
+describe('api-handler reported spend settings', () => {
+  const tmpDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tmpDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function makeConfigFilePath(initial: Record<string, unknown> = {}): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-reported-spend-test-'));
+    tmpDirs.push(dir);
+    const filePath = path.join(dir, 'config.json');
+    fs.writeFileSync(filePath, JSON.stringify(initial, null, 2));
+    return filePath;
+  }
+
+  const config = {
+    personalAlertThresholds: {},
+    secretSources: {},
+    tiers: [],
+  } as unknown as NonNullable<Parameters<typeof createApiHandler>[0]['config']>;
+
+  async function call(
+    handler: ReturnType<typeof createApiHandler>,
+    method: 'GET' | 'PATCH',
+    url: string,
+    bodyObj?: unknown,
+  ): Promise<{ status: number; json: Record<string, unknown> }> {
+    const readable = Readable.from(
+      bodyObj === undefined ? [] : [Buffer.from(JSON.stringify(bodyObj))],
+    );
+    const req = readable as unknown as IncomingMessage;
+    req.method = method;
+    req.url = url;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    return { status: status(), json: JSON.parse(body()) as Record<string, unknown> };
+  }
+
+  const saved = (configFilePath: string): unknown =>
+    (JSON.parse(fs.readFileSync(configFilePath, 'utf-8')) as Record<string, unknown>).reportedSpend;
+
+  it('stamps asOf from the server clock on save and returns it from GET', async () => {
+    const configFilePath = makeConfigFilePath({ developer: 'kept' });
+    const handler = createApiHandler({ configFilePath, config });
+    const before = Date.now();
+
+    const patch = await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'daily', amountUsd: 42.5 },
+    });
+    const after = Date.now();
+
+    expect(patch.status).toBe(200);
+    expect(patch.json).toEqual({ ok: true, restartRequired: false });
+    const stored = saved(configFilePath) as Array<{
+      periodKind: string;
+      amountUsd: number;
+      asOf: string;
+    }>;
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ periodKind: 'daily', amountUsd: 42.5 });
+    expect(Date.parse(stored[0]!.asOf)).toBeGreaterThanOrEqual(before);
+    expect(Date.parse(stored[0]!.asOf)).toBeLessThanOrEqual(after);
+    expect(JSON.parse(fs.readFileSync(configFilePath, 'utf-8')).developer).toBe('kept');
+
+    const get = await call(handler, 'GET', '/api/settings');
+    expect(get.json.reportedSpend).toEqual(stored);
+  });
+
+  it('keeps the daily and weekly values separate and replaces one on a second save', async () => {
+    const configFilePath = makeConfigFilePath();
+    const handler = createApiHandler({ configFilePath, config });
+
+    await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'daily', amountUsd: 1 },
+    });
+    await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'weekly', amountUsd: 9 },
+    });
+    await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'daily', amountUsd: 2 },
+    });
+
+    const stored = saved(configFilePath) as Array<{ periodKind: string; amountUsd: number }>;
+    expect(stored.map((e) => [e.periodKind, e.amountUsd]).sort()).toEqual([
+      ['daily', 2],
+      ['weekly', 9],
+    ]);
+  });
+
+  it.each([
+    ['a negative amount', { periodKind: 'daily', amountUsd: -1 }],
+    ['a string amount', { periodKind: 'daily', amountUsd: '5' }],
+    ['an amount above the bound', { periodKind: 'daily', amountUsd: 1e12 }],
+    ['an unknown period', { periodKind: 'monthly', amountUsd: 5 }],
+    ['a client-supplied asOf', { periodKind: 'daily', amountUsd: 5, asOf: '2020-01-01T00:00:00Z' }],
+  ])('rejects %s and writes nothing', async (_name, reportedSpend) => {
+    const configFilePath = makeConfigFilePath({ developer: 'kept' });
+    const handler = createApiHandler({ configFilePath, config });
+
+    const { status, json } = await call(handler, 'PATCH', '/api/settings', { reportedSpend });
+
+    expect(status).toBe(400);
+    expect(json.error).toBe('validation_failed');
+    expect(saved(configFilePath)).toBeUndefined();
+  });
+
+  it('clears one period with a null amount and leaves the other', async () => {
+    const configFilePath = makeConfigFilePath();
+    const handler = createApiHandler({ configFilePath, config });
+    await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'daily', amountUsd: 1 },
+    });
+    await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'weekly', amountUsd: 9 },
+    });
+
+    const cleared = await call(handler, 'PATCH', '/api/settings', {
+      reportedSpend: { periodKind: 'daily', amountUsd: null },
+    });
+
+    expect(cleared.status).toBe(200);
+    const get = await call(handler, 'GET', '/api/settings');
+    expect(get.json.reportedSpend).toEqual([
+      expect.objectContaining({ periodKind: 'weekly', amountUsd: 9 }),
+    ]);
+  });
+
+  it('ignores malformed stored entries when reading settings', async () => {
+    const configFilePath = makeConfigFilePath({
+      reportedSpend: [
+        { periodKind: 'daily', amountUsd: 'x', asOf: '2026-01-01T00:00:00Z' },
+        { periodKind: 'weekly', amountUsd: 3, asOf: 'not a date' },
+        { periodKind: 'daily', amountUsd: 4, asOf: '2026-01-01T00:00:00Z' },
+      ],
+    });
+    const handler = createApiHandler({ configFilePath, config });
+
+    const get = await call(handler, 'GET', '/api/settings');
+
+    expect(get.json.reportedSpend).toEqual([
+      { periodKind: 'daily', amountUsd: 4, asOf: '2026-01-01T00:00:00Z' },
+    ]);
+  });
+
+  it('feeds the budget tracker nothing and leaves its status and alerts unchanged', async () => {
+    const configFilePath = makeConfigFilePath({ dailyBudgetUsd: 10, weeklyBudgetUsd: 20 });
+    const withoutReported = (): Record<string, unknown> => {
+      const { reportedSpend: _reported, ...rest } = JSON.parse(
+        fs.readFileSync(configFilePath, 'utf-8'),
+      ) as Record<string, unknown>;
+      return rest;
+    };
+    const diskBefore = withoutReported();
+    const thresholds: unknown[] = [];
+    const budgetTracker = new BudgetTracker({
+      sessionBudgetUsd: null,
+      dailyBudgetUsd: 10,
+      weeklyBudgetUsd: 20,
+      onThreshold: (event) => thresholds.push(event),
+    });
+    budgetTracker.updateCost(0, 6, 6);
+    const fired = thresholds.length;
+    const updateCost = jest.spyOn(budgetTracker, 'updateCost');
+    const handler = createApiHandler({ configFilePath, config, budgetTracker });
+    const before = await call(handler, 'GET', '/api/budget');
+
+    for (const periodKind of ['daily', 'weekly'] as const) {
+      const saved = await call(handler, 'PATCH', '/api/settings', {
+        reportedSpend: { periodKind, amountUsd: 500 },
+      });
+      expect(saved.status).toBe(200);
+    }
+    const after = await call(handler, 'GET', '/api/budget');
+
+    expect(updateCost).not.toHaveBeenCalled();
+    expect(thresholds).toHaveLength(fired);
+    expect(after.json).toEqual(before.json);
+    expect((after.json.daily as { spentUsd: number }).spentUsd).toBe(6);
+    expect((after.json.alerts as unknown[]).length).toBe(1);
+    expect(withoutReported()).toEqual(diskBefore);
+  });
+});
+
+describe('api-handler GET /api/task-completion', () => {
+  function completedTask(durationMs: number, toolCallCount: number): AiCodingTask {
+    return { durationMs, toolCallCount } as unknown as AiCodingTask;
+  }
+
+  it('returns 503 when taskCompletionTracker is missing', async () => {
+    const handler = createApiHandler({});
+    const req = { method: 'GET', url: '/api/task-completion' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(503);
+    expect(JSON.parse(body())).toEqual({ error: 'unavailable', what: 'taskCompletionTracker' });
+  });
+
+  it('returns the same numbers as the get_task_completion_rate MCP tool for the same tracker state', async () => {
+    const tracker = new TaskCompletionTracker();
+    tracker.recordTask(completedTask(60_000, 10));
+    tracker.recordTask(completedTask(180_000, 4));
+    const handler = createApiHandler({ taskCompletionTracker: tracker });
+    const req = { method: 'GET', url: '/api/task-completion' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    const mcpText = handleGetTaskCompletionRate(tracker).content[0].text;
+    expect(JSON.parse(body())).toEqual(JSON.parse(mcpText));
+    expect(JSON.parse(body())).toEqual({
+      completedTasks: 2,
+      avgTaskDurationMs: 120_000,
+      avgToolCallsPerTask: 7,
+    });
+  });
+
+  it('reports null averages when no task has completed', async () => {
+    const handler = createApiHandler({ taskCompletionTracker: new TaskCompletionTracker() });
+    const req = { method: 'GET', url: '/api/task-completion' } as IncomingMessage;
+    const { res, status, body } = fakeRes();
+    await handler(req, res);
+    expect(status()).toBe(200);
+    expect(JSON.parse(body())).toEqual({
+      completedTasks: 0,
+      avgTaskDurationMs: null,
+      avgToolCallsPerTask: null,
+    });
   });
 });

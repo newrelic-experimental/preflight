@@ -250,6 +250,7 @@ describe('computeHistoricalCosts', () => {
         endTime: local(15, 2),
         estimatedCostUsd: 8,
         toolCallCount: 0,
+        selfReportCount: 1,
       };
       place('idle', idle);
 

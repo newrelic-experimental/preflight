@@ -1,4 +1,4 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { jest, describe, it, expect, beforeAll, beforeEach, afterEach } from '@jest/globals';
 import type { ChildProcess } from 'node:child_process';
 import {
   appendFileSync,
@@ -9,10 +9,12 @@ import {
   rmSync,
   existsSync,
   readdirSync,
+  renameSync,
   utimesSync,
   realpathSync,
   readFileSync,
 } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -36,13 +38,15 @@ import {
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { DashboardServer } from './dashboard/dashboard-server.js';
 import { sanitizeCwdForFilename } from './hooks/session-resolver.js';
-import { SessionStore } from './storage/session-store.js';
+import { calculateCost } from './core/pricing.js';
+import { SessionStore, type FullSessionSummary } from './storage/session-store.js';
 import { appendToHookBuffer } from './storage/hook-buffer.js';
 import type { LocalStore } from './storage/index.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from './proxy/index.js';
 import type { NrIngestManager } from './transport/nr-ingest.js';
 import { UNFORWARDED_SESSIONS_HINT } from './transport/unforwarded-session-monitor.js';
 import { breadcrumbRoot } from './hooks/session-breadcrumbs.js';
+import { DRAINS_DIR, formatClaimName } from './storage/drain-claims.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -106,14 +110,19 @@ describe('parseArgs()', () => {
     expect(opts.config).toBe('/etc/nr.json');
   });
 
-  it('defaults log-level to info', () => {
+  it('leaves log-level unset when no flag is passed', () => {
     const opts = parseArgs([...base]);
-    expect(opts.logLevel).toBe('info');
+    expect(opts.logLevel).toBeUndefined();
   });
 
   it('parses --log-level flag', () => {
     const opts = parseArgs([...base, '--log-level', 'debug']);
     expect(opts.logLevel).toBe('debug');
+  });
+
+  it('drops an invalid --log-level value so the next source applies', () => {
+    const opts = parseArgs([...base, '--log-level', 'verbose']);
+    expect(opts.logLevel).toBeUndefined();
   });
 
   it('parses -l shorthand for log-level', () => {
@@ -697,6 +706,16 @@ describe('startRetentionSweep()', () => {
     clearInterval(handle as NodeJS.Timeout);
   });
 
+  it('removes week-old self-report claims on start', () => {
+    mkdirSync(resolve(storagePath, 'self-reports', 'conv-old'), { recursive: true });
+    const oldClaim = writeOldFile('self-reports/conv-old', 'report-old-1-0123456789abcdef');
+
+    const handle = startRetentionSweep({ storagePath, retainSessionsDays: 90 });
+
+    expect(existsSync(oldClaim)).toBe(false);
+    clearInterval(handle as NodeJS.Timeout);
+  });
+
   it('re-runs the sweep every 6 hours', () => {
     const handle = startRetentionSweep({ storagePath, retainSessionsDays: 90 });
 
@@ -883,6 +902,9 @@ function envWithoutTerminalPlatform(platformEnv: Record<string, string>): NodeJS
 }
 
 describe('stdio integration', () => {
+  // Windows has no `ps`, so no ancestor walk and no parent level in the correction watch.
+  const itOffWindows = process.platform === 'win32' ? it.skip : it;
+
   /**
    * Connects and waits for the engine's configured tool set. The engine answers
    * the handshake before its trackers exist, and until they do its tools return
@@ -1029,11 +1051,16 @@ describe('stdio integration', () => {
       const storagePath = mkdtempSync(join(tmpdir(), 'nr-engine-writer-storage-'));
       const projectCwd = mkdtempSync(join(tmpdir(), 'nr-engine-writer-project-'));
       const sanitizedCwd = sanitizeCwdForFilename(realpathSync(projectCwd));
-      const writeCrumb = (writer: string | null, kind: 'ppid' | 'cwd', sessionId: string) => {
+      const writeCrumb = (
+        writer: string | null,
+        kind: 'ppid' | 'cwd',
+        sessionId: string,
+        pid = process.pid,
+      ) => {
         const root = writer === null ? storagePath : breadcrumbRoot(storagePath, writer);
         const dir = resolve(root, `session-by-${kind}`);
         mkdirSync(dir, { recursive: true });
-        const key = kind === 'ppid' ? String(process.pid) : sanitizedCwd;
+        const key = kind === 'ppid' ? String(pid) : sanitizedCwd;
         writeFileSync(resolve(dir, `${key}.txt`), sessionId);
       };
       const transport = new StdioClientTransport({
@@ -1053,6 +1080,7 @@ describe('stdio integration', () => {
         stderr += chunk.toString('utf8');
       });
       const client = new Client({ name: 'test-client', version: '1.0.0' });
+      const store = new SessionStore({ storagePath });
       const stats = async (): Promise<{
         session_id: string;
         session_name: string | null;
@@ -1076,10 +1104,34 @@ describe('stdio integration', () => {
         return seen;
       };
       return {
+        storagePath,
+        sanitizedCwd,
+        cwd: realpathSync(projectCwd),
         writeCrumb,
         stats,
         sessionId,
         waitForSessionId,
+        reportTokens: (extra: Record<string, unknown> = {}) =>
+          client.callTool({
+            name: 'nr_observe_report_tokens',
+            arguments: { input_tokens: 100, output_tokens: 50, model: 'claude-sonnet-5', ...extra },
+          }),
+        waitForCheckpoint: async (id: string): Promise<boolean> => {
+          for (let i = 0; i < 20 && !store.loadSession(id); i++) {
+            await new Promise((r) => setTimeout(r, 250));
+          }
+          return store.loadSession(id) !== null;
+        },
+        saveSession: (summary: FullSessionSummary) => store.saveSession(summary),
+        loadSession: (id: string) => store.loadSession(id),
+        budgetAlerts: async (): Promise<Array<{ period: string }>> => {
+          const result = await client.callTool({
+            name: 'nr_observe_get_budget_status',
+            arguments: {},
+          });
+          const content = result.content as Array<{ type: string; text: string }>;
+          return JSON.parse(content[0]?.text ?? '{}').alerts ?? [];
+        },
         stderr: () => stderr,
         connect: () => client.connect(transport),
         close: async () => {
@@ -1103,6 +1155,67 @@ describe('stdio integration', () => {
         await pastSeveralPollTicks();
         expect(await engine.sessionId()).toBeNull();
         expect(engine.stderr()).not.toContain('breadcrumb poll');
+      } finally {
+        await engine.close();
+      }
+    }, 30000);
+
+    it('hands an engine configured as MCP_CLIENT=Cursor, with no hook installed, the hook-recorded report tool', async () => {
+      const home = mkdtempSync(join(tmpdir(), 'nr-engine-cursor-home-'));
+      const engine = await startEngine({ MCP_CLIENT: 'Cursor', HOME: home, USERPROFILE: home });
+      try {
+        await engine.connect();
+        const result = await engine.reportTokens({ report_id: 'cursor-report-1' });
+        const content = result.content as Array<{ type: string; text: string }>;
+        expect(JSON.parse(content[0]?.text ?? '{}')).toMatchObject({
+          recorded_by: 'hook',
+          report_id: 'cursor-report-1',
+          hooks_detected: false,
+          message: expect.stringContaining("Preflight's hook was not detected"),
+        });
+      } finally {
+        await engine.close();
+        rmSync(home, { recursive: true, force: true });
+      }
+    }, 30000);
+
+    it('lets a Codex engine adopt its unstamped hook run inside a Claude Code shell, and keeps Claude Code off it', async () => {
+      const engine = await startEngine({ MCP_CLIENT: 'codex' });
+      try {
+        await engine.connect();
+        const hook = spawnSync(
+          'node',
+          [resolve(__dirname, '..', 'dist', 'hooks', 'collector-script.js'), 'pre-tool'],
+          {
+            input: JSON.stringify({
+              session_id: 'codex-session-id',
+              cwd: engine.cwd,
+              hook_event_name: 'PreToolUse',
+              tool_name: 'Bash',
+              tool_input: { command: 'ls' },
+              tool_use_id: 'toolu_codex',
+            }),
+            env: {
+              ...envWithoutTerminalPlatform({
+                CLAUDECODE: '1',
+                CLAUDE_CODE_SESSION_ID: 'claude-session-id',
+              }),
+              NEW_RELIC_AI_MCP_STORAGE_PATH: engine.storagePath,
+            },
+            timeout: 5000,
+          },
+        );
+        expect(hook.status).toBe(0);
+        expect(await engine.waitForSessionId('codex-session-id')).toBe('codex-session-id');
+        expect(
+          existsSync(
+            resolve(
+              breadcrumbRoot(engine.storagePath, 'claude-code'),
+              'session-by-cwd',
+              `${engine.sanitizedCwd}.txt`,
+            ),
+          ),
+        ).toBe(false);
       } finally {
         await engine.close();
       }
@@ -1176,6 +1289,176 @@ describe('stdio integration', () => {
         await engine.close();
       }
     }, 30000);
+
+    itOffWindows(
+      "corrects a Kiro engine that adopted an older collector's session from a shared ancestor once its own hooks write",
+      async () => {
+        const engine = await startEngine({ MCP_CLIENT: 'kiro' });
+        const heartbeat = resolve(engine.storagePath, 'active-claude-session-id.pid');
+        writeFileSync(heartbeat, String(process.pid));
+        try {
+          await engine.connect();
+          engine.writeCrumb(null, 'ppid', 'claude-session-id', process.ppid);
+          expect(await engine.waitForSessionId('claude-session-id')).toBe('claude-session-id');
+          engine.writeCrumb('kiro', 'ppid', 'kiro-session-id');
+          expect(await engine.waitForSessionId('kiro-session-id')).toBe('kiro-session-id');
+          expect(existsSync(heartbeat) && readFileSync(heartbeat, 'utf8')).toBe(
+            String(process.pid),
+          );
+        } finally {
+          await engine.close();
+        }
+      },
+      30000,
+    );
+
+    itOffWindows(
+      "starts a corrected session from zero, not from the ancestor session's checkpoint",
+      async () => {
+        const now = Date.now();
+        const engine = await startEngine({
+          MCP_CLIENT: 'kiro',
+          NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+          NEW_RELIC_AI_SESSION_BUDGET_USD: '0.004',
+        });
+        try {
+          engine.saveSession({
+            sessionId: 'claude-session-id',
+            startTime: now - 3_600_000,
+            endTime: now - 1000,
+            durationMs: 3_599_000,
+            toolCallCount: 40,
+            filesRead: ['/f/read.ts'],
+            filesModified: ['/f/mod.ts'],
+            linesAdded: 500,
+            linesRemoved: 50,
+            testRunCount: 9,
+            testPassCount: 8,
+            estimatedCostUsd: 4.2,
+            qualityProxy: {
+              totalSignals: 6,
+              diffApplyCleanCount: 3,
+              diffFailCount: 1,
+              testPassCount: 1,
+              testFailCount: 1,
+              backtrackCount: 0,
+              selfCorrectionCount: 0,
+            },
+            taskCount: 7,
+            agentSpawns: 2,
+            efficiencyScore: 0.9,
+            efficiencyScoreComponents: {
+              speed: 0.9,
+              correctness: 0.9,
+              autonomy: 0.9,
+              firstAttemptQuality: 0.9,
+            },
+            efficiencyScoreSampleCount: 5,
+            outcome: 'in progress',
+          } as FullSessionSummary);
+          await engine.connect();
+          engine.writeCrumb(null, 'ppid', 'claude-session-id', process.ppid);
+          expect(await engine.waitForSessionId('claude-session-id')).toBe('claude-session-id');
+          engine.writeCrumb('kiro', 'ppid', 'kiro-session-id');
+          expect(await engine.waitForSessionId('kiro-session-id')).toBe('kiro-session-id');
+          appendToHookBuffer(
+            resolve(engine.storagePath, 'buffer-kiro-session-id.jsonl'),
+            JSON.stringify({
+              mode: 'token',
+              timestamp: Date.now(),
+              sessionId: 'kiro-session-id',
+              messageId: 'msg_1',
+              inputTokens: 1000,
+              outputTokens: 100,
+              model: 'claude-sonnet-5',
+            }) + '\n',
+          );
+          expect(await engine.waitForCheckpoint('kiro-session-id')).toBe(true);
+          await new Promise((r) => setTimeout(r, 600));
+          const saved = engine.loadSession('kiro-session-id');
+          expect({
+            taskCount: saved?.taskCount,
+            linesAdded: saved?.linesAdded,
+            testRunCount: saved?.testRunCount,
+            filesModified: saved?.filesModified,
+            agentSpawns: saved?.agentSpawns,
+            qualitySignals: saved?.qualityProxy?.totalSignals ?? 0,
+            efficiencyScore: saved?.efficiencyScore ?? null,
+          }).toEqual({
+            taskCount: 0,
+            linesAdded: 0,
+            testRunCount: 0,
+            filesModified: [],
+            agentSpawns: 0,
+            qualitySignals: 0,
+            efficiencyScore: null,
+          });
+          expect((await engine.budgetAlerts()).some((a) => a.period === 'session')).toBe(true);
+        } finally {
+          await engine.close();
+        }
+      },
+      30000,
+    );
+
+    itOffWindows(
+      'keeps an ancestor adoption its own ppid breadcrumb confirms, seeded once',
+      async () => {
+        const now = Date.now();
+        const engine = await startEngine({
+          MCP_CLIENT: 'kiro',
+          NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+        });
+        try {
+          engine.saveSession({
+            sessionId: 'kiro-session-id',
+            startTime: now - 3_600_000,
+            endTime: now - 1000,
+            durationMs: 3_599_000,
+            toolCallCount: 40,
+            estimatedCostUsd: 4.2,
+            taskCount: 7,
+            outcome: 'in progress',
+          } as FullSessionSummary);
+          await engine.connect();
+          engine.writeCrumb('kiro', 'ppid', 'kiro-session-id', process.ppid);
+          expect(await engine.waitForSessionId('kiro-session-id')).toBe('kiro-session-id');
+          engine.writeCrumb('kiro', 'ppid', 'kiro-session-id');
+          await new Promise((r) => setTimeout(r, 3000));
+          expect(engine.stderr()).not.toContain('Correcting the adopted session id');
+          await engine.reportTokens();
+          await new Promise((r) => setTimeout(r, 800));
+          const saved = engine.loadSession('kiro-session-id');
+          expect(saved?.toolCallCount).toBe(40);
+          expect(saved?.taskCount).toBe(7);
+          expect(saved?.estimatedCostUsd).toBeGreaterThan(4.2);
+          expect(saved?.estimatedCostUsd).toBeLessThan(4.21);
+        } finally {
+          await engine.close();
+        }
+      },
+      30000,
+    );
+
+    itOffWindows(
+      'checkpoints a session adopted from an ancestor breadcrumb without waiting for its ppid one',
+      async () => {
+        const engine = await startEngine({
+          MCP_CLIENT: 'kiro',
+          NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+        });
+        try {
+          await engine.connect();
+          engine.writeCrumb('kiro', 'ppid', 'kiro-session-id', process.ppid);
+          expect(await engine.waitForSessionId('kiro-session-id')).toBe('kiro-session-id');
+          await engine.reportTokens();
+          expect(await engine.waitForCheckpoint('kiro-session-id')).toBe(true);
+        } finally {
+          await engine.close();
+        }
+      },
+      30000,
+    );
   });
 
   it('self-corrects a synchronously-resolved cwd session id once the real PPID breadcrumb appears', async () => {
@@ -1475,7 +1758,14 @@ describe('stdio integration', () => {
 
   describe('an engine that adopts its session after draining others', () => {
     const storages: string[] = [];
+    let pausedPid: number | undefined;
     afterEach(() => {
+      if (pausedPid !== undefined) {
+        try {
+          process.kill(pausedPid, 'SIGCONT');
+        } catch {}
+        pausedPid = undefined;
+      }
       for (const dir of storages.splice(0)) rmSync(dir, { recursive: true, force: true });
     });
     const CHECKPOINT_OFTEN = { NR_AI_SESSION_PERSIST_INTERVAL_MS: '200' };
@@ -1491,31 +1781,32 @@ describe('stdio integration', () => {
       const env: NodeJS.ProcessEnv = { ...process.env, MCP_CLIENT: 'claude-code' };
       delete env.CLAUDE_JOB_DIR;
       const client = new Client({ name: 'test-client', version: '1.0.0' });
-      await connectToConfiguredEngine(
-        client,
-        new StdioClientTransport({
-          command: 'node',
-          args: [resolve(__dirname, '..', 'dist', 'index.js'), '--stdio'],
-          ...(cwd !== undefined && { cwd }),
-          env: {
-            ...env,
-            NR_AI_DASHBOARD_PORT: '0',
-            NR_AI_MODE: 'local',
-            NEW_RELIC_AI_MCP_STORAGE_PATH: storage,
-            ...envOverrides,
-          },
-        }),
-      );
-      return client;
+      const transport = new StdioClientTransport({
+        command: 'node',
+        args: [resolve(__dirname, '..', 'dist', 'index.js'), '--stdio'],
+        ...(cwd !== undefined && { cwd }),
+        env: {
+          ...env,
+          NR_AI_DASHBOARD_PORT: '0',
+          NR_AI_MODE: 'local',
+          NEW_RELIC_AI_MCP_STORAGE_PATH: storage,
+          ...envOverrides,
+        },
+      });
+      await connectToConfiguredEngine(client, transport);
+      const pid = transport.pid;
+      if (pid === null) throw new Error('engine has no pid: spawn failed');
+      return Object.assign(client, { pid });
     };
-    const drainCalls = async (storage: string, sessionId: string, count: number, from = 0) => {
+    let drainedCalls = 0;
+    const drainCalls = async (storage: string, sessionId: string, count: number) => {
       const buffer = resolve(storage, `buffer-${sessionId}.jsonl`);
       const lines = Array.from({ length: count }, (_, n) => {
         const call = {
           tool: 'Read',
           timestamp: Date.now() + n,
           sessionId,
-          toolUseId: `toolu_${from + n}`,
+          toolUseId: `toolu_drained_${++drainedCalls}`,
         };
         return [
           { mode: 'pre', ...call },
@@ -1653,6 +1944,199 @@ describe('stdio integration', () => {
       expect(savedField(storage, 'own-real-session', 'estimatedCostUsd')).toBeGreaterThan(0);
     }, 30000);
 
+    const writeCall = (
+      storage: string,
+      sessionId: string | null,
+      toolUseId: string,
+      call: object,
+    ) => {
+      const event = { timestamp: Date.now(), ...(sessionId && { sessionId }), toolUseId, ...call };
+      const buffer = resolve(storage, `buffer-${sessionId ?? 'unknown'}.jsonl`);
+      appendToHookBuffer(buffer, JSON.stringify({ mode: 'pre', ...event }) + '\n');
+      appendToHookBuffer(buffer, JSON.stringify({ mode: 'post', ...event }) + '\n');
+    };
+    const toolResult = async (client: Client, name: string) => {
+      const result = await client.callTool({ name, arguments: {} });
+      return JSON.parse((result.content as Array<{ text: string }>)[0]!.text) as Record<
+        string,
+        unknown
+      >;
+    };
+
+    describe('its trackers after it adopts, having drained another session', () => {
+      const failingTest = { tool: 'Bash', toolInput: { command: 'npm test' }, success: false };
+      const ownRead = {
+        tool: 'Read',
+        toolInput: { file_path: '/own/a.ts' },
+        success: true,
+        inputSize: 4000,
+        outputSize: 4000,
+      };
+      let report: Record<string, Record<string, unknown>>;
+
+      beforeAll(async () => {
+        const storage = makeStorage();
+        const client = await startEngine(storage);
+        for (let n = 0; n < 3; n++)
+          writeCall(storage, 'other-real-session', `toolu_o${n}`, failingTest);
+        writeCall(storage, 'own-real-session', 'toolu_own', ownRead);
+        writeCall(storage, null, 'toolu_none', { tool: 'Grep', success: true });
+        const noSession = resolve(storage, 'buffer-unknown.jsonl');
+        await waitFor(
+          () =>
+            !existsSync(resolve(storage, 'buffer-other-real-session.jsonl')) &&
+            !existsSync(resolve(storage, 'buffer-own-real-session.jsonl')),
+        );
+        const heartbeat = resolve(storage, 'active-own-real-session.pid');
+        writeFileSync(
+          resolve(storage, 'session-by-ppid', `${process.pid}.txt`),
+          'own-real-session',
+        );
+        await waitFor(() => existsSync(heartbeat) && !existsSync(noSession));
+        await toolResult(client, 'nr_observe_mark_task_boundary');
+        report = {
+          latency: await toolResult(client, 'nr_observe_get_latency_percentiles'),
+          quality: await toolResult(client, 'nr_observe_get_quality_proxy'),
+          retry: await toolResult(client, 'nr_observe_get_retry_alerts'),
+          turns: await toolResult(client, 'nr_observe_get_turn_analysis'),
+          task: await toolResult(client, 'nr_observe_get_workflow_trace'),
+          cost: await toolResult(client, 'nr_observe_get_cost_breakdown'),
+        };
+        await client.close();
+        await waitFor(() => !existsSync(heartbeat));
+      }, 30000);
+
+      it('times its own call and the one with no session id', () => {
+        expect(report.latency.overall).toMatchObject({ count: 2 });
+      });
+
+      it('takes no quality signal from the other session', () => {
+        expect(report.quality.totalSignals).toBe(0);
+      });
+
+      it("raises no retry alert for the other session's repeats", () => {
+        expect(report.retry.totalAlertsEmitted).toBe(0);
+      });
+
+      it('puts only those two calls in a turn', () => {
+        const turns = report.turns.recentTurns as Array<{ toolCount: number }>;
+        expect(turns.map((t) => t.toolCount)).toEqual([2]);
+      });
+
+      it('closes a task holding only those two calls', () => {
+        const calls = report.task.tool_calls as Array<{ tool: string }>;
+        expect(calls.map((c) => c.tool).sort()).toEqual(['Grep', 'Read']);
+      });
+
+      it('prices none of the calls it drained while pending from their sizes', () => {
+        expect(report.cost.total_usd).toBe(0);
+      });
+    });
+
+    describe('its turns and tasks when it adopts after its own calls, tokens and boundaries', () => {
+      const own = 'own-real-session';
+      const base = Date.now() - 120_000;
+      const line = (storage: string, frame: object) =>
+        appendToHookBuffer(
+          resolve(storage, `buffer-${own}.jsonl`),
+          JSON.stringify({ sessionId: own, ...frame }) + '\n',
+        );
+      const burst = (storage: string, tool: string, at: number, inputTokens: number) => {
+        writeCall(storage, own, `toolu_${tool}`, { tool, timestamp: at, success: true });
+        line(storage, {
+          mode: 'token',
+          timestamp: at + 1_000,
+          messageId: `msg_${tool}`,
+          inputTokens,
+          outputTokens: 0,
+          model: 'claude-sonnet-5',
+        });
+      };
+      let turns: Array<{ toolNames: string[]; inputTokens: number }>;
+      let completedTasks: unknown[];
+      let skills: string[];
+
+      beforeAll(async () => {
+        const storage = makeStorage();
+        const client = await startEngine(storage);
+        const ownBuffer = resolve(storage, `buffer-${own}.jsonl`);
+        line(storage, { mode: 'user_prompt_submit', timestamp: base, slashCommand: 'own-skill' });
+        appendToHookBuffer(
+          resolve(storage, 'buffer-other-real-session.jsonl'),
+          JSON.stringify({
+            mode: 'user_prompt_submit',
+            sessionId: 'other-real-session',
+            timestamp: base,
+            slashCommand: 'other-skill',
+          }) + '\n',
+        );
+        burst(storage, 'Read', base + 100, 1_000);
+        line(storage, { mode: 'stop', timestamp: base + 1_500 });
+        line(storage, { mode: 'user_prompt_submit', timestamp: base + 10_000 });
+        burst(storage, 'Bash', base + 10_100, 2_000);
+        line(storage, { mode: 'stop', timestamp: base + 11_500 });
+        await waitFor(
+          () =>
+            !existsSync(ownBuffer) &&
+            !existsSync(resolve(storage, 'buffer-other-real-session.jsonl')),
+        );
+        const heartbeat = resolve(storage, `active-${own}.pid`);
+        writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), own);
+        await waitFor(() => existsSync(heartbeat));
+        burst(storage, 'Grep', base + 20_100, 3_000);
+        burst(storage, 'Glob', base + 30_100, 4_000);
+        await waitFor(() => !existsSync(ownBuffer));
+        const costPerTool = await toolResult(client, 'nr_observe_get_cost_per_tool');
+        turns = costPerTool.turns as typeof turns;
+        skills = Object.keys(costPerTool.costBySkill as object);
+        completedTasks = (await toolResult(client, 'nr_observe_get_cost_breakdown'))
+          .by_task as unknown[];
+        await client.close();
+        await waitFor(() => !existsSync(heartbeat));
+      }, 30000);
+
+      it('prices each burst with its own token report', () => {
+        expect(turns.map((t) => [t.toolNames, t.inputTokens])).toEqual([
+          [['Read'], 1_000],
+          [['Bash'], 2_000],
+          [['Grep'], 3_000],
+          [['Glob'], 4_000],
+        ]);
+      });
+
+      it('closes a task at each of its own Stops from before adoption', () => {
+        expect(completedTasks).toHaveLength(2);
+      });
+
+      it("counts its own slash-command run and not the other session's", () => {
+        expect(skills).toEqual(['own-skill']);
+      });
+    });
+
+    it('times each of its own calls once when it adopts its session mid-stream', async () => {
+      const storage = makeStorage();
+      const client = await startEngine(storage);
+      const heartbeat = resolve(storage, 'active-own-real-session.pid');
+      let n = 0;
+      const writer = setInterval(() => {
+        writeCall(storage, 'own-real-session', `toolu_${n++}`, { tool: 'Read', success: true });
+      }, 2);
+      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), 'own-real-session');
+      try {
+        await waitFor(() => existsSync(heartbeat));
+      } finally {
+        clearInterval(writer);
+      }
+      await waitFor(() => !existsSync(resolve(storage, 'buffer-own-real-session.jsonl')));
+      const stats = await toolResult(client, 'nr_observe_get_session_stats');
+      const latency = await toolResult(client, 'nr_observe_get_latency_percentiles');
+      await client.close();
+      await waitFor(() => !existsSync(heartbeat));
+
+      expect(stats.tool_calls).toBe(n);
+      expect(latency.overall).toMatchObject({ count: n });
+    }, 30000);
+
     it('saves no session but the guessed one when the ppid breadcrumb corrects the guess', async () => {
       const storage = makeStorage();
       const cwd = makeCwd();
@@ -1710,14 +2194,17 @@ describe('stdio integration', () => {
       for (let i = 0; i < 20 && read() !== want; i++) await new Promise((r) => setTimeout(r, 250));
       return read();
     };
-    const startOwner = async (storage: string, id: string) => {
+    const startOwner = async (storage: string, id: string, envOverrides = {}) => {
       const jobDir = mkdtempSync(join(tmpdir(), 'nr-adopt-job-'));
       storages.push(jobDir);
       writeFileSync(
         resolve(jobDir, 'state.json'),
         JSON.stringify({ linkScanPath: `/x/${id}.jsonl` }),
       );
-      const client = await startEngine(storage, undefined, { CLAUDE_JOB_DIR: jobDir });
+      const client = await startEngine(storage, undefined, {
+        CLAUDE_JOB_DIR: jobDir,
+        ...envOverrides,
+      });
       await waitFor(() => existsSync(resolve(storage, `active-${id}.pid`)));
       return client;
     };
@@ -1805,6 +2292,55 @@ describe('stdio integration', () => {
       expect(savedCalls(storage, 'other-real-session')).toBe(1);
     }, 30000);
 
+    it('counts a call once when another engine drained its post and saved before this one adopted', async () => {
+      const storage = makeStorage();
+      const client = await startEngine(storage);
+      writeHook(storage, 'own-real-session', 'pre', 'toolu_split');
+      await waitFor(drained(storage, 'own-real-session'));
+      const owner = await startOwner(storage, 'own-real-session');
+      writeHook(storage, 'own-real-session', 'post', 'toolu_split');
+      await waitFor(drained(storage, 'own-real-session'));
+      await stopOwner(storage, owner, 'own-real-session');
+      const savedByOwner = savedCalls(storage, 'own-real-session');
+      await adoptAndStop(storage, client, 'own-real-session');
+
+      expect(savedByOwner).toBe(1);
+      expect(savedCalls(storage, 'own-real-session')).toBe(1);
+    }, 30000);
+
+    it("adds no call that the session's file already holds when its counted mark is missing", async () => {
+      const storage = makeStorage();
+      const owner = await startOwner(storage, 'other-real-session');
+      writeHook(storage, 'other-real-session', 'pre', 'toolu_split');
+      await waitFor(drained(storage, 'other-real-session'));
+      await stopOwner(storage, owner, 'other-real-session');
+      expect(savedCalls(storage, 'other-real-session')).toBe(1);
+      rmSync(resolve(storage, 'counted'), { recursive: true, force: true });
+      const client = await startEngine(storage);
+      writeHook(storage, 'other-real-session', 'post', 'toolu_split');
+      await waitFor(drained(storage, 'other-real-session'));
+      await adoptAndStop(storage, client, 'own-real-session');
+
+      expect(savedCalls(storage, 'other-real-session')).toBe(1);
+    }, 30000);
+
+    it('adds no call the file held before its first checkpoint, at a later checkpoint', async () => {
+      const storage = makeStorage();
+      const owner = await startOwner(storage, 'other-real-session');
+      writeHook(storage, 'other-real-session', 'pre', 'toolu_split');
+      await waitFor(drained(storage, 'other-real-session'));
+      await stopOwner(storage, owner, 'other-real-session');
+      rmSync(resolve(storage, 'counted'), { recursive: true, force: true });
+      const client = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
+      await drainCalls(storage, 'other-real-session', 1);
+      await waitFor(() => savedCalls(storage, 'other-real-session') === 2);
+      writeHook(storage, 'other-real-session', 'post', 'toolu_split');
+      await waitFor(drained(storage, 'other-real-session'));
+      await adoptAndStop(storage, client, 'own-real-session');
+
+      expect(savedCalls(storage, 'other-real-session')).toBe(2);
+    }, 30000);
+
     it('counts a guess once when a correction saves what its own checkpoint already saved', async () => {
       const storage = makeStorage();
       const cwd = makeCwd();
@@ -1882,66 +2418,100 @@ describe('stdio integration', () => {
         }
         return seen;
       };
-      const startWithSessionDrained = async (storage: string) => {
-        const first = await startEngine(storage);
-        await drainCalls(storage, id, 1);
-        const checkpointing = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
-        let next = 1;
-        for (; next <= 20 && savedCalls(storage, id) === null; next++) {
-          // Both engines poll every 100 ms, so a fixed phase could hand every call to one of them.
-          await sleep((next * 37) % 100);
-          await drainCalls(storage, id, 1, next);
-          for (let i = 0; i < 6 && savedCalls(storage, id) === null; i++) {
-            await sleep(100);
-          }
-        }
-        expect(savedCalls(storage, id)).not.toBeNull();
-        return { first, checkpointing, next };
-      };
-
-      it('stays completed across its checkpoints after a pending engine with no live owner completes it', async () => {
-        const storage = makeStorage();
-        const { first, checkpointing } = await startWithSessionDrained(storage);
-        await first.close();
-        await waitFor(() => outcome(storage) === 'completed');
-
-        expect(await outcomesEvery100Ms(storage, 15)).toEqual(Array(15).fill('completed'));
-        await checkpointing.close();
-        expect(outcome(storage)).toBe('completed');
-      }, 60000);
-
-      it('goes back in progress after a pending engine completes it when the session makes a new call', async () => {
-        const storage = makeStorage();
-        const { first, checkpointing, next } = await startWithSessionDrained(storage);
-        await first.close();
-        await waitFor(() => outcome(storage) === 'completed');
-
-        await drainCalls(storage, id, 1, next);
-        await waitFor(() => outcome(storage) === 'in progress');
-        await checkpointing.close();
-        await waitFor(() => outcome(storage) === 'completed');
-      }, 60000);
-
-      it('stays completed across its checkpoints after its own engine completes it', async () => {
-        const storage = makeStorage();
-        const checkpointing = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
-        await drainCalls(storage, id, 1);
-        await waitFor(() => savedCalls(storage, id) === 1);
+      const ownerJobDir = () => {
         const jobDir = mkdtempSync(join(tmpdir(), 'nr-owner-job-'));
         storages.push(jobDir);
         writeFileSync(
           resolve(jobDir, 'state.json'),
           JSON.stringify({ linkScanPath: `/fake/transcript/${id}.jsonl` }),
         );
-        const owner = await startEngine(storage, undefined, { CLAUDE_JOB_DIR: jobDir });
+        return jobDir;
+      };
+      const startWithSessionDrained = async (storage: string) => {
+        const first = await startEngine(storage);
+        await drainCalls(storage, id, 1);
+        const checkpointing = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
+        // Paused, the first engine cannot win the race to drain the next call.
+        process.kill(first.pid, 'SIGSTOP');
+        pausedPid = first.pid;
+        try {
+          await drainCalls(storage, id, 1);
+          await waitFor(() => savedCalls(storage, id) !== null);
+        } finally {
+          process.kill(first.pid, 'SIGCONT');
+          pausedPid = undefined;
+        }
+        return { first, checkpointing };
+      };
+
+      itOffWindows(
+        'stays completed across its checkpoints after a pending engine with no live owner completes it',
+        async () => {
+          const storage = makeStorage();
+          const { first, checkpointing } = await startWithSessionDrained(storage);
+          await first.close();
+          await waitFor(() => outcome(storage) === 'completed');
+
+          expect(await outcomesEvery100Ms(storage, 15)).toEqual(Array(15).fill('completed'));
+          await checkpointing.close();
+          expect(outcome(storage)).toBe('completed');
+        },
+        60000,
+      );
+
+      itOffWindows(
+        'goes back in progress after a pending engine completes it when the session makes a new call',
+        async () => {
+          const storage = makeStorage();
+          const { first, checkpointing } = await startWithSessionDrained(storage);
+          await first.close();
+          await waitFor(() => outcome(storage) === 'completed');
+
+          await drainCalls(storage, id, 1);
+          await waitFor(() => outcome(storage) === 'in progress');
+          await checkpointing.close();
+          await waitFor(() => outcome(storage) === 'completed');
+        },
+        60000,
+      );
+
+      it('stays completed across its checkpoints after its own engine completes it', async () => {
+        const storage = makeStorage();
+        const checkpointing = await startEngine(storage, undefined, CHECKPOINT_OFTEN);
+        await drainCalls(storage, id, 1);
+        await waitFor(() => savedCalls(storage, id) === 1);
+        const owner = await startEngine(storage, undefined, { CLAUDE_JOB_DIR: ownerJobDir() });
         await waitFor(() => existsSync(resolve(storage, `active-${id}.pid`)));
-        await drainCalls(storage, id, 1, 1);
+        await drainCalls(storage, id, 1);
         await owner.close();
         await waitFor(() => outcome(storage) === 'completed');
 
         expect(await outcomesEvery100Ms(storage, 15)).toEqual(Array(15).fill('completed'));
         await checkpointing.close();
         expect(outcome(storage)).toBe('completed');
+      }, 60000);
+
+      it('goes back in progress while a resumed engine runs after its own engine completes it', async () => {
+        const storage = makeStorage();
+        const jobDir = ownerJobDir();
+        const heartbeat = resolve(storage, `active-${id}.pid`);
+        const owner = await startEngine(storage, undefined, { CLAUDE_JOB_DIR: jobDir });
+        await waitFor(() => existsSync(heartbeat));
+        await drainCalls(storage, id, 1);
+        await owner.close();
+        await waitFor(() => outcome(storage) === 'completed');
+
+        const resumed = await startEngine(storage, undefined, {
+          ...CHECKPOINT_OFTEN,
+          CLAUDE_JOB_DIR: jobDir,
+        });
+        await waitFor(() => existsSync(heartbeat));
+        writeHook(storage, id, 'pre', 'toolu_resumed');
+        writeHook(storage, id, 'post', 'toolu_resumed');
+        await waitFor(drained(storage, id));
+        await waitFor(() => outcome(storage) === 'in progress');
+        await resumed.close();
+        await waitFor(() => outcome(storage) === 'completed');
       }, 60000);
     });
 
@@ -2195,6 +2765,42 @@ describe('stdio integration', () => {
       expect(retaken).toBe(true);
     }, 30000);
 
+    const readHeartbeat = (storage: string, id: string): string | null => {
+      const heartbeat = resolve(storage, `active-${id}.pid`);
+      return existsSync(heartbeat) ? readFileSync(heartbeat, 'utf-8') : null;
+    };
+
+    it('takes back the heartbeat when a later engine of its session exits first', async () => {
+      const storage = makeStorage();
+      const survivor = await startOwner(storage, 'shared-session', CHECKPOINT_OFTEN);
+      const survivorPid = readHeartbeat(storage, 'shared-session');
+      const later = await startOwner(storage, 'shared-session');
+      await waitFor(() => readHeartbeat(storage, 'shared-session') !== survivorPid);
+      await later.close();
+      const retaken = await settle(() => readHeartbeat(storage, 'shared-session'), survivorPid);
+      await stopOwner(storage, survivor, 'shared-session');
+
+      expect(retaken).toBe(survivorPid);
+    }, 30000);
+
+    it('takes back the heartbeat when a confirmed guess of its session exits first', async () => {
+      const storage = makeStorage();
+      const survivor = await startOwner(storage, 'guessed-session', CHECKPOINT_OFTEN);
+      const survivorPid = readHeartbeat(storage, 'guessed-session');
+      const cwd = makeCwd();
+      guessFromCwd(storage, cwd);
+      const guessing = await startEngine(storage, cwd);
+      const ppidCrumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-ppid');
+      mkdirSync(ppidCrumbs, { recursive: true });
+      writeFileSync(resolve(ppidCrumbs, `${process.pid}.txt`), 'guessed-session');
+      await waitFor(() => readHeartbeat(storage, 'guessed-session') !== survivorPid);
+      await guessing.close();
+      const retaken = await settle(() => readHeartbeat(storage, 'guessed-session'), survivorPid);
+      await stopOwner(storage, survivor, 'guessed-session');
+
+      expect(retaken).toBe(survivorPid);
+    }, 30000);
+
     it("leaves a live engine's heartbeat alone at each checkpoint of a cwd guess", async () => {
       const storage = makeStorage();
       const owner = await startOwner(storage, 'guessed-session');
@@ -2303,6 +2909,1145 @@ describe('stdio integration', () => {
         expect(existsSync(path)).toBe(false);
       });
     }, 30000);
+  });
+
+  const freePort = async (): Promise<string> => {
+    const { createServer: createNetServer } = await import('node:net');
+    return new Promise((resolvePort, reject) => {
+      const srv = createNetServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close((err) => (err ? reject(err) : resolvePort(String(p))));
+      });
+      srv.on('error', reject);
+    });
+  };
+  const dashboardApi =
+    (port: string) =>
+    async (path: string): Promise<Record<string, unknown> | null> =>
+      fetch(`http://127.0.0.1:${port}${path}`)
+        .then((r) => r.json() as Promise<Record<string, unknown>>)
+        .catch(() => null);
+  const pollUntil = async <T>(read: () => Promise<T>, done: (v: T) => boolean): Promise<T> => {
+    let value = await read();
+    for (let i = 0; i < 40 && !done(value); i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      value = await read();
+    }
+    return value;
+  };
+  type Spend = {
+    daily: { spentUsd: number };
+    session: { spentUsd: number };
+    alerts: Array<{ period: string; thresholdPct: number; timestamp: number }>;
+  };
+  const spendOf = (budget: Record<string, unknown> | null): Spend =>
+    (budget ?? {
+      daily: { spentUsd: 0 },
+      session: { spentUsd: 0 },
+      alerts: [],
+    }) as unknown as Spend;
+  const sessionAlertsOf = (budget: Record<string, unknown> | null) =>
+    spendOf(budget).alerts.filter((a) => a.period === 'session');
+  const watchCostUpdates = async (port: string) => {
+    const controller = new AbortController();
+    const events: Array<{ sessionId: string; sessionTotalUsd: number; todayTotalUsd: number }> = [];
+    const response = await fetch(`http://127.0.0.1:${port}/sse`, { signal: controller.signal });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let pending = '';
+    const reading = (async () => {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        pending += decoder.decode(value, { stream: true });
+        const frames = pending.split('\n\n');
+        pending = frames.pop() ?? '';
+        for (const frame of frames) {
+          const data = frame.split('\n').find((line) => line.startsWith('data: '));
+          if (frame.startsWith('event: cost-update') && data)
+            events.push(JSON.parse(data.slice(6)));
+        }
+      }
+    })().catch(() => undefined);
+    return {
+      events,
+      stop: async () => {
+        controller.abort();
+        await reading;
+      },
+    };
+  };
+
+  describe('self-report lines', () => {
+    const distDir = resolve(__dirname, '..', 'dist');
+    const report = {
+      input_tokens: 1000,
+      output_tokens: 200,
+      thinking_tokens: 100,
+      model: 'claude-sonnet-4-6',
+    };
+    const hookReply = (reportId: string) =>
+      JSON.stringify({ accepted: true, recorded_by: 'hook', report_id: reportId });
+    const reportHook = (conversationId: string, reportId: string) => ({
+      hook_event_name: 'afterMCPExecution',
+      conversation_id: conversationId,
+      mcp_server_name: 'newrelic-preflight',
+      tool_name: 'nr_observe_report_tokens',
+      tool_input: JSON.stringify({ ...report, report_id: reportId }),
+      result_json: JSON.stringify({ content: [{ type: 'text', text: hookReply(reportId) }] }),
+    });
+    const isolatedEnv = (overrides: Record<string, string>): Record<string, string> => {
+      const env: Record<string, string> = {};
+      for (const [name, value] of Object.entries(process.env)) {
+        if (value === undefined || /^(CLAUDE|CURSOR)/.test(name)) continue;
+        if (['MCP_CLIENT', 'NEW_RELIC_AI_PLATFORM', 'NR_AI_MODE'].includes(name)) continue;
+        env[name] = value;
+      }
+      return { ...env, ...overrides };
+    };
+    const runHook = (
+      env: Record<string, string>,
+      payload: Record<string, unknown>,
+      args: string[] = [],
+    ) =>
+      spawnSync('node', [resolve(distDir, 'hooks', 'collector-script.js'), ...args], {
+        input: JSON.stringify(payload),
+        env,
+        cwd: env.NEW_RELIC_AI_MCP_STORAGE_PATH,
+      });
+    const savedSession = (storagePath: string, id: string): Record<string, unknown> | null => {
+      const dir = resolve(storagePath, 'sessions');
+      const name = existsSync(dir)
+        ? readdirSync(dir).find((f) => f.includes(id) && f.endsWith('.json'))
+        : undefined;
+      return name ? JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) : null;
+    };
+    const until = async <T>(read: () => T | Promise<T>, done: (v: T) => boolean): Promise<T> => {
+      let value = await read();
+      for (let i = 0; i < 40 && !done(value); i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        value = await read();
+      }
+      return value;
+    };
+
+    it('a --local process saves a drained report to its conversation and keeps its own estimates', async () => {
+      const { createServer: createNetServer } = await import('node:net');
+      const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-local-report-storage-'));
+      const tmpHome = mkdtempSync(join(tmpdir(), 'nr-local-report-home-'));
+      const port = await new Promise<number>((resolvePort, reject) => {
+        const srv = createNetServer();
+        srv.listen(0, '127.0.0.1', () => {
+          const p = (srv.address() as { port: number }).port;
+          srv.close((err) => (err ? reject(err) : resolvePort(p)));
+        });
+        srv.on('error', reject);
+      });
+      const env = isolatedEnv({
+        HOME: tmpHome,
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+        NR_AI_DASHBOARD_PORT: String(port),
+        NR_AI_ALERTS_ENABLED: 'false',
+        NEW_RELIC_LICENSE_KEY: '',
+        NEW_RELIC_ACCOUNT_ID: '',
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+      });
+      const api = async (path: string): Promise<Record<string, unknown>> =>
+        (await (await fetch(`http://127.0.0.1:${port}${path}`)).json()) as Record<string, unknown>;
+      type Cost = { reportCount: number; byteEstimates?: { costUsd: number } };
+      const cost = async (): Promise<Cost> => (await api('/api/cost')).cost as Cost;
+
+      const child = spawn(process.execPath, [resolve(distDir, 'index.js'), '--local'], {
+        env,
+        cwd: tmpStoragePath,
+        stdio: 'ignore',
+      });
+      try {
+        await until(
+          () => api('/api/health').catch(() => null),
+          (v) => v !== null,
+        );
+        const read = { tool_name: 'Read', tool_use_id: 'tu-1', tool_input: { file_path: '/a' } };
+        runHook(env, { hook_event_name: 'PreToolUse', ...read }, ['pre-tool']);
+        const response = { tool_response: { content: 'y'.repeat(40_000) } };
+        runHook(env, { hook_event_name: 'PostToolUse', ...read, ...response }, ['post-tool']);
+        const estimated = await until(cost, (c) => (c.byteEstimates?.costUsd ?? 0) > 0);
+        expect(estimated.byteEstimates?.costUsd).toBeGreaterThan(0);
+        const ownSpend = spendOf(await api('/api/budget'));
+
+        runHook(env, reportHook('conv-local', 'r-local-0001'));
+
+        const saved = await until(
+          () => savedSession(tmpStoragePath, 'conv-local'),
+          (v) => typeof v?.tokensInput === 'number' && v.tokensInput > 0,
+        );
+        const after = await cost();
+        expect(after.byteEstimates?.costUsd).toBe(estimated.byteEstimates?.costUsd);
+        expect(after.reportCount).toBe(0);
+        expect((await api('/api/context?sessionId=conv-local')).turnCount).toBe(0);
+        expect(saved).toMatchObject({ tokensInput: 1000, tokensThinking: 100, platform: 'cursor' });
+        expect(saved?.estimatedCostUsd).toBeGreaterThan(0);
+        const spend = spendOf(
+          await until(
+            () => api('/api/budget'),
+            (b) => spendOf(b).daily.spentUsd > ownSpend.daily.spentUsd,
+          ),
+        );
+        expect(spend.daily.spentUsd).toBeCloseTo(
+          ownSpend.daily.spentUsd + Number(saved?.estimatedCostUsd),
+          9,
+        );
+        expect(spend.session.spentUsd).toBe(ownSpend.session.spentUsd);
+      } finally {
+        child.kill('SIGKILL');
+        rmSync(tmpStoragePath, { recursive: true, force: true });
+        rmSync(tmpHome, { recursive: true, force: true });
+      }
+    }, 40000);
+    const withPendingEngine = async (
+      persistIntervalMs: string,
+      body: (
+        env: Record<string, string>,
+        adopt: (id: string) => Promise<void>,
+        close: () => Promise<void>,
+        pid: number,
+        client: Client,
+      ) => Promise<void>,
+      nodeArgs: (env: Record<string, string>) => string[] = () => [],
+      mcpClient = 'claude-code',
+      envOverrides: Record<string, string> = {},
+    ): Promise<void> => {
+      const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+      const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+      const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-adopt-report-storage-'));
+      const tmpHome = mkdtempSync(join(tmpdir(), 'nr-adopt-report-home-'));
+      const env = isolatedEnv({
+        HOME: tmpHome,
+        MCP_CLIENT: mcpClient,
+        NR_AI_DASHBOARD_PORT: '0',
+        NR_AI_MODE: 'local',
+        NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+        NR_AI_SESSION_PERSIST_INTERVAL_MS: persistIntervalMs,
+        ...envOverrides,
+      });
+      const client = new Client({ name: 'test-client', version: '1.0.0' });
+      const adopt = async (id: string) => {
+        const breadcrumbDir = resolve(
+          breadcrumbRoot(tmpStoragePath, 'claude-code'),
+          'session-by-ppid',
+        );
+        mkdirSync(breadcrumbDir, { recursive: true });
+        writeFileSync(resolve(breadcrumbDir, `${process.pid}.txt`), id);
+        const toolNames = async () => (await client.listTools()).tools.map((t) => t.name);
+        const adopted = await until(toolNames, (n) => n.includes('nr_observe_get_session_stats'));
+        expect(adopted).toContain('nr_observe_get_session_stats');
+      };
+      const alive = (pid: number) => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      try {
+        const args = [...nodeArgs(env), resolve(distDir, 'index.js'), '--stdio'];
+        const transport = new StdioClientTransport({ command: 'node', args, env });
+        await client.connect(transport);
+        const pid = transport.pid!;
+        let closed = false;
+        const close = async () => {
+          closed = true;
+          await client.close();
+          expect(
+            await until(
+              () => alive(pid),
+              (a) => !a,
+            ),
+          ).toBe(false);
+        };
+        try {
+          await body(env, adopt, close, pid, client);
+        } finally {
+          if (!closed) await client.close().catch(() => undefined);
+        }
+      } finally {
+        rmSync(tmpStoragePath, { recursive: true, force: true });
+        rmSync(tmpHome, { recursive: true, force: true });
+      }
+    };
+    const drained = (storage: string, conversationId: string) => {
+      const bufferPath = resolve(storage, `buffer-${conversationId}.jsonl`);
+      const pending = () => {
+        try {
+          return readFileSync(bufferPath, 'utf-8');
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'ENOENT') return '';
+          throw err;
+        }
+      };
+      return until(pending, (v) => v === '');
+    };
+    const subagentTurn = async (storage: string, sessionId: string, messageId: string) => {
+      appendToHookBuffer(
+        resolve(storage, `buffer-${sessionId}.jsonl`),
+        JSON.stringify({
+          mode: 'subagent_token',
+          tool: 'subagent',
+          timestamp: Date.now(),
+          sessionId,
+          agentId: 'a1234567890abcdef',
+          messageId,
+          model: 'claude-sonnet-4-6',
+          inputTokens: 100000,
+          outputTokens: 20000,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          reasoningTokens: 0,
+        }) + '\n',
+      );
+      expect(await drained(storage, sessionId)).toBe('');
+    };
+    const guessFromCwd = async (storage: string, conversationId: string) => {
+      const crumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-cwd');
+      mkdirSync(crumbs, { recursive: true });
+      writeFileSync(
+        resolve(crumbs, `${realpathSync(process.cwd()).replace(/[\\/:]/g, '-')}.txt`),
+        conversationId,
+      );
+      const adopted = await until(
+        () => existsSync(resolve(storage, `active-${conversationId}.pid`)),
+        (alive) => alive,
+      );
+      expect(adopted).toBe(true);
+    };
+
+    it('a cursor engine saves a self-report for its conversation on shutdown without adopting', async () => {
+      await withPendingEngine(
+        '600000',
+        async (env, _adopt, close) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          runHook(env, reportHook('conv-cursor', 'r-cursor-0001'));
+          expect(await drained(storage, 'conv-cursor')).toBe('');
+
+          await close();
+
+          expect(savedSession(storage, 'conv-cursor')).toMatchObject({
+            platform: 'cursor',
+            tokensInput: 1000,
+            tokensThinking: 100,
+            selfReportCount: 1,
+          });
+        },
+        () => [],
+        'cursor',
+      );
+    }, 40000);
+
+    it.each([
+      ['another session', 'in progress', 'real-owner-session'],
+      ['the reporting conversation', 'completed', 'conv-adopt'],
+    ])(
+      'a pending engine that drains a report and then adopts %s saves the report with outcome %s',
+      async (_label, outcome, adoptedId) => {
+        await withPendingEngine('600000', async (env, adopt, close) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          runHook(env, reportHook('conv-adopt', 'r-adopt-0001'));
+          expect(await drained(storage, 'conv-adopt')).toBe('');
+
+          await adopt(adoptedId);
+          await close();
+
+          const saved = savedSession(storage, 'conv-adopt');
+          expect(saved).toMatchObject({
+            tokensInput: 1000,
+            tokensThinking: 100,
+            selfReportCount: 1,
+          });
+          expect(saved?.outcome).toBe(outcome);
+        });
+      },
+      40000,
+    );
+
+    it('a pending engine saves a drained report for its cwd guess once the ppid confirms the guess', async () => {
+      await withPendingEngine('600000', async (env, _adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        runHook(env, reportHook('conv-guess', 'r-guess-0001'));
+        expect(await drained(storage, 'conv-guess')).toBe('');
+        await guessFromCwd(storage, 'conv-guess');
+
+        const ppidCrumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-ppid');
+        mkdirSync(ppidCrumbs, { recursive: true });
+        writeFileSync(resolve(ppidCrumbs, `${process.pid}.txt`), 'conv-guess');
+        const confirmed = await until(
+          () => savedSession(storage, 'conv-guess')?.tokensInput,
+          (tokens) => tokens === 1000,
+        );
+        await close();
+
+        expect(confirmed).toBe(1000);
+      });
+    }, 40000);
+
+    it('a pending engine adds the report it drained before adopting its conversation to the ones after', async () => {
+      await withPendingEngine('600000', async (env, adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        runHook(env, reportHook('conv-own', 'r-own-00001'));
+        expect(await drained(storage, 'conv-own')).toBe('');
+        await adopt('conv-own');
+        runHook(env, reportHook('conv-own', 'r-own-00002'));
+        expect(await drained(storage, 'conv-own')).toBe('');
+        await close();
+
+        expect(savedSession(storage, 'conv-own')).toMatchObject({
+          tokensInput: 2000,
+          selfReportCount: 1,
+        });
+      });
+    }, 40000);
+
+    it.each([
+      ['its conversation', 'conv-sub', 2],
+      ['another session', 'real-owner-session', 1],
+    ])(
+      'a pending engine counts a subagent turn it drained before adopting %s once',
+      async (_label, adoptedId, adoptedTurns) => {
+        await withPendingEngine('600000', async (env, adopt, close) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          await subagentTurn(storage, 'conv-sub', 'msg_sub_1');
+          await adopt(adoptedId);
+          await subagentTurn(storage, adoptedId, 'msg_sub_2');
+          await close();
+
+          const sub = savedSession(storage, 'conv-sub');
+          expect(sub).toMatchObject({ tokensInput: 100000 * adoptedTurns });
+          expect(sub?.subagentCostUsd).toBeCloseTo(0.6 * adoptedTurns);
+          const adopted = savedSession(storage, adoptedId);
+          expect(adopted?.estimatedCostUsd).toBeCloseTo(0.6 * adoptedTurns);
+          expect(adopted?.modelBreakdown).toMatchObject({
+            'claude-sonnet-4-6': { totalInputTokens: 100000 * adoptedTurns },
+          });
+        });
+      },
+      40000,
+    );
+
+    it('a pending engine adds the report it drained before its cwd guess is confirmed to the ones after', async () => {
+      await withPendingEngine('600000', async (env, _adopt, close, _pid, client) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        runHook(env, reportHook('conv-guess', 'r-guess-0001'));
+        expect(await drained(storage, 'conv-guess')).toBe('');
+        await guessFromCwd(storage, 'conv-guess');
+        const ppidCrumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-ppid');
+        mkdirSync(ppidCrumbs, { recursive: true });
+        writeFileSync(resolve(ppidCrumbs, `${process.pid}.txt`), 'conv-guess');
+        const ownInputTokens = async () => {
+          const result = await client.callTool({
+            name: 'nr_observe_get_cost_breakdown',
+            arguments: {},
+          });
+          const [content] = result.content as Array<{ text: string }>;
+          return (JSON.parse(content!.text) as { tokens: { input: number } }).tokens.input;
+        };
+        expect(await until(ownInputTokens, (tokens) => tokens === 1000)).toBe(1000);
+        expect(savedSession(storage, 'conv-guess')?.outcome).toBe('in progress');
+        runHook(env, reportHook('conv-guess', 'r-guess-0002'));
+        expect(await drained(storage, 'conv-guess')).toBe('');
+        await close();
+
+        expect(savedSession(storage, 'conv-guess')?.tokensInput).toBe(2000);
+      });
+    }, 40000);
+
+    it('a pending engine that stops before its cwd guess is confirmed adds the report it drained before the guess to the ones after', async () => {
+      await withPendingEngine('600000', async (env, _adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        runHook(env, reportHook('conv-guess', 'r-guess-0001'));
+        expect(await drained(storage, 'conv-guess')).toBe('');
+        await guessFromCwd(storage, 'conv-guess');
+        runHook(env, reportHook('conv-guess', 'r-guess-0002'));
+        expect(await drained(storage, 'conv-guess')).toBe('');
+        await close();
+
+        expect(savedSession(storage, 'conv-guess')).toMatchObject({
+          tokensInput: 2000,
+          outcome: 'completed',
+        });
+      });
+    }, 40000);
+
+    it('a pending engine that stops before its cwd guess is confirmed saves the subagent turn it drained before the guess', async () => {
+      await withPendingEngine('600000', async (env, _adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        await subagentTurn(storage, 'conv-guess', 'msg_sub_1');
+        await guessFromCwd(storage, 'conv-guess');
+        await close();
+
+        expect(savedSession(storage, 'conv-guess')).toMatchObject({ tokensInput: 100000 });
+      });
+    }, 40000);
+
+    it('a claude-code engine stops estimating its own session once a drained report for it arrives', async () => {
+      await withPendingEngine('600000', async (env, adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        await adopt('real-owner-session');
+        runHook(env, reportHook('real-owner-session', 'r-own-00001'));
+        expect(await drained(storage, 'real-owner-session')).toBe('');
+        const read = { session_id: 'real-owner-session', tool_name: 'Read', tool_use_id: 'tu-big' };
+        runHook(
+          env,
+          { hook_event_name: 'PreToolUse', ...read, tool_input: { file_path: '/repo/big.txt' } },
+          ['pre-tool'],
+        );
+        runHook(
+          env,
+          {
+            hook_event_name: 'PostToolUse',
+            ...read,
+            tool_response: { content: 'y'.repeat(40_000) },
+          },
+          ['post-tool'],
+        );
+        await close();
+
+        const saved = savedSession(storage, 'real-owner-session');
+        expect(saved).toMatchObject({ tokensInput: 1000 });
+        expect(saved?.estimatedCostUsd).toBeCloseTo(0.0075, 6);
+      });
+    }, 40000);
+
+    it("a pending engine that drains another conversation's tool calls and then adopts saves them", async () => {
+      await withPendingEngine('600000', async (env, adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        const edit = { conversation_id: 'conv-edits', file_path: '/repo/a.ts' };
+        runHook(env, { hook_event_name: 'afterFileEdit', ...edit });
+        expect(await drained(storage, 'conv-edits')).toBe('');
+
+        await adopt('real-owner-session');
+        await close();
+
+        expect(savedSession(storage, 'conv-edits')).toMatchObject({ toolCallCount: 1 });
+      });
+    }, 40000);
+
+    it('an observed save that throws or fails neither stops the next one nor the owner save, and is retried', async () => {
+      const preloadDir = mkdtempSync(join(tmpdir(), 'nr-throwing-save-'));
+      const saveLog = resolve(preloadDir, 'saves.log');
+      const storeUrl = pathToFileURL(resolve(distDir, 'storage', 'session-store.js')).href;
+      writeFileSync(
+        resolve(preloadDir, 'preload.mjs'),
+        [
+          "import { appendFileSync } from 'node:fs';",
+          `const { SessionStore } = await import(${JSON.stringify(storeUrl)});`,
+          'const save = SessionStore.prototype.saveSession;',
+          'let ownerSaved = false;',
+          'let failedAfterOwner = false;',
+          'SessionStore.prototype.saveSession = function (summary) {',
+          `  appendFileSync(${JSON.stringify(saveLog)}, summary.sessionId + '\\n');`,
+          "  if (summary.sessionId === 'real-owner-session') ownerSaved = true;",
+          "  if (summary.sessionId === 'conv-throws') throw new Error('injected save failure');",
+          "  if (summary.sessionId === 'conv-fails' && !failedAfterOwner)",
+          '    return (failedAfterOwner = ownerSaved), null;',
+          '  return save.call(this, summary);',
+          '};',
+        ].join('\n'),
+      );
+      const preload = pathToFileURL(resolve(preloadDir, 'preload.mjs')).href;
+      try {
+        await withPendingEngine(
+          '300',
+          async (env, adopt, close) => {
+            const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+            runHook(env, reportHook('conv-throws', 'r-throws-001'));
+            expect(await drained(storage, 'conv-throws')).toBe('');
+            runHook(env, reportHook('conv-saved', 'r-saved-0001'));
+            expect(await drained(storage, 'conv-saved')).toBe('');
+            runHook(env, reportHook('conv-fails', 'r-fails-0001'));
+            expect(await drained(storage, 'conv-fails')).toBe('');
+
+            await adopt('real-owner-session');
+            const retried = () => savedSession(storage, 'conv-fails')?.tokensInput;
+            expect(await until(retried, (tokens) => tokens === 1000)).toBe(1000);
+            const savesOf = (id: string) =>
+              readFileSync(saveLog, 'utf-8')
+                .split('\n')
+                .filter((s) => s === id).length;
+            const savedOnce = savesOf('conv-saved');
+            await until(
+              () => savesOf('real-owner-session'),
+              (n) => n > 2,
+            );
+            expect(savesOf('conv-saved')).toBe(savedOnce);
+            await close();
+
+            const saves = readFileSync(saveLog, 'utf-8').trim().split('\n');
+            expect(saves.at(-1)).toBe('real-owner-session');
+            expect(saves.filter((id) => id === 'conv-throws').length).toBeGreaterThan(1);
+            expect(savedSession(storage, 'conv-saved')).toMatchObject({ tokensInput: 1000 });
+            expect(savedSession(storage, 'conv-fails')).toMatchObject({
+              tokensInput: 1000,
+              outcome: 'in progress',
+            });
+          },
+          () => ['--import', preload],
+        );
+      } finally {
+        rmSync(preloadDir, { recursive: true, force: true });
+      }
+    }, 40000);
+
+    it('an observed rollup that throws while it is built does not stop the owner save', async () => {
+      const preloadDir = mkdtempSync(join(tmpdir(), 'nr-throwing-rollup-'));
+      const aggregatorUrl = pathToFileURL(
+        resolve(distDir, 'metrics', 'local-session-aggregator.js'),
+      ).href;
+      writeFileSync(
+        resolve(preloadDir, 'preload.mjs'),
+        [
+          `const { LocalSessionAggregator } = await import(${JSON.stringify(aggregatorUrl)});`,
+          'const toSummaries = LocalSessionAggregator.prototype.toSummaries;',
+          'LocalSessionAggregator.prototype.toSummaries = function (opts) {',
+          "  if (opts.savesSession?.('conv-edits') && !opts.savesSession('real-owner-session'))",
+          "    throw new Error('injected rollup failure');",
+          '  return toSummaries.call(this, opts);',
+          '};',
+        ].join('\n'),
+      );
+      const preload = pathToFileURL(resolve(preloadDir, 'preload.mjs')).href;
+      try {
+        await withPendingEngine(
+          '600000',
+          async (env, adopt, close) => {
+            const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+            const edit = { conversation_id: 'conv-edits', file_path: '/repo/a.ts' };
+            runHook(env, { hook_event_name: 'afterFileEdit', ...edit });
+            expect(await drained(storage, 'conv-edits')).toBe('');
+
+            await adopt('real-owner-session');
+            const ownEdit = { conversation_id: 'real-owner-session', file_path: '/repo/b.ts' };
+            runHook(env, { hook_event_name: 'afterFileEdit', ...ownEdit });
+            expect(await drained(storage, 'real-owner-session')).toBe('');
+            await close();
+
+            expect(savedSession(storage, 'real-owner-session')).not.toBeNull();
+          },
+          () => ['--import', preload],
+        );
+      } finally {
+        rmSync(preloadDir, { recursive: true, force: true });
+      }
+    }, 40000);
+
+    it('a report saved while pending counts once after the engine adopts its conversation', async () => {
+      const port = await freePort();
+      const api = dashboardApi(port);
+      await withPendingEngine(
+        '600000',
+        async (env, adopt) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          await pollUntil(
+            () => api('/api/health'),
+            (v) => v !== null,
+          );
+          runHook(env, reportHook('conv-adopted', 'r-pending-01'));
+          expect(await drained(storage, 'conv-adopted')).toBe('');
+          const pending = spendOf(
+            await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).daily.spentUsd > 0,
+            ),
+          );
+          expect(pending.daily.spentUsd).toBeCloseTo(0.0075, 9);
+
+          await adopt('conv-adopted');
+          runHook(env, reportHook('conv-adopted', 'r-pending-01'));
+          runHook(env, reportHook('conv-adopted', 'r-adopted-02'));
+          expect(await drained(storage, 'conv-adopted')).toBe('');
+          const adopted = spendOf(
+            await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).session.spentUsd > 0.0075,
+            ),
+          );
+          expect(adopted.daily.spentUsd).toBeCloseTo(0.015, 9);
+          expect(adopted.session.spentUsd).toBeCloseTo(0.015, 9);
+          const usage = (await api('/api/model-usage')) as {
+            byModel: Record<string, { requestCount: number }>;
+          };
+          expect(usage.byModel[report.model]?.requestCount).toBe(2);
+        },
+        () => [],
+        'claude-code',
+        { NR_AI_DASHBOARD_PORT: port },
+      );
+    }, 40000);
+
+    it.each([
+      ['has no saved report', false, [50]],
+      ['already has a pending report', true, [80, 100]],
+    ])(
+      'session alerts start over at adoption when the adopted conversation %s',
+      async (_label, mineWhilePending, expected) => {
+        const port = await freePort();
+        const api = dashboardApi(port);
+        await withPendingEngine(
+          '600000',
+          async (env, adopt) => {
+            const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+            await pollUntil(
+              () => api('/api/health'),
+              (v) => v !== null,
+            );
+            runHook(env, reportHook('conv-other', 'r-other-01'));
+            if (mineWhilePending) runHook(env, reportHook('conv-mine', 'r-mine-01'));
+            const pending = await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).daily.spentUsd >= (mineWhilePending ? 0.015 : 0.0075) - 1e-9,
+            );
+            expect(sessionAlertsOf(pending).map((a) => a.thresholdPct)).toEqual([50]);
+
+            const adoptedAt = Date.now();
+            await adopt('conv-mine');
+            runHook(env, reportHook('conv-mine', 'r-mine-02'));
+            expect(await drained(storage, 'conv-mine')).toBe('');
+            const target = mineWhilePending ? 0.015 : 0.0075;
+            const adopted = await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).session.spentUsd >= target - 1e-9,
+            );
+            expect(spendOf(adopted).session.spentUsd).toBeCloseTo(target, 9);
+            const alerts = sessionAlertsOf(adopted);
+            expect(alerts.map((a) => a.thresholdPct)).toEqual(expected);
+            expect(alerts.every((a) => a.timestamp >= adoptedAt)).toBe(true);
+          },
+          () => [],
+          'claude-code',
+          { NR_AI_DASHBOARD_PORT: port, NEW_RELIC_AI_SESSION_BUDGET_USD: '0.01' },
+        );
+      },
+      40000,
+    );
+
+    it("an adopted engine's session spend stays its own when it drains a leftover claim of another conversation", async () => {
+      const port = await freePort();
+      const api = dashboardApi(port);
+      await withPendingEngine(
+        '600000',
+        async (env, adopt, _close, pid) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          await pollUntil(
+            () => api('/api/health'),
+            (v) => v !== null,
+          );
+          await adopt('conv-mine');
+          runHook(env, reportHook('conv-mine', 'r-mine-01'));
+          expect(await drained(storage, 'conv-mine')).toBe('');
+          const own = spendOf(
+            await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).session.spentUsd > 0,
+            ),
+          );
+          expect(own.session.spentUsd).toBeCloseTo(0.0075, 9);
+
+          runHook(env, reportHook('conv-other', 'r-other-01'));
+          runHook(env, reportHook('conv-other', 'r-other-02'));
+          const buffer = 'buffer-conv-other.jsonl';
+          mkdirSync(resolve(storage, DRAINS_DIR), { recursive: true });
+          renameSync(
+            resolve(storage, buffer),
+            resolve(storage, DRAINS_DIR, formatClaimName(buffer, pid, Date.now())),
+          );
+          const after = spendOf(
+            await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).daily.spentUsd > 0.0075 + 1e-9,
+            ),
+          );
+          expect(savedSession(storage, 'conv-other')).toMatchObject({ selfReportCount: 2 });
+          expect(after.daily.spentUsd).toBeCloseTo(0.0225, 9);
+          expect(after.session.spentUsd).toBeCloseTo(0.0075, 9);
+        },
+        () => [],
+        'claude-code',
+        { NR_AI_DASHBOARD_PORT: port },
+      );
+    }, 40000);
+
+    it('an adopted engine with no cost of its own counts a leftover claim of another conversation in the budget', async () => {
+      const port = await freePort();
+      const api = dashboardApi(port);
+      await withPendingEngine(
+        '600000',
+        async (env, adopt, _close, pid) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          await pollUntil(
+            () => api('/api/health'),
+            (v) => v !== null,
+          );
+          await adopt('conv-mine');
+          runHook(env, reportHook('conv-other', 'r-other-01'));
+          runHook(env, reportHook('conv-other', 'r-other-02'));
+          const buffer = 'buffer-conv-other.jsonl';
+          mkdirSync(resolve(storage, DRAINS_DIR), { recursive: true });
+          renameSync(
+            resolve(storage, buffer),
+            resolve(storage, DRAINS_DIR, formatClaimName(buffer, pid, Date.now())),
+          );
+          const after = spendOf(
+            await pollUntil(
+              () => api('/api/budget'),
+              (b) => spendOf(b).daily.spentUsd > 0,
+            ),
+          );
+          expect(savedSession(storage, 'conv-other')).toMatchObject({ selfReportCount: 2 });
+          expect(after.daily.spentUsd).toBeCloseTo(0.015, 9);
+          expect(after.session.spentUsd).toBe(0);
+        },
+        () => [],
+        'claude-code',
+        { NR_AI_DASHBOARD_PORT: port },
+      );
+    }, 40000);
+
+    it('a resumed engine saves a report for its own conversation once, on top of the saved total', async () => {
+      await withPendingEngine('600000', async (env, adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        const startTime = Date.now() - 60_000;
+        const prior = {
+          sessionId: 'conv-resumed',
+          startTime,
+          endTime: startTime,
+          toolCallCount: 3,
+        };
+        const day = new Date(startTime).toISOString().slice(0, 10);
+        mkdirSync(resolve(storage, 'sessions'), { recursive: true });
+        writeFileSync(
+          resolve(storage, 'sessions', `${day}_conv-resumed.json`),
+          JSON.stringify({
+            ...prior,
+            estimatedCostUsd: 10,
+            tokensInput: 100,
+            outcome: 'in progress',
+          }),
+        );
+
+        await adopt('conv-resumed');
+        runHook(env, reportHook('conv-resumed', 'r-resumed-01'));
+        expect(await drained(storage, 'conv-resumed')).toBe('');
+        await close();
+
+        const saved = savedSession(storage, 'conv-resumed');
+        expect(saved).toMatchObject({ tokensInput: 1100, outcome: 'completed' });
+        expect(saved?.modelBreakdown).toHaveProperty(['claude-sonnet-4-6']);
+        expect(saved?.estimatedCostUsd).toBeCloseTo(10.0075, 6);
+      });
+    }, 40000);
+  });
+
+  describe('nr_observe_report_tokens while the engine is pending', () => {
+    type Client = import('@modelcontextprotocol/sdk/client/index.js').Client;
+    const report = {
+      report_id: 'r-5f0c2a9e',
+      input_tokens: 1000,
+      output_tokens: 200,
+      thinking_tokens: 100,
+      model: 'claude-sonnet-4-6',
+    };
+
+    async function withPendingEngine(
+      mcpClient: string,
+      run: (
+        client: Client,
+        hook: (payload: Record<string, unknown>) => void,
+        sessionFile: (conversationId: string) => Promise<Record<string, unknown> | null>,
+        storagePath: string,
+      ) => Promise<void>,
+      engineEnv: Record<string, string> = { MCP_CLIENT: mcpClient },
+      homeFiles: Record<string, unknown> = {},
+    ): Promise<void> {
+      const { spawnSync } = await import('node:child_process');
+      const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+      const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+
+      const distDir = resolve(__dirname, '..', 'dist');
+      const tmpStoragePath = mkdtempSync(join(tmpdir(), 'nr-pending-report-storage-'));
+      const tmpHome = mkdtempSync(join(tmpdir(), 'nr-pending-report-home-'));
+      for (const [path, content] of Object.entries(homeFiles)) {
+        mkdirSync(resolve(tmpHome, path, '..'), { recursive: true });
+        writeFileSync(resolve(tmpHome, path), JSON.stringify(content));
+      }
+      const env = { ...process.env };
+      for (const name of Object.keys(env)) {
+        if (/^(CLAUDE|CURSOR|MCP_CLIENT$|NEW_RELIC_AI_PLATFORM$)/.test(name)) delete env[name];
+      }
+      const hook = (payload: Record<string, unknown>) => {
+        const run = spawnSync('node', [resolve(distDir, 'hooks', 'collector-script.js')], {
+          input: JSON.stringify(payload),
+          env: {
+            ...env,
+            HOME: tmpHome,
+            MCP_CLIENT: mcpClient,
+            NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+          },
+          cwd: tmpStoragePath,
+        });
+        expect(run.status).toBe(0);
+      };
+      const sessionFile = async (
+        conversationId: string,
+      ): Promise<Record<string, unknown> | null> => {
+        const dir = resolve(tmpStoragePath, 'sessions');
+        for (let i = 0; i < 40; i++) {
+          const name = existsSync(dir)
+            ? readdirSync(dir).find((f) => f.includes(conversationId) && f.endsWith('.json'))
+            : undefined;
+          const saved = name ? JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) : null;
+          if (saved?.estimatedCostUsd || saved?.toolCallCount) return saved;
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        return null;
+      };
+
+      const client = new Client({ name: mcpClient, version: '1.0.0' });
+      try {
+        await client.connect(
+          new StdioClientTransport({
+            command: 'node',
+            args: [resolve(distDir, 'index.js'), '--stdio'],
+            cwd: tmpStoragePath,
+            env: {
+              ...env,
+              HOME: tmpHome,
+              NR_AI_DASHBOARD_PORT: '0',
+              NR_AI_MODE: 'local',
+              ...engineEnv,
+              NEW_RELIC_AI_MCP_STORAGE_PATH: tmpStoragePath,
+              NR_AI_SESSION_PERSIST_INTERVAL_MS: '200',
+            } as Record<string, string>,
+          }),
+        );
+        await run(client, hook, sessionFile, tmpStoragePath);
+      } finally {
+        await client.close();
+        rmSync(tmpStoragePath, { recursive: true, force: true });
+        rmSync(tmpHome, { recursive: true, force: true });
+      }
+    }
+
+    it.each(['local', 'both'])(
+      'in %s mode, a hook-recorded report reaches the budget, Model Usage and the live cost tile',
+      async (mode) => {
+        const port = await freePort();
+        const api = dashboardApi(port);
+        await withPendingEngine(
+          'cursor',
+          async (client, hook, sessionFile) => {
+            await pollUntil(
+              () => api('/api/health'),
+              (v) => v !== null,
+            );
+            const costs = await watchCostUpdates(port);
+            try {
+              const result = await client.callTool({
+                name: 'nr_observe_report_tokens',
+                arguments: report,
+              });
+              hook({
+                hook_event_name: 'afterMCPExecution',
+                conversation_id: 'conv-reported',
+                mcp_server_name: 'newrelic-preflight',
+                tool_name: 'nr_observe_report_tokens',
+                tool_input: JSON.stringify(report),
+                result_json: JSON.stringify(result),
+              });
+              const costUsd = Number((await sessionFile('conv-reported'))?.estimatedCostUsd);
+              expect(costUsd).toBeGreaterThan(0);
+
+              const budget = spendOf(
+                await pollUntil(
+                  () => api('/api/budget'),
+                  (b) => spendOf(b).daily.spentUsd > 0,
+                ),
+              );
+              expect(budget.daily.spentUsd).toBeCloseTo(costUsd, 9);
+              expect(budget.session.spentUsd).toBeCloseTo(costUsd, 9);
+              const usage = (await api('/api/model-usage')) as {
+                byModel: Record<string, { requestCount: number }>;
+              };
+              expect(usage.byModel[report.model]?.requestCount).toBe(1);
+              await pollUntil(
+                async () => costs.events.length,
+                (n) => n > 0,
+              );
+              expect(costs.events).toContainEqual(
+                expect.objectContaining({ sessionId: 'conv-reported', sessionTotalUsd: costUsd }),
+              );
+            } finally {
+              await costs.stop();
+            }
+          },
+          {
+            MCP_CLIENT: 'cursor',
+            NR_AI_MODE: mode,
+            NR_AI_DASHBOARD_PORT: port,
+            NEW_RELIC_LICENSE_KEY: mode === 'both' ? `${'0'.repeat(36)}NRAL` : '',
+            NEW_RELIC_ACCOUNT_ID: mode === 'both' ? '1' : '',
+            NEW_RELIC_HOST: '127.0.0.1:9',
+          },
+        );
+      },
+      40000,
+    );
+
+    it('saves a Cursor report once, to the conversation whose hook carried it', async () => {
+      await withPendingEngine('cursor', async (client, hook, sessionFile) => {
+        hook({
+          hook_event_name: 'beforeShellExecution',
+          conversation_id: 'conv-silent',
+          command: 'ls',
+        });
+        hook({ hook_event_name: 'afterShellExecution', conversation_id: 'conv-silent' });
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const result = await client.callTool({
+            name: 'nr_observe_report_tokens',
+            arguments: report,
+          });
+          hook({
+            hook_event_name: 'afterMCPExecution',
+            conversation_id: 'conv-reported',
+            mcp_server_name: 'newrelic-preflight',
+            tool_name: 'nr_observe_report_tokens',
+            tool_input: JSON.stringify(report),
+            result_json: JSON.stringify(result),
+          });
+        }
+
+        const reported = await sessionFile('conv-reported');
+        expect(reported?.tokensInput).toBe(1000);
+        expect(reported?.tokensOutput).toBe(200);
+        expect(reported?.tokensThinking).toBe(100);
+        expect(reported?.estimatedCostUsd).toBeGreaterThan(0);
+        const silent = await sessionFile('conv-silent');
+        expect(silent?.toolCallCount).toBe(1);
+        expect(silent?.tokensInput).toBe(0);
+        expect(silent?.estimatedCostUsd).toBeNull();
+      });
+    }, 30000);
+
+    it('leaves the report to the hook and stays pending even when a breadcrumb is written', async () => {
+      await withPendingEngine('cursor', async (client, hook, sessionFile, storagePath) => {
+        for (const root of [storagePath, resolve(storagePath, 'breadcrumbs', 'claude-code')]) {
+          const dir = resolve(root, 'session-by-ppid');
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(resolve(dir, `${process.pid}.txt`), 'real-owner-session');
+        }
+        await new Promise((r) => setTimeout(r, 1500));
+        const names = async () => (await client.listTools()).tools.map((t) => t.name);
+        expect(await names()).not.toContain('nr_observe_get_session_stats');
+
+        const result = await client.callTool({
+          name: 'nr_observe_report_tokens',
+          arguments: report,
+        });
+        const reply = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+        expect(reply).toMatchObject({
+          accepted: true,
+          recorded_by: 'hook',
+          report_id: report.report_id,
+        });
+        hook({
+          hook_event_name: 'afterMCPExecution',
+          conversation_id: 'conv-reported',
+          mcp_server_name: 'newrelic-preflight',
+          tool_name: 'nr_observe_report_tokens',
+          tool_input: JSON.stringify(report),
+          result_json: JSON.stringify(result),
+        });
+
+        expect(await sessionFile('conv-reported')).toMatchObject({ tokensInput: 1000 });
+        expect(await names()).not.toContain('nr_observe_get_session_stats');
+      });
+    }, 30000);
+
+    it("a pending Cursor engine stops estimating a conversation once the hook saved that conversation's report", async () => {
+      await withPendingEngine('cursor', async (client, hook, sessionFile) => {
+        const result = await client.callTool({
+          name: 'nr_observe_report_tokens',
+          arguments: report,
+        });
+        hook({
+          hook_event_name: 'afterMCPExecution',
+          conversation_id: 'conv-reported',
+          mcp_server_name: 'newrelic-preflight',
+          tool_name: 'nr_observe_report_tokens',
+          tool_input: JSON.stringify(report),
+          result_json: JSON.stringify(result),
+        });
+        const read = { session_id: 'conv-reported', tool_name: 'Read', tool_use_id: 'tu-big' };
+        hook({
+          hook_event_name: 'PreToolUse',
+          ...read,
+          tool_input: { file_path: '/repo/big.txt' },
+        });
+        hook({ hook_event_name: 'PostToolUse', ...read, tool_response: 'y'.repeat(40_000) });
+
+        let saved = await sessionFile('conv-reported');
+        for (let i = 0; i < 40 && Number(saved?.toolCallCount ?? 0) < 2; i++) {
+          await new Promise((r) => setTimeout(r, 250));
+          saved = await sessionFile('conv-reported');
+        }
+        expect(saved?.toolCallCount).toBe(2);
+        expect(saved?.estimatedCostUsd).toBeCloseTo(0.0075, 6);
+      });
+    }, 40000);
+
+    it.each([
+      ['only an inherited CURSOR_TRACE_ID', false, {}],
+      [
+        'an inherited CURSOR_TRACE_ID and a hooks file that runs the collector',
+        true,
+        {
+          '.cursor/hooks.json': {
+            hooks: { afterMCPExecution: [{ command: 'preflight-collector' }] },
+          },
+        },
+      ],
+    ])(
+      'a pending engine with %s lists the tool: %s',
+      async (_label, listed, homeFiles) => {
+        await withPendingEngine(
+          'cursor',
+          async (client) => {
+            const names = (await client.listTools()).tools.map((t) => t.name);
+            expect(names.includes('nr_observe_report_tokens')).toBe(listed);
+          },
+          { CURSOR_TRACE_ID: 'inherited-from-terminal' },
+          homeFiles,
+        );
+      },
+      30000,
+    );
+
+    it.each([
+      ['cursor', true],
+      ['windsurf', true],
+      ['antigravity', false],
+      ['kiro', false],
+      ['zed', false],
+      ['claude-code', false],
+    ])(
+      'a pending %s engine lists the tool: %s',
+      async (mcpClient, listed) => {
+        await withPendingEngine(mcpClient, async (client) => {
+          const names = (await client.listTools()).tools.map((t) => t.name);
+          expect(names.includes('nr_observe_report_tokens')).toBe(listed);
+        });
+      },
+      30000,
+    );
   });
 
   it('self-corrects when the pending path resolves via the cwd fallback and a differing PPID breadcrumb appears later', async () => {
@@ -2676,7 +4421,15 @@ describe('stdio integration', () => {
       count: (pattern: RegExp) => number;
       settle: () => Promise<void>;
       reportInputTokens: (inputTokens: number) => Promise<unknown>;
+      budget: () => Promise<BudgetStatus>;
       close: () => Promise<void>;
+    }
+
+    interface BudgetStatus {
+      readonly session: { readonly spentUsd: number };
+      readonly daily: { readonly spentUsd: number };
+      readonly weekly: { readonly spentUsd: number };
+      readonly alerts: ReadonlyArray<{ readonly period: string }>;
     }
 
     async function startEngine(
@@ -2722,6 +4475,13 @@ describe('stdio integration', () => {
             name: 'nr_observe_report_tokens',
             arguments: { input_tokens: inputTokens, output_tokens: 0, model: 'claude-sonnet-5' },
           }),
+        budget: async () => {
+          const result = (await client.callTool({
+            name: 'nr_observe_get_budget_status',
+            arguments: {},
+          })) as { content: Array<{ text: string }> };
+          return JSON.parse(result.content[0]!.text) as BudgetStatus;
+        },
         close: () => client.close(),
       };
       startedEngines.push(engine);
@@ -2926,13 +4686,14 @@ describe('stdio integration', () => {
       sessionId: string,
       messageId: string,
       inputTokens: number,
+      timestamp = Date.now(),
     ): void {
       appendToHookBuffer(
         resolve(storagePath, `buffer-${sessionId}.jsonl`),
         JSON.stringify({
           mode: 'token',
           tool: 'copilot-sdk-usage',
-          timestamp: Date.now(),
+          timestamp,
           sessionId,
           messageId,
           model: 'claude-sonnet-5',
@@ -2944,9 +4705,9 @@ describe('stdio integration', () => {
       );
     }
 
-    // Prior spend is 60% of each budget and this engine adds about 15%: counting
-    // each once crosses 50% and not 80%, double counting either crosses 80%, and
-    // dropping the prior spend never crosses 50%.
+    // Prior spend is 40% of each budget and this engine adds about 15%: counting
+    // each once crosses 50% and not 80%, double counting the prior spend already
+    // reads 80% at the seed so 50% never alerts, and dropping it never crosses 50%.
     async function expectPriorAndOwnSpendCountedOnce(engine: Engine): Promise<void> {
       expect(await waitUntil(() => engine.count(crossedBudget('daily', 50)) > 0)).toBe(true);
       expect(await waitUntil(() => engine.count(crossedBudget('weekly', 50)) > 0)).toBe(true);
@@ -2955,18 +4716,78 @@ describe('stdio integration', () => {
       expect(engine.count(crossedBudget('weekly', 80))).toBe(0);
     }
 
+    it("starts a restarted engine's daily and weekly spend at what other sessions already spent", async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        const prior = await savePriorSession(
+          storagePath,
+          projectCwd,
+          'spent-before-restart-id',
+          400,
+        );
+        const budgetUsd = String(prior.estimatedCostUsd / 0.4);
+        writeCwdBreadcrumb(storagePath, projectCwd, 'owned-after-restart-id');
+        const engine = await startEngine(storagePath, projectCwd, {
+          NEW_RELIC_AI_DAILY_BUDGET_USD: budgetUsd,
+          NEW_RELIC_AI_WEEKLY_BUDGET_USD: budgetUsd,
+        });
+
+        const spent = await engine.budget();
+        expect(spent.daily.spentUsd).toBeCloseTo(prior.estimatedCostUsd, 9);
+        expect(spent.weekly.spentUsd).toBeCloseTo(prior.estimatedCostUsd, 9);
+
+        appendTokenEvent(storagePath, 'owned-after-restart-id', 'msg_after_restart', 150);
+        await expectPriorAndOwnSpendCountedOnce(engine);
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 60000);
+
+    it('counts a session another engine saved between this engine starting and adopting', async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        const prior = await savePriorSession(
+          storagePath,
+          projectCwd,
+          'saved-while-pending-id',
+          400,
+        );
+        const sessionsDir = resolve(storagePath, 'sessions');
+        const savedFile = readdirSync(sessionsDir).find((f) =>
+          f.endsWith('_saved-while-pending-id.json'),
+        )!;
+        const held = resolve(storagePath, savedFile);
+        renameSync(resolve(sessionsDir, savedFile), held);
+        const engine = await startEngine(storagePath, projectCwd);
+        renameSync(held, resolve(sessionsDir, savedFile));
+        writeFileSync(ppidBreadcrumb(storagePath), 'owned-after-pending-id');
+        expect(await engine.logged(ADOPTED)).toBe(true);
+
+        const spent = await engine.budget();
+        expect(spent.daily.spentUsd).toBeCloseTo(prior.estimatedCostUsd, 9);
+        expect(spent.weekly.spentUsd).toBeCloseTo(prior.estimatedCostUsd, 9);
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 60000);
+
     it("counts an adopted session's saved cost once in daily and weekly spend", async () => {
       const { storagePath, projectCwd, cleanup } = makeDirs();
       try {
         const prior = await savePriorSession(storagePath, projectCwd, 'adopted-budget-id', 400);
-        const budgetUsd = String(prior.estimatedCostUsd / 0.6);
+        const budgetUsd = String(prior.estimatedCostUsd / 0.4);
         const engine = await startEngine(storagePath, projectCwd, {
           NEW_RELIC_AI_DAILY_BUDGET_USD: budgetUsd,
           NEW_RELIC_AI_WEEKLY_BUDGET_USD: budgetUsd,
         });
         writeFileSync(ppidBreadcrumb(storagePath), 'adopted-budget-id');
         expect(await engine.logged(ADOPTED)).toBe(true);
-        appendTokenEvent(storagePath, 'adopted-budget-id', 'msg_after_adopt', 100);
+        const spent = await engine.budget();
+        expect(spent.daily.spentUsd).toBeCloseTo(prior.estimatedCostUsd, 9);
+        expect(spent.weekly.spentUsd).toBeCloseTo(prior.estimatedCostUsd, 9);
+        appendTokenEvent(storagePath, 'adopted-budget-id', 'msg_after_adopt', 150);
 
         await expectPriorAndOwnSpendCountedOnce(engine);
         await engine.close();
@@ -2979,7 +4800,7 @@ describe('stdio integration', () => {
       const { storagePath, projectCwd, cleanup } = makeDirs();
       try {
         const prior = await savePriorSession(storagePath, projectCwd, 'guess-budget-id', 400);
-        const budgetUsd = String(prior.estimatedCostUsd / 0.6);
+        const budgetUsd = String(prior.estimatedCostUsd / 0.4);
         const engine = await startEngine(storagePath, projectCwd, {
           NEW_RELIC_AI_DAILY_BUDGET_USD: budgetUsd,
           NEW_RELIC_AI_WEEKLY_BUDGET_USD: budgetUsd,
@@ -2988,12 +4809,39 @@ describe('stdio integration', () => {
         });
         writeCwdBreadcrumb(storagePath, projectCwd, 'guess-budget-id');
         expect(await engine.logged(ADOPTED)).toBe(true);
-        appendTokenEvent(storagePath, 'guess-budget-id', 'msg_before_confirm', 50);
+        appendTokenEvent(storagePath, 'guess-budget-id', 'msg_before_confirm', 75);
 
         await confirmViaPpid(storagePath, engine, 'guess-budget-id');
-        appendTokenEvent(storagePath, 'guess-budget-id', 'msg_after_confirm', 50);
+        appendTokenEvent(storagePath, 'guess-budget-id', 'msg_after_confirm', 75);
 
         await expectPriorAndOwnSpendCountedOnce(engine);
+        await engine.close();
+      } finally {
+        await cleanup();
+      }
+    }, 60000);
+
+    it('saves the turns a cwd guess resolved at startup drained before confirmation once', async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      try {
+        writeCwdBreadcrumb(storagePath, projectCwd, 'startup-guess-id');
+        const engine = await startEngine(storagePath, projectCwd, {
+          NR_AI_PENDING_CONFIRMATION_CAP_MS: '120000',
+        });
+        appendTokenEvent(storagePath, 'startup-guess-id', 'msg_before_confirm', 50);
+        const buffer = resolve(storagePath, 'buffer-startup-guess-id.jsonl');
+        expect(
+          await waitUntil(() => !existsSync(buffer) || readFileSync(buffer, 'utf8') === ''),
+        ).toBe(true);
+
+        await confirmViaPpid(storagePath, engine, 'startup-guess-id');
+        appendTokenEvent(storagePath, 'startup-guess-id', 'msg_after_confirm', 50);
+        expect(
+          await waitUntil(() => readSaved(storagePath, 'startup-guess-id')?.tokensInput === 100),
+        ).toBe(true);
+        await engine.settle();
+
+        expect(readSaved(storagePath, 'startup-guess-id')?.tokensInput).toBe(100);
         await engine.close();
       } finally {
         await cleanup();
@@ -3112,6 +4960,237 @@ describe('stdio integration', () => {
         await cleanup();
       }
     }, 60000);
+
+    describe('the budget of a session resumed from its saved file', () => {
+      const DAY_MS = 24 * 60 * 60 * 1000;
+      // The engine runs in UTC, so its local day is the UTC date.
+      const localDay = (daysAgo: number): string =>
+        new Date(Date.now() - daysAgo * DAY_MS).toISOString().slice(0, 10);
+
+      function writeSessionFile(
+        storagePath: string,
+        sessionId: string,
+        startDaysAgo: number,
+        costByDayUsd: Record<string, number>,
+        byteEstimates?: Record<string, number>,
+      ): void {
+        const sum = (days: Record<string, number>): number =>
+          Object.values(days).reduce((total, usd) => total + usd, 0);
+        const estimatedUsd = byteEstimates ? sum(byteEstimates) : 0;
+        const exactByDayUsd = { ...costByDayUsd };
+        for (const [day, usd] of Object.entries(byteEstimates ?? {})) exactByDayUsd[day]! -= usd;
+        mkdirSync(resolve(storagePath, 'sessions'), { recursive: true });
+        writeFileSync(
+          resolve(storagePath, 'sessions', `${localDay(startDaysAgo)}_${sessionId}.json`),
+          JSON.stringify({
+            sessionId,
+            toolCallCount: 1,
+            startTime: Date.now() - startDaysAgo * DAY_MS,
+            endTime: Date.now() - DAY_MS,
+            estimatedCostUsd: sum(costByDayUsd),
+            costByDayUsd,
+            exactTotals: {
+              costUsd: sum(costByDayUsd) - estimatedUsd,
+              inputTokens: 0,
+              outputTokens: 0,
+              costByDayUsd: exactByDayUsd,
+            },
+            ...(byteEstimates && {
+              byteEstimates: {
+                costUsd: estimatedUsd,
+                inputTokens: 0,
+                outputTokens: 0,
+                costByModel: {},
+                costByDayUsd: byteEstimates,
+              },
+            }),
+          }),
+        );
+      }
+
+      // Each event is 100k input tokens on claude-sonnet-5.
+      const EVENT_USD = calculateCost('claude-sonnet-5', {
+        inputTokens: 100_000,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        thinkingTokens: 0,
+        totalTokens: 100_000,
+      }).totalUsd;
+
+      async function adoptAndSpend(
+        storagePath: string,
+        projectCwd: string,
+        sessionId: string,
+        keptUsd: number,
+        eventDaysAgo: ReadonlyArray<number>,
+        onAdopted?: (budget: () => Promise<BudgetStatus>) => Promise<void>,
+      ): Promise<BudgetStatus> {
+        const engine = await startEngine(storagePath, projectCwd, {
+          TZ: 'UTC',
+          NEW_RELIC_AI_DAILY_BUDGET_USD: '100',
+          NEW_RELIC_AI_WEEKLY_BUDGET_USD: '40',
+        });
+        writeFileSync(ppidBreadcrumb(storagePath), sessionId);
+        expect(await engine.logged(ADOPTED)).toBe(true);
+        await onAdopted?.(engine.budget);
+        for (const [i, daysAgo] of eventDaysAgo.entries()) {
+          appendTokenEvent(
+            storagePath,
+            sessionId,
+            `msg_${i}`,
+            100_000,
+            Date.now() - daysAgo * DAY_MS,
+          );
+        }
+        const sessionUsd = keptUsd + eventDaysAgo.length * EVENT_USD;
+        let status = await engine.budget();
+        for (const deadline = Date.now() + 15_000; Date.now() < deadline;) {
+          if (Math.abs(status.session.spentUsd - sessionUsd) < 1e-9) break;
+          await sleep(100);
+          status = await engine.budget();
+        }
+        await engine.close();
+        expect(status.session.spentUsd).toBeCloseTo(sessionUsd, 9);
+        return status;
+      }
+
+      it('counts only the in-window days of a session resumed from three weeks ago', async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          writeSessionFile(storagePath, 'resumed-weekly-id', 21, {
+            [localDay(21)]: 38,
+            [localDay(2)]: 2,
+          });
+          const status = await adoptAndSpend(storagePath, projectCwd, 'resumed-weekly-id', 40, [0]);
+          expect(status.daily.spentUsd).toBeCloseTo(EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(2 + EVENT_USD, 9);
+          expect(status.alerts.filter((a) => a.period === 'weekly')).toEqual([]);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+
+      it("keeps today's saved share in the daily figure of a session resumed from three weeks ago", async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          writeSessionFile(storagePath, 'resumed-daily-id', 21, {
+            [localDay(21)]: 37,
+            [localDay(2)]: 2,
+            [localDay(0)]: 1,
+          });
+          const status = await adoptAndSpend(storagePath, projectCwd, 'resumed-daily-id', 40, [0]);
+          expect(status.daily.spentUsd).toBeCloseTo(1 + EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(3 + EVENT_USD, 9);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+
+      it('counts the whole saved cost of a session resumed from yesterday', async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          writeSessionFile(storagePath, 'resumed-yesterday-id', 1, { [localDay(1)]: 10 });
+          const status = await adoptAndSpend(
+            storagePath,
+            projectCwd,
+            'resumed-yesterday-id',
+            10,
+            [0],
+          );
+          expect(status.daily.spentUsd).toBeCloseTo(EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(10 + EVENT_USD, 9);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+
+      it('counts a session with no saved file once in daily and weekly spend', async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          const status = await adoptAndSpend(storagePath, projectCwd, 'fresh-budget-id', 0, [0]);
+          expect(status.daily.spentUsd).toBeCloseTo(EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(EVENT_USD, 9);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+
+      it('counts a saved estimate once in the week when its exact report replays onto its day', async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          writeSessionFile(
+            storagePath,
+            'resumed-ledger-id',
+            21,
+            { [localDay(21)]: 38, [localDay(1)]: 3 },
+            { [localDay(1)]: 1 },
+          );
+          // The first exact report drops the $1 estimate, so the session keeps $40.
+          let pendingWeeklyUsd: number | undefined;
+          const status = await adoptAndSpend(
+            storagePath,
+            projectCwd,
+            'resumed-ledger-id',
+            40,
+            [1, 0],
+            async (budget) => {
+              // A tool call updates the budget without an exact report.
+              const toolCall = {
+                tool: 'Read',
+                sessionId: 'resumed-ledger-id',
+                toolUseId: 'toolu_1',
+              };
+              const bufferPath = resolve(storagePath, 'buffer-resumed-ledger-id.jsonl');
+              for (const mode of ['pre', 'post']) {
+                appendToHookBuffer(
+                  bufferPath,
+                  JSON.stringify({ ...toolCall, mode, timestamp: Date.now() }) + '\n',
+                );
+              }
+              for (const deadline = Date.now() + 15_000; Date.now() < deadline;) {
+                pendingWeeklyUsd = (await budget()).weekly.spentUsd;
+                if (pendingWeeklyUsd > 0) break;
+                await sleep(100);
+              }
+            },
+          );
+          expect(pendingWeeklyUsd).toBeCloseTo(3, 9);
+          expect(status.daily.spentUsd).toBeCloseTo(EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(2 + 2 * EVENT_USD, 9);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+
+      it('counts no saved cost in the week for a session from three weeks ago with no day map', async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          mkdirSync(resolve(storagePath, 'sessions'), { recursive: true });
+          writeFileSync(
+            resolve(storagePath, 'sessions', `${localDay(21)}_resumed-dayless-id.json`),
+            JSON.stringify({
+              sessionId: 'resumed-dayless-id',
+              toolCallCount: 1,
+              startTime: Date.now() - 21 * DAY_MS,
+              endTime: Date.now() - DAY_MS,
+              estimatedCostUsd: 40,
+            }),
+          );
+          const status = await adoptAndSpend(
+            storagePath,
+            projectCwd,
+            'resumed-dayless-id',
+            40,
+            [0],
+          );
+          expect(status.daily.spentUsd).toBeCloseTo(EVENT_USD, 9);
+          expect(status.weekly.spentUsd).toBeCloseTo(EVENT_USD, 9);
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+    });
   });
 
   // The correction watch reads the parent level only off Linux and Windows,
@@ -3137,10 +5216,16 @@ describe('stdio integration', () => {
    */
   async function startCwdGuessedEngine(
     viaNpmExec: boolean,
-    options: { readonly nodeArgs?: readonly string[]; readonly env?: NodeJS.ProcessEnv } = {},
+    options: {
+      readonly nodeArgs?: readonly string[];
+      readonly env?: NodeJS.ProcessEnv;
+      readonly cwdGuess?: boolean;
+      readonly onStderr?: (stderrSoFar: string, ppidBreadcrumbDir: string) => void;
+    } = {},
   ): Promise<{
     readonly storagePath: string;
     readonly ppidBreadcrumbDir: string;
+    readonly ppid: number;
     readonly readSessionId: () => Promise<string>;
     readonly waitForSessionId: (sessionId: string) => Promise<boolean>;
     /**
@@ -3161,7 +5246,9 @@ describe('stdio integration', () => {
     const cwdBreadcrumbDir = resolve(breadcrumbRoot(storagePath, 'claude-code'), 'session-by-cwd');
     mkdirSync(cwdBreadcrumbDir, { recursive: true });
     const sanitizedCwd = realpathSync(projectCwd).replace(/[\\/:]/g, '-');
-    writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'neighbour-session-id');
+    if (options.cwdGuess !== false) {
+      writeFileSync(resolve(cwdBreadcrumbDir, `${sanitizedCwd}.txt`), 'neighbour-session-id');
+    }
     const ppidBreadcrumbDir = resolve(
       breadcrumbRoot(storagePath, 'claude-code'),
       'session-by-ppid',
@@ -3173,7 +5260,7 @@ describe('stdio integration', () => {
     const transport = new StdioClientTransport({
       command: 'node',
       args: viaNpmExec ? ['-e', NPM_EXEC_WRAPPER, '--', ...engineArgs] : engineArgs,
-      ...(options.nodeArgs ? { stderr: 'pipe' as const } : {}),
+      ...(options.nodeArgs || options.onStderr ? { stderr: 'pipe' as const } : {}),
       cwd: projectCwd,
       env: {
         ...env,
@@ -3187,6 +5274,7 @@ describe('stdio integration', () => {
     let stderr = '';
     transport.stderr?.on('data', (chunk: Buffer) => {
       stderr += chunk.toString('utf8');
+      options.onStderr?.(stderr, ppidBreadcrumbDir);
     });
     const client = new Client({ name: 'test-client', version: '1.0.0' });
     const cleanup = (): void => {
@@ -3215,6 +5303,7 @@ describe('stdio integration', () => {
     return {
       storagePath,
       ppidBreadcrumbDir,
+      ppid: transport.pid!,
       readSessionId,
       waitForSessionId: async (sessionId) => {
         for (let i = 0; i < 20; i++) {
@@ -3363,6 +5452,63 @@ describe('stdio integration', () => {
       const engine = await startCwdGuessedEngine(true);
       try {
         await engine.drainToolCall('neighbour-session-id');
+        writeFileSync(resolve(engine.ppidBreadcrumbDir, `${process.pid}.txt`), 'own-session-id');
+        expect(await engine.waitForSessionId('own-session-id')).toBe(true);
+      } finally {
+        await engine.close();
+      }
+    },
+    30000,
+  );
+
+  itOffWindows(
+    'does not follow the host to a new session after adopting its breadcrumb behind an npm exec wrapper',
+    async () => {
+      let wrote = false;
+      let switched = false;
+      const engine = await startCwdGuessedEngine(true, {
+        cwdGuess: false,
+        onStderr: (text, dir) => {
+          const hostBreadcrumb = resolve(dir, `${process.pid}.txt`);
+          if (!wrote && text.includes('Awaiting session_id resolution')) {
+            wrote = true;
+            writeFileSync(hostBreadcrumb, 'host-session-id');
+          }
+          if (!switched && text.includes('Resolved session_id from ancestor ppid breadcrumb')) {
+            switched = true;
+            writeFileSync(hostBreadcrumb, 'cleared-session-id');
+          }
+        },
+      });
+      try {
+        expect(await engine.waitForSessionId('host-session-id')).toBe(true);
+        expect(switched).toBe(true);
+        await new Promise((r) => setTimeout(r, 3500));
+        expect(await engine.readSessionId()).toBe('host-session-id');
+
+        writeFileSync(resolve(engine.ppidBreadcrumbDir, `${engine.ppid}.txt`), 'own-session-id');
+        expect(await engine.waitForSessionId('own-session-id')).toBe(true);
+      } finally {
+        await engine.close();
+      }
+    },
+    30000,
+  );
+
+  itOffLinux(
+    'corrects an adoption from above the npx host from the host breadcrumb, behind an npm exec wrapper',
+    async () => {
+      let wrote = false;
+      const engine = await startCwdGuessedEngine(true, {
+        cwdGuess: false,
+        onStderr: (text, dir) => {
+          if (wrote || !text.includes('Awaiting session_id resolution')) return;
+          wrote = true;
+          writeFileSync(resolve(dir, `${process.ppid}.txt`), 'shared-session-id');
+        },
+      });
+      try {
+        expect(await engine.waitForSessionId('shared-session-id')).toBe(true);
         writeFileSync(resolve(engine.ppidBreadcrumbDir, `${process.pid}.txt`), 'own-session-id');
         expect(await engine.waitForSessionId('own-session-id')).toBe(true);
       } finally {
@@ -4546,6 +6692,236 @@ describe('--local persisting the sessions it drains', () => {
     } finally {
       child.kill('SIGKILL');
       rmSync(storage, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('feeds its trackers every session it drains, since it owns none', async () => {
+    const { spawn } = await import('node:child_process');
+    const { createServer: createNetServer } = await import('node:net');
+    const storage = mkdtempSync(join(tmpdir(), 'nr-local-trackers-'));
+    const home = mkdtempSync(join(tmpdir(), 'nr-local-trackers-home-'));
+    const buffer = resolve(storage, 'buffer-drained-session.jsonl');
+    for (let n = 0; n < 3; n++) {
+      const call = {
+        tool: 'Bash',
+        timestamp: Date.now() + n,
+        sessionId: 'drained-session',
+        toolUseId: `toolu_${n}`,
+        toolInput: { command: 'npm test' },
+        outputSize: 2000,
+      };
+      appendToHookBuffer(buffer, JSON.stringify({ mode: 'pre', ...call }) + '\n');
+      appendToHookBuffer(buffer, JSON.stringify({ mode: 'post', ...call, success: false }) + '\n');
+    }
+    const port = await new Promise<number>((resolvePort, reject) => {
+      const srv = createNetServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close((err) => (err ? reject(err) : resolvePort(p)));
+      });
+      srv.on('error', reject);
+    });
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      NEW_RELIC_AI_MCP_STORAGE_PATH: storage,
+      NR_AI_DASHBOARD_PORT: String(port),
+      NR_AI_MODE: 'local',
+      NR_AI_ALERTS_ENABLED: 'false',
+      NEW_RELIC_LICENSE_KEY: '',
+      NEW_RELIC_ACCOUNT_ID: '',
+    };
+    for (const key of Object.keys(env)) if (key.startsWith('CLAUDE')) delete env[key];
+    const child = spawn(
+      process.execPath,
+      [resolve(__dirname, '..', 'dist', 'index.js'), '--local'],
+      {
+        env,
+        stdio: 'ignore',
+      },
+    );
+    const getJson = async (path: string) =>
+      (await (await fetch(`http://127.0.0.1:${port}${path}`)).json()) as Record<string, unknown>;
+    try {
+      let retry: Record<string, unknown> = {};
+      for (let i = 0; i < 100 && retry.totalAlertsEmitted !== 1; i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        retry = await getJson('/api/retry-alerts').catch(() => ({}));
+      }
+      const context = await getJson('/api/context?sessionId=drained-session');
+
+      expect(retry.totalAlertsEmitted).toBe(1);
+      expect(context.toolContributions).toEqual([
+        expect.objectContaining({ tool: 'Bash', totalBytes: 6000 }),
+      ]);
+    } finally {
+      child.kill('SIGKILL');
+      rmSync(storage, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 30000);
+});
+
+describe('log level at startup', () => {
+  async function runLocalAndCollectStderr(opts: {
+    env?: Record<string, string>;
+    config?: { logLevel: string };
+    configAtDefaultPath?: boolean;
+    extraArgs?: string[];
+  }): Promise<string> {
+    const { spawn } = await import('node:child_process');
+    const { createServer: createNetServer } = await import('node:net');
+
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const dir = mkdtempSync(join(tmpdir(), 'nr-loglevel-'));
+    const home = resolve(dir, 'home');
+    const storage = resolve(dir, 'storage');
+    mkdirSync(resolve(home, '.newrelic-preflight'), { recursive: true });
+    mkdirSync(storage, { recursive: true });
+    const args = [binPath, '--local', ...(opts.extraArgs ?? [])];
+    if (opts.config !== undefined) {
+      const configPath = opts.configAtDefaultPath
+        ? resolve(home, '.newrelic-preflight', 'config.json')
+        : resolve(dir, 'config.json');
+      writeFileSync(configPath, JSON.stringify(opts.config));
+      if (!opts.configAtDefaultPath) args.push('--config', configPath);
+    }
+
+    const port = await new Promise<number>((resolvePort, reject) => {
+      const srv = createNetServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close((err) => (err ? reject(err) : resolvePort(p)));
+      });
+      srv.on('error', reject);
+    });
+
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: home,
+      NEW_RELIC_AI_MCP_STORAGE_PATH: storage,
+      NR_AI_DASHBOARD_PORT: String(port),
+      NR_AI_ALERTS_ENABLED: 'false',
+      NEW_RELIC_LICENSE_KEY: '',
+      NEW_RELIC_ACCOUNT_ID: '',
+      ...opts.env,
+    };
+    delete env.NR_AI_MODE;
+    if (opts.env?.NEW_RELIC_AI_LOG_LEVEL === undefined) delete env.NEW_RELIC_AI_LOG_LEVEL;
+    if (opts.env?.NEW_RELIC_AI_MCP_LOG_LEVEL === undefined) delete env.NEW_RELIC_AI_MCP_LOG_LEVEL;
+
+    const child = spawn(process.execPath, args, { env, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+    });
+    try {
+      const deadline = Date.now() + 20_000;
+      let up = false;
+      while (!up && Date.now() < deadline) {
+        try {
+          up = (await fetch(`http://127.0.0.1:${port}/api/health`)).ok;
+        } catch {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      }
+      expect(up).toBe(true);
+      await new Promise((r) => setTimeout(r, 500));
+      return stderr;
+    } finally {
+      child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const jsonLevels = (stderr: string): Set<string> =>
+    new Set(Array.from(stderr.matchAll(/"level":"(\w+)"/g), (m) => m[1] as string));
+
+  it('NEW_RELIC_AI_LOG_LEVEL=error silences the info lines the server writes by default', async () => {
+    const stderr = await runLocalAndCollectStderr({ env: { NEW_RELIC_AI_LOG_LEVEL: 'error' } });
+    expect(stderr).not.toContain('Starting preflight');
+    expect(jsonLevels(stderr)).not.toContain('info');
+  }, 30000);
+
+  it('NEW_RELIC_AI_MCP_LOG_LEVEL=debug turns on debug lines and wins over NEW_RELIC_AI_LOG_LEVEL', async () => {
+    const stderr = await runLocalAndCollectStderr({
+      env: { NEW_RELIC_AI_MCP_LOG_LEVEL: 'debug', NEW_RELIC_AI_LOG_LEVEL: 'error' },
+    });
+    expect(stderr).toContain('"message":"Starting preflight"');
+    expect(jsonLevels(stderr)).toContain('debug');
+  }, 30000);
+
+  it('uses the config file logLevel when no environment variable is set', async () => {
+    const stderr = await runLocalAndCollectStderr({ config: { logLevel: 'debug' } });
+    expect(stderr).toContain('"logLevel":"debug"');
+    expect(jsonLevels(stderr)).toContain('debug');
+  }, 30000);
+
+  it('reads logLevel from the default config path when --config is absent', async () => {
+    const stderr = await runLocalAndCollectStderr({
+      config: { logLevel: 'error' },
+      configAtDefaultPath: true,
+    });
+    expect(stderr).not.toContain('Starting preflight');
+  }, 30000);
+
+  it('an environment variable beats the config file logLevel', async () => {
+    const stderr = await runLocalAndCollectStderr({
+      env: { NEW_RELIC_AI_LOG_LEVEL: 'error' },
+      config: { logLevel: 'debug' },
+    });
+    expect(jsonLevels(stderr)).not.toContain('debug');
+    expect(jsonLevels(stderr)).not.toContain('info');
+  }, 30000);
+
+  it('--log-level beats the environment', async () => {
+    const stderr = await runLocalAndCollectStderr({
+      env: { NEW_RELIC_AI_LOG_LEVEL: 'error' },
+      extraArgs: ['--log-level', 'debug'],
+    });
+    expect(jsonLevels(stderr)).toContain('debug');
+  }, 30000);
+
+  it('an invalid --log-level falls through to the environment', async () => {
+    const stderr = await runLocalAndCollectStderr({
+      env: { NEW_RELIC_AI_LOG_LEVEL: 'error' },
+      extraArgs: ['--log-level', 'verbose'],
+    });
+    expect(stderr).not.toContain('Starting preflight');
+    expect(jsonLevels(stderr)).not.toContain('info');
+  }, 30000);
+
+  it('logs an invalid config file error once and exits with the config error status', async () => {
+    const { spawnSync } = await import('node:child_process');
+    const binPath = resolve(__dirname, '..', 'dist', 'index.js');
+    const dir = mkdtempSync(join(tmpdir(), 'nr-badconfig-'));
+    const configPath = resolve(dir, 'config.json');
+    writeFileSync(configPath, '{not valid json');
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: resolve(dir, 'home'),
+      NEW_RELIC_AI_MCP_STORAGE_PATH: resolve(dir, 'storage'),
+      NR_AI_ALERTS_ENABLED: 'false',
+      NEW_RELIC_LICENSE_KEY: '',
+      NEW_RELIC_ACCOUNT_ID: '',
+    };
+    delete env.NR_AI_MODE;
+    delete env.NEW_RELIC_AI_LOG_LEVEL;
+    delete env.NEW_RELIC_AI_MCP_LOG_LEVEL;
+    try {
+      const result = spawnSync(process.execPath, [binPath, '--stdio', '--config', configPath], {
+        env,
+        encoding: 'utf8',
+        timeout: 20_000,
+      });
+      const invalidJsonLines = result.stderr
+        .split('\n')
+        .filter((line) => line.includes('Invalid JSON in config file'));
+      expect(invalidJsonLines).toHaveLength(1);
+      expect(result.status).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   }, 30000);
 });

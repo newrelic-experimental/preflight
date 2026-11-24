@@ -46,6 +46,11 @@ const KEEPS_COMMAND: Row[] = [
   ['# set --token "a\nrm -rf /tmp/x ; echo "b', '--token "a'],
   ["it's --password 'abc ; rm -rf /tmp/x ; echo 'x"],
   [`curl --token "${'a '.repeat(2100)}" ; rm -rf /tmp/x`],
+  ['curl -u user:pass x;rm -rf /tmp/x', '-u user:pass'],
+  ["curl -u 'a b' x && rm -rf /tmp/x", "-u 'a b'"],
+  ['docker login -p s3cretpw x;rm -rf /tmp/x', '-p s3cretpw'],
+  ['sshpass -p hunter2 ssh h && rm -rf /tmp/x', '-p hunter2'],
+  ['redis-cli -a s3cretpw ping;rm -rf /tmp/x', '-a s3cretpw'],
 ];
 
 const REDACTS: Row[] = [
@@ -106,6 +111,80 @@ const REDACTS: Row[] = [
   ['cp -p a b'],
   ['some-cli --token \\\n  --verbose'],
   ['some-cli --token \\\n--verbose'],
+  ['curl -u user:pass https://example.com', '-u user:pass'],
+  ['curl -uuser:pass https://example.com', '-uuser:pass'],
+  ['curl --user user:pass https://example.com', '--user user:pass'],
+  ['curl --user=user:pass https://example.com', '--user=user:pass'],
+  ["curl -u 'user:p a s s' https://example.com", "-u 'user:p a s s'"],
+  ['curl --user "user:p a s s" https://example.com', '--user "user:p a s s"'],
+  ['curl -t secret https://example.com', '-t secret'],
+  ['curl -tsecret https://example.com', '-tsecret'],
+  ['curl -sSu user:pass https://example.com', 'u user:pass'],
+  ['curl -U proxy:pass -x http://proxy https://example.com', '-U proxy:pass'],
+  ['curl --proxy-user proxy:pass https://example.com', '--proxy-user proxy:pass'],
+  ['curl -s https://a.example.com && curl -u user:pass x', '-u user:pass'],
+  ['curl -u \\\n  user:pass x', '-u \\\n  user:pass'],
+  [JSON.stringify('curl -u user:pass x\nls'), '-u user:pass'],
+  ['curl -XPUT -d @body.json https://example.com'],
+  ['curl -T upload.txt https://example.com'],
+  ['curl --upload-file upload.txt https://example.com'],
+  ['curl -o -t.txt https://example.com'],
+  ['curl -s https://example.com\nsort -t , -k2 data.csv'],
+  ['docker run -u 1000 node'],
+  ['tmux attach -t main'],
+  [JSON.stringify('cd /tmp\ncurl -u user:pass x'), '-u user:pass'],
+  [JSON.stringify('set -e\n\tcurl -sSu me:hunter2 x'), 'u me:hunter2'],
+  ['\x1b[32mcurl -u me:hunter2 x', '-u me:hunter2'],
+  [JSON.stringify('cd /tmp\nmysql -phunter2'), '-phunter2'],
+  [JSON.stringify('set -e\n\tmysql -phunter2 db'), '-phunter2'],
+  ['\x1b[32mmysql -phunter2 db', '-phunter2'],
+  ['libcurl -u user:pass x'],
+  ['pymysql -psecret'],
+  ['curl -"u" me:hunter2 x', 'u" me:hunter2'],
+  ["curl -s'u' me:hunter2 x", "u' me:hunter2"],
+  ['curl -o"" -t.txt https://example.com'],
+  [JSON.stringify('\x1b[32mcurl -u me:hunter2 x'), '-u me:hunter2'],
+  [JSON.stringify('\x1b[1mmysql -phunter2 db'), '-phunter2'],
+  [JSON.stringify('\fcurl -u me:hunter2 x'), '-u me:hunter2'],
+  [JSON.stringify('curl -"u" me:hunter2 x'), 'u\\" me:hunter2'],
+  [JSON.stringify('curl -u"" me:hunter2 x'), '-u\\"\\" me:hunter2'],
+  [
+    'curl -H "Authorization: Basic YWxpY2U6czNjcmV0cHc=" https://api.example.com',
+    'Authorization: Basic YWxpY2U6czNjcmV0cHc=',
+  ],
+  [
+    "curl --header 'authorization: basic YWxpY2U6czNjcmV0cHc=' https://api.example.com",
+    'authorization: basic YWxpY2U6czNjcmV0cHc=',
+  ],
+  ['curl -H "Authorization: Basic" https://api.example.com'],
+  ['curl -H "Authorization: Digest abc" https://api.example.com'],
+  ['echo Authorization: Basic abc'],
+  ['docker login -u me -p s3cretpw', '-p s3cretpw'],
+  ['docker login -p s3cretpw -u me registry.example.com', '-p s3cretpw'],
+  ['docker login -u me -p "my pass" registry', '-p "my pass"'],
+  ['docker login -ps3cretpw', '-ps3cretpw'],
+  [JSON.stringify('cd /tmp\ndocker login -p s3cretpw'), '-p s3cretpw'],
+  ['docker login -u me --password-stdin'],
+  ['docker login -p --username me registry.example.com'],
+  ['docker ps -p 8080'],
+  ['docker login -u me && docker run -p 8080:80 nginx'],
+  ['sshpass -p hunter2 ssh -p 2222 host', '-p hunter2'],
+  ['sshpass -phunter2 ssh host', '-phunter2'],
+  ['sshpass -e -p hunter2 ssh host', '-p hunter2'],
+  ["sshpass -p 'hun ter2' scp a host:/b", "-p 'hun ter2'"],
+  ['sshpass -P prompt -p hunter2 ssh host', '-p hunter2'],
+  ['sshpass -e ssh -p 2222 host'],
+  ['sshpass -f pw.txt ssh -p 2222 host'],
+  ['redis-cli -a s3cretpw ping', '-a s3cretpw'],
+  ['redis-cli -h host -p 6380 -a s3cretpw ping', '-a s3cretpw'],
+  ['redis-cli --pass s3cretpw ping', '--pass s3cretpw'],
+  ['\x1b[32mredis-cli -a s3cretpw', '-a s3cretpw'],
+  ['redis-cli -h host -p 6380 ping'],
+  ['redis-cli ping; ls -a'],
+  ['redis-cli ping | sort -a x'],
+  ['redis-cli --pass'],
+  ['redis-cli -a --version'],
+  ['ls -a redis-cli'],
 ];
 
 const cases = (rows: Row[]): [string, Row][] =>
@@ -131,13 +210,14 @@ describe('secret arguments', () => {
       process.env = { ...env };
     });
 
-    function store(command: string): Record<string, unknown> {
+    function save(command: string): { toolInput: Record<string, unknown>; inputContent?: string } {
       const hook = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } };
       processHook(JSON.stringify({ ...hook, session_id: 'sess-1', cwd: '/projects/test' }));
       const lines = readFileSync(join(dir, 'buffer.jsonl'), 'utf8').trim().split('\n');
-      return (JSON.parse(lines[lines.length - 1]) as { toolInput: Record<string, unknown> })
-        .toolInput;
+      return JSON.parse(lines[lines.length - 1]) as ReturnType<typeof save>;
     }
+
+    const store = (command: string): Record<string, unknown> => save(command).toolInput;
 
     it.each(cases(KEEPS_COMMAND))('stores %s and keeps it destructive', (_title, row) => {
       const toolInput = store(row[0]);
@@ -147,6 +227,29 @@ describe('secret arguments', () => {
 
     it.each(cases(REDACTS))('stores %s', (_title, row) => {
       expect(store(row[0]).command).toBe(stored(row));
+    });
+
+    it.each([
+      ['cd /tmp\ncurl -u me:hunter2 x', '{"command":"cd /tmp\\ncurl [REDACTED] x"}'],
+      ['cd /tmp\nmysql -phunter2', '{"command":"cd /tmp\\nmysql [REDACTED]"}'],
+      ['cd /tmp\ndocker login -p hunter2', '{"command":"cd /tmp\\ndocker login [REDACTED]"}'],
+      ['cd /tmp\nsshpass -p hunter2 ssh h', '{"command":"cd /tmp\\nsshpass [REDACTED] ssh h"}'],
+      ['cd /tmp\nredis-cli -a hunter2 ping', '{"command":"cd /tmp\\nredis-cli [REDACTED] ping"}'],
+      ['curl -H "Authorization: Basic YQ==" x', '{"command":"curl -H \\"[REDACTED]\\" x"}'],
+    ])('records the content of %j with its password redacted', (command, content) => {
+      process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+      expect(save(command).inputContent).toBe(content);
+    });
+
+    it('numbers recorded keys that redact to the same text', () => {
+      process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+      const tool_input = { 'redis-cli -a one': 1, 'redis-cli -a two': 2 };
+      const hook = { hook_event_name: 'PreToolUse', tool_name: 'Task', tool_input };
+      processHook(JSON.stringify({ ...hook, session_id: 'sess-1', cwd: '/projects/test' }));
+      const event = JSON.parse(readFileSync(join(dir, 'buffer.jsonl'), 'utf8').trim()) as {
+        inputContent: string;
+      };
+      expect(event.inputContent).toBe('{"redis-cli [REDACTED]":1,"redis-cli [REDACTED] (2)":2}');
     });
 
     const SPLIT = `echo ${'x'.repeat(1_048_554)} `;
@@ -205,7 +308,8 @@ function shellWord(rand: Rand): string {
 const FLAGS = [
   'curl --token |npm run deploy -- --password |deploy --api-key |deploy --client-secret ',
   '|deploy --db-password |tool --a-b-c-d-token |keytool -password |curl --token=|tool --api_key=',
-  '|deploy --client-secret=|env API_KEY=|export TOKEN=|mysql -u root -p',
+  '|deploy --client-secret=|env API_KEY=|export TOKEN=|mysql -u root -p|curl -u |curl -t ',
+  '|docker login -p |sshpass -p |redis-cli -a ',
 ]
   .join('')
   .split('|');
@@ -280,6 +384,8 @@ const ARGUMENTS = [
   'PASSWORD\n= ',
   'deploy --client-secret=',
   'psql --db-password ',
+  'curl -sSu ',
+  'curl --user=',
 ];
 const PREFIXES = [
   '',

@@ -1,5 +1,6 @@
 import { classifyGitCommand, classifyGitSegments, type GitEvent } from './git-event-classifier.js';
 import type { ToolCallRecord } from '../storage/types.js';
+import { readShell } from './shell-lexer.js';
 
 const makeRecord = (overrides?: Partial<ToolCallRecord>): ToolCallRecord => ({
   id: 'test-id',
@@ -159,7 +160,7 @@ describe('classifyGitCommand', () => {
       'CONFLICT (content): Merge conflict in a.ts\nerror: could not apply 466ee9d... feat: a';
     const outcomes = (command: string, error: string): [string, boolean][] =>
       classifyGitSegments(
-        command,
+        readShell(command),
         makeRecord({ command, success: false, error }),
         resolveRepoSpy,
       ).map(({ event }) => [event.type, event.success]);
@@ -348,9 +349,11 @@ describe('classifyGitSegments error attribution', () => {
   const REJECTED = ' ! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs';
 
   const classify = (command: string, error: string): string[] =>
-    classifyGitSegments(command, makeRecord({ command, success: false, error }), resolveRepo).map(
-      ({ event }) => event.type,
-    );
+    classifyGitSegments(
+      readShell(command),
+      makeRecord({ command, success: false, error }),
+      resolveRepo,
+    ).map(({ event }) => event.type);
 
   it('hands conflict text to the segment that can conflict, not a later push', () => {
     expect(classify('git pull && git push', CONFLICT)).toEqual(['merge_conflict']);
@@ -359,7 +362,7 @@ describe('classifyGitSegments error attribution', () => {
   it('keeps conflicted files on the segment the conflict is attributed to', () => {
     const command = 'git merge feature; git push; gh pr create --fill';
     const events = classifyGitSegments(
-      command,
+      readShell(command),
       makeRecord({ command, success: false, error: CONFLICT }),
       resolveRepo,
     ).map(({ event }) => event);
@@ -423,11 +426,21 @@ describe('classifyGitSegments error attribution', () => {
 
   it('keeps every segment of a chain that succeeded', () => {
     const command = 'git pull && git push';
-    const events = classifyGitSegments(command, makeRecord({ command }), resolveRepo);
+    const events = classifyGitSegments(readShell(command), makeRecord({ command }), resolveRepo);
     expect(events.map(({ event }) => [event.type, event.success])).toEqual([
       ['pull', true],
       ['push', true],
     ]);
+  });
+
+  it('attributes a git step after a heredoc to the directory a `;`-joined cd moved to', () => {
+    const command = "cat > notes.md <<'EOF'\nnotes\nEOF\ntrue; cd /repos/other && git push";
+    const events = classifyGitSegments(
+      readShell(command),
+      makeRecord({ command, cwd: '/repos/main' }),
+      (dir) => dir,
+    );
+    expect(events.map(({ event }) => [event.type, event.repo])).toEqual([['push', '/repos/other']]);
   });
 });
 
@@ -438,9 +451,11 @@ describe('classifyGitSegments per-segment outcome', () => {
   // The hook reports one exit status for the whole chain, so only the
   // segment the failure is attributed to inherits it.
   const outcomes = (command: string, error: string): [string, boolean][] =>
-    classifyGitSegments(command, makeRecord({ command, success: false, error }), resolveRepo).map(
-      ({ event }) => [event.type, event.success],
-    );
+    classifyGitSegments(
+      readShell(command),
+      makeRecord({ command, success: false, error }),
+      resolveRepo,
+    ).map(({ event }) => [event.type, event.success]);
 
   it('marks a commit before a rejected push as succeeded', () => {
     expect(outcomes('git commit -m x && git push', REJECTED)).toEqual([
@@ -536,13 +551,16 @@ describe('classifyGitSegments when the error names no step', () => {
   const GPG = 'error: gpg failed to sign the data\nfatal: failed to write commit object';
 
   const outcomes = (command: string, error: string): [string, boolean][] =>
-    classifyGitSegments(command, makeRecord({ command, success: false, error }), resolveRepo).map(
-      ({ event }) => [event.type, event.success],
-    );
+    classifyGitSegments(
+      readShell(command),
+      makeRecord({ command, success: false, error }),
+      resolveRepo,
+    ).map(({ event }) => [event.type, event.success]);
 
   it('fails a heredoc-message commit that is the only command', () => {
-    // What stripHeredocBodies leaves of `git commit -m "$(cat <<'EOF' ... EOF )"`.
-    expect(outcomes('git commit -m "$(cat <<\'EOF\'\n)"', GPG)).toEqual([['commit', false]]);
+    expect(outcomes('git commit -m "$(cat <<\'EOF\'\nfix: x\nEOF\n)"', GPG)).toEqual([
+      ['commit', false],
+    ]);
   });
 
   it('fails a multi-line quoted commit message that is the only command', () => {
@@ -579,9 +597,11 @@ describe('classifyGitSegments under bash && and || grouping', () => {
   const CONFLICT = 'CONFLICT (content): Merge conflict in a.ts\nAutomatic merge failed';
 
   const outcomes = (command: string, error: string): [string, boolean][] =>
-    classifyGitSegments(command, makeRecord({ command, success: false, error }), resolveRepo).map(
-      ({ event }) => [event.type, event.success],
-    );
+    classifyGitSegments(
+      readShell(command),
+      makeRecord({ command, success: false, error }),
+      resolveRepo,
+    ).map(({ event }) => [event.type, event.success]);
 
   it('fails a commit whose || fallback ran', () => {
     expect(
@@ -689,7 +709,7 @@ describe('classifyGitSegments under bash && and || grouping', () => {
     ['git mergetool && git rebase --continue', 'git rebase --continue'],
   ])('gives conflict text in `%s` to the step that can conflict', (command, conflicted) => {
     const conflicts = classifyGitSegments(
-      command,
+      readShell(command),
       makeRecord({ command, success: false, error: CONFLICT }),
       resolveRepo,
     )
@@ -707,9 +727,11 @@ describe('classifyGitSegments when the error holds two failures', () => {
   const REJECTED = ' ! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs';
 
   const events = (command: string, error: string): GitEvent[] =>
-    classifyGitSegments(command, makeRecord({ command, success: false, error }), resolveRepo).map(
-      ({ event }) => event,
-    );
+    classifyGitSegments(
+      readShell(command),
+      makeRecord({ command, success: false, error }),
+      resolveRepo,
+    ).map(({ event }) => event);
   const outcomes = (command: string, error: string): [string, boolean][] =>
     events(command, error).map((event) => [event.type, event.success]);
 
@@ -1055,7 +1077,7 @@ describe('classifyGitSegments shell splitting', () => {
     const command = `git push ||\n${'#'.repeat(5000)}\necho done\ngit commit -m x`;
     const startedAt = performance.now();
     const events = classifyGitSegments(
-      command,
+      readShell(command),
       makeRecord({ command, success: true }),
       resolveRepo,
     ).map(({ event }) => event.type);
@@ -1064,9 +1086,11 @@ describe('classifyGitSegments shell splitting', () => {
   });
 
   const outcomes = (command: string, error: string): [string, boolean][] =>
-    classifyGitSegments(command, makeRecord({ command, success: false, error }), resolveRepo).map(
-      ({ event }) => [event.type, event.success],
-    );
+    classifyGitSegments(
+      readShell(command),
+      makeRecord({ command, success: false, error }),
+      resolveRepo,
+    ).map(({ event }) => [event.type, event.success]);
 
   it('drops a push chained after a heredoc-message commit that failed', () => {
     expect(outcomes('git commit -m "$(cat <<\'EOF\'\n)" && git push', NOTHING)).toEqual([
@@ -1106,9 +1130,11 @@ describe('classifyGitSegments shell splitting', () => {
   });
 
   const succeeded = (command: string): [string, boolean][] =>
-    classifyGitSegments(command, makeRecord({ command, success: true }), resolveRepo).map(
-      ({ event }) => [event.type, event.success],
-    );
+    classifyGitSegments(
+      readShell(command),
+      makeRecord({ command, success: true }),
+      resolveRepo,
+    ).map(({ event }) => [event.type, event.success]);
 
   // A command that ran had balanced quotes, so the scan misread them, and
   // its steps keep the command's success.
@@ -1117,6 +1143,19 @@ describe('classifyGitSegments shell splitting', () => {
       ['commit', true],
       ['push', true],
     ]);
+  });
+
+  it('reads no git step from a quoted "$( … )" that holds an operator', () => {
+    expect(succeeded('git commit -m "$(echo "a; git status")" && git pull')).toEqual([
+      ['commit', true],
+      ['pull', true],
+    ]);
+  });
+
+  it('reads no push from a heredoc body after a "$( … )" with a nested quote', () => {
+    expect(
+      succeeded('git commit -m "$(echo "a; b")" && cat <<\'EOF\'\ngit push --force\nEOF'),
+    ).toEqual([['commit', true]]);
   });
 
   // A background job's exit status never reaches the command's.

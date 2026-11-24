@@ -86,7 +86,7 @@ Apply the same pattern to any user-supplied string that becomes a NR event field
 
 ### `redactSecrets()` — `src/redaction-patterns.ts`
 
-One redaction pass, called by `redactSensitive()` and `redactIdentifier()` in `src/config.ts` and by `redact()` in `collector-script.ts`. It runs `REDACTION_PATTERNS`, token patterns that each redact their whole match, and four argument rules: `NAME=value`, secret flags, mysql `-p` and API-key headers. An argument rule's regex only finds where the secret starts. A scanner reads the value as one bash word, so quotes, escapes and line continuations stay in it, and an unquoted space, tab, line break, one of `; | & ( ) < >` or the backtick ends it. The scanner starts in the quote the text is in at the match, so a value inside a quoted string never reads past its closing quote. A `#` comment reads like a quote that the line break closes. The pass covers:
+One redaction pass, called by `redactSensitive()` and `redactIdentifier()` in `src/config.ts` and by `redact()` in `collector-script.ts`. It runs `REDACTION_PATTERNS`, token patterns that each redact their whole match, and eight argument rules: `NAME=value`, secret flags, mysql `-p`, curl credentials, `docker login -p`, `sshpass -p`, `redis-cli -a` and API-key headers. An argument rule's regex only finds where the secret starts. The mysql, curl, docker, sshpass and redis-cli rules start at the command name, which counts when it starts a word, including right after a JSON escape or ANSI colour code (`\ncurl`, `\x1b[32mmysql`, `\u001b[32mcurl`). A scanner reads the value as one bash word, so quotes, escapes and line continuations stay in it, and an unquoted space, tab, line break, one of `; | & ( ) < >` or the backtick ends it. The scanner starts in the quote the text is in at the match, so a value inside a quoted string never reads past its closing quote. A `#` comment reads like a quote that the line break closes. The pass covers:
 
 | Pattern                                                                         | What it catches                           |
 | ------------------------------------------------------------------------------- | ----------------------------------------- |
@@ -108,14 +108,20 @@ One redaction pass, called by `redactSensitive()` and `redactIdentifier()` in `s
 | `?sig=`, `?se=`, `?sp=`, `?sv=`, …                                              | Azure SAS token parameters                |
 | `--token`, `--password`, `--secret`, `--api-key` and the flags listed below     | Secret values passed as flags             |
 | Each `-p<password>` after `mysql`, `mysqldump`, `mysqladmin` or `mariadb`       | MySQL client passwords                    |
+| The value of `-u`, `-U`, `--user`, `--proxy-user` and `-t` after `curl`         | curl credentials                          |
 | `-H`/`--header` with `X-Api-Key`, `Api-Key`, `X-Auth-Token`, `X-Access-Token`   | API-key headers                           |
+| `-H`/`--header` with `Authorization: Basic`                                     | Basic auth credentials                    |
+| The value of `-p` after `docker login`, or after `sshpass` before its command   | docker and sshpass passwords              |
+| The value of `-a` or `--pass` after `redis-cli`                                 | Redis passwords                           |
 | `aws_secret_access_key` followed by 40 characters, bare or quoted               | AWS secret access keys                    |
 
 The secret flags are `--token`, `--password`, `--passwd`, `--secret`, `--api-key`, `--access-key`, `--secret-key` and `--private-key`, in single-dash, underscore and `=` forms, and the same flags with more words joined in front by `-` or `_`, such as `--db-password`. Flags that name a file or stdin, such as `--token-file` and `--password-stdin`, are left alone.
 
+A quoted flag or command name is not recognised, so `curl "-u" user:pass`, `"curl" -u user:pass` and `--"token" value` are stored as is. A quote inside a curl flag word is read, so `curl -"u" user:pass` is redacted. Both rules err toward hiding: a word after the command name that only looks like an option, as in `rg curl -t ts`, is redacted too.
+
 **Where applied:**
 
-- `collector-script.ts` — redacts tool input/output before writing to the hook buffer
+- `collector-script.ts` — redacts tool input/output before writing to the hook buffer. Recorded content (`inputContent`, `outputContent`, `errorDetails`, `lastAssistantMessage`) redacts each string of a structured value, keys included, before JSON encoding and before the length cap, so the pass reads the text the tool saw and not its escaped form. A value that arrives as a string is redacted as is, since the collector cannot tell whether it is already encoded.
 - `src/config.ts` — `redactSensitive()` for free-form text, `redactIdentifier()` for identifiers
 
 **Rule:** Any string that might contain secrets and is heading to a log or NR event must pass through `redactSecrets()` first. Use `redactSensitive(text)` (MCP server) or the collector's `redact()`. A loop over `REDACTION_PATTERNS` alone misses the argument rules.
@@ -177,11 +183,11 @@ This is used by both `HttpUpstream` (MCP proxy forwarding) and `OtlpReceiver` (`
 
 ### LiteLLM price refresh — `src/metrics/pricing-refresh.ts`
 
-An outbound request made by default, unlike the opt-in webhook and forwarding clients. It fetches LiteLLM's community price file to price models the bundled table does not know.
+An outbound request made by default, unlike the opt-in webhook and forwarding clients. It fetches LiteLLM's community price file to price models the built-in table does not know.
 
 - The host and path are fixed (`raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`). The request uses `redirect: 'error'`, a 30 s timeout that also covers the body read, and an 8 MB cap enforced while streaming.
 - The response is mapped by `parseLiteLlmPrices` and the cache is re-validated by the custom-pricing loader, which applies its own size cap and rate ceiling.
-- Refreshed entries are exact-id gap fill. They live in their own table and cannot change a price the bundled table, overlay, or user custom file resolves. They do take precedence over family estimates. Context windows above 10M tokens and rates above 10,000 USD/MTok are dropped. A tampered entry can still misprice a model only the refresh knows, within those bounds, and each such model is logged once as "Pricing from the LiteLLM refresh".
+- Refreshed entries are exact-id gap fill. They live in their own table and cannot change a price the built-in table or user custom file resolves. They do take precedence over family estimates. Context windows above 10M tokens and rates above 10,000 USD/MTok are dropped. A tampered entry can still misprice a model only the refresh knows, within those bounds, and each such model is logged once as "Pricing from the LiteLLM refresh".
 - The cache is `<storagePath>/pricing-cache.json`, written atomically through a per-process temp file with mode `0o600`. It is refetched at server start when older than a day. A long-running server rechecks hourly, does nothing while the cache is unchanged and under a day old, and otherwise refetches only once the cache is a day old.
 - Opt out with `NEW_RELIC_AI_PRICING_REFRESH=false` or `pricingRefresh: false`. `highSecurity=true` forces it off. When off, nothing is fetched and no cache file is read or written.
 

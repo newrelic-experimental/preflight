@@ -27,7 +27,7 @@ const mockSendLogs = jest
 function makeLogIngestOptions(overrides?: Partial<LogIngestOptions>): LogIngestOptions {
   return {
     licenseKey: 'test-license-key',
-    transportOptions: { accountId: '12345' },
+    transportOptions: {},
     developer: 'test-dev',
     appName: 'test-app',
     logHarvestIntervalMs: 100_000, // long enough to not fire in tests
