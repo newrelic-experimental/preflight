@@ -1,5 +1,5 @@
 export { validateSsrfUrl } from './ssrf.js';
-export { AuditTrailManager, auditRecordToNrEvent, securityAlertToNrEvent } from './audit-trail.js';
+export { AuditTrailManager, auditRecordToNrEvent } from './audit-trail.js';
 export type {
   AuditAction,
   AlertSeverity,
