@@ -1,5 +1,0 @@
----
-'@newrelic/preflight': patch
----
-
-A curl command's credentials are redacted at capture. The value of `-u`, `-U`, `--user`, `--proxy-user` and `-t` is stored as `[REDACTED]`, whether it follows the flag as the next word, in the same word (`-uuser:pass`) or after other short flags (`-sSu user:pass`). Other curl options and their values, such as `-T` or `-o -t.txt`, are kept. A curl or mysql command right after a JSON escape or ANSI colour code, as in recorded tool input (`cd /tmp\ncurl -u user:pass`), now has its password redacted too. Before, a mysql `-p` password in that position was stored as is. Recorded tool input and output now redact each string before it is JSON-encoded and before the length cap, so a JSON escape such as `\u001b` or `\"` can no longer hide a password from the pass, a token cut short by the cap is still redacted, and the stored content stays valid JSON where a quoted secret used to swallow its closing brace. A string that starts past the cap is stored as `...[truncated]`.
