@@ -2898,6 +2898,7 @@ describe('collector-script', () => {
         windsurf('post_read_code', { file_path: filePath }),
         windsurf('post_read_code', { file_path: 'module.py' }),
         windsurf('post_read_code', { file_path: tmpDir }),
+        windsurf('post_read_code', { file_path: resolve(tmpDir, 'gone.py') }),
         windsurf('pre_write_code', { file_path: filePath, edits }),
         windsurf('post_mcp_tool_use', {
           ...mcp,
@@ -2909,6 +2910,7 @@ describe('collector-script', () => {
       expect(events.map(sizes)).toEqual([
         ['pre', 'Read', filePath.length, undefined],
         ['post', 'Read', undefined, 640],
+        ['post', 'Read', undefined, 0],
         ['post', 'Read', undefined, 0],
         ['post', 'Read', undefined, 0],
         ['pre', 'Edit', JSON.stringify(edits).length, undefined],

@@ -73,7 +73,7 @@ Each `MCP_CLIENT === '<name>'` or `NEW_RELIC_AI_PLATFORM === '<name>'` check bel
 
 **Pairing:** None of these events carries a `tool_use_id`, so the collector mints one at `beforeShellExecution` or `beforeMCPExecution` and hands it to the oldest open pre of the same tool at `afterShellExecution` or `afterMCPExecution`. A denied command or MCP call fires no `after*` event, so its pre is recorded as a timeout once its wait runs out (11 minutes for a shell command, 60 seconds otherwise). Until then, the next `after*` event of the same tool pairs with it, as the processor's own FIFO does for any call without an id. `beforeReadFile` and `afterFileEdit` have no pre to pair with.
 
-**Sizes:** each tool call records the byte size of its input and output. Shell calls count the `command` and the `output`, MCP calls the `tool_input` and the `result_json`, reads the `file_path` and the `content`, and edits the `edits`. `beforeReadFile` and `afterFileEdit` have no pre event, so the post event carries the input size.
+**Sizes:** each tool call records the size of its input and output, in characters of the payload text. Shell calls count the `command` and the `output`, MCP calls the `tool_input` and the `result_json`, reads the `file_path` and the `content`, and edits the `edits`. `beforeReadFile` and `afterFileEdit` have no pre event, so the post event carries the input size.
 
 **Setup:**
 
@@ -111,7 +111,7 @@ Each `MCP_CLIENT === '<name>'` or `NEW_RELIC_AI_PLATFORM === '<name>'` check bel
 
 **Pairing:** Cascade Hooks carry no tool-use id, so the collector mints one at each `pre_*` event and hands it to the oldest open pre of the same tool at the matching `post_*` event.
 
-**Sizes:** each tool call records the byte size of its input and output. Commands count the command line, edits the `edits`, MCP calls the `mcp_tool_arguments` and the `mcp_result`, and reads the file path and the file. `post_read_code` names the file but sends none of its content, so the collector stats the file and counts its whole size on disk, even when the agent read only part of it. `post_run_command` sends no command output, so a command records no output size.
+**Sizes:** each tool call records the size of its input and output, in characters of the payload text. Commands count the command line, edits the `edits`, MCP calls the `mcp_tool_arguments` and the `mcp_result`, and reads the file path and the file. `post_read_code` names the file but sends none of its content, so the collector stats the file and counts its whole size on disk in bytes, even when the agent read only part of it. `post_run_command` sends no command output, so a command records no output size.
 
 **Setup:**
 
