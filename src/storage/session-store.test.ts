@@ -5644,4 +5644,46 @@ describe('combining a session split across files', () => {
     expect(store.loadSession(id)).toEqual(all[0]);
     expect(store.saveSession(seeded)?.previous?.toolCallCount).toBe(5);
   });
+
+  it('saves a split session as it saves the same calls in one file, from every kind of writer', () => {
+    const calls = (from: number, n: number) =>
+      Array.from({ length: n }, (_, i) => entry(from + i + 1));
+    const stretch = (start: number, timeline: ReplayTimelineEntry[], toolCallCount?: number) =>
+      makeSummary({
+        sessionId: id,
+        startTime: start,
+        endTime: timeline[timeline.length - 1].timestamp,
+        timeline,
+        toolCallCount: toolCallCount ?? timeline.length,
+      });
+    const [day1Calls, day2Calls] = [calls(day1, 5), calls(day2, 7)];
+    const totalsAfterSaves = (storagePath: string, files: FullSessionSummary[]): number[] => {
+      mkdirSync(join(storagePath, 'sessions'), { recursive: true });
+      for (const file of files) {
+        const date = new Date(file.startTime).toISOString().slice(0, 10);
+        writeFileSync(join(storagePath, 'sessions', `${date}_${id}.json`), JSON.stringify(file));
+      }
+      const store = new SessionStore({ storagePath });
+      const total = () => store.loadAllSessions().reduce((n, s) => n + s.toolCallCount, 0);
+      const resumed = store.loadSession(id)!;
+      const totals: number[] = [];
+      // A resumed engine counts on from the loaded record, and its timeline restarts.
+      const engine = stretch(day2, calls(day2 + HOUR, 1), resumed.toolCallCount + 1);
+      store.saveSession({ ...resumed, ...engine, startTime: resumed.startTime });
+      totals.push(total());
+      // A rollup adds its own calls to the count on file.
+      const onFile = store.loadSession(id)!.toolCallCount;
+      store.saveSession(stretch(day2, calls(day2 + 2 * HOUR, 1), onFile + 1));
+      totals.push(total());
+      // A writer that never loaded the record, with its own piece and one more call.
+      store.saveSession(stretch(day2, [...day2Calls, ...calls(day2 + 3 * HOUR, 1)]));
+      totals.push(total());
+      return totals;
+    };
+
+    const split = [stretch(day1, day1Calls), stretch(day2, day2Calls)];
+    const oneFile = [stretch(day1, [...day1Calls, ...day2Calls])];
+    expect(totalsAfterSaves(join(tmpDir, 'split'), split)).toEqual([13, 14, 14]);
+    expect(totalsAfterSaves(join(tmpDir, 'one-file'), oneFile)).toEqual([13, 14, 14]);
+  });
 });

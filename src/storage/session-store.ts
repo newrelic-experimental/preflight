@@ -1342,10 +1342,12 @@ export class SessionStore {
       // instead: counters take the max (they only ever grow, so max never
       // regresses and never double-counts overlapping views).
       //
-      // `existing` already combines every split file for this id, and a
-      // resumed process is seeded from that same combined record, so its
-      // counters include the files. It is not classified like a sibling file:
-      // its timeline restarts empty on resume and would look disjoint.
+      // `existing` combines every split file for this id, and every writer
+      // counts from that record: a resumed engine is seeded from it, and a
+      // rollup adds its own calls to its count. A writer that never read it,
+      // such as an older build, max-merges as it would into one file. It is
+      // not classified like a sibling file: a resumed timeline restarts empty
+      // and would look disjoint.
       toWrite = mergeSummaries(existing, summary);
     }
 
