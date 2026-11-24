@@ -503,6 +503,13 @@ describe('the byte-estimate ledger', () => {
       const retracted = file(START, 1, 0, { endTime: START + DAY });
       expect(combineInEveryOrder([beforeExactShares, retracted]).estimatedCostUsd).toBeCloseTo(1);
     });
+
+    it('returns a lone file unchanged when no file has a ledger', () => {
+      const lone = preLedger(5, { exactTotals: { costUsd: 5, inputTokens: 50 } });
+      const combined = combineSessionFiles([lone]);
+      expect(combined).toEqual(lone);
+      expect(combined.exactTotals?.costUsd).toBe(5);
+    });
   });
 
   it('takes the ledger of the latest copy when calls and exact cost tie', () => {

@@ -1026,7 +1026,9 @@ export function combineSessionFiles(files: readonly FullSessionSummary[]): FullS
 function maxMerge(files: readonly FullSessionSummary[]): FullSessionSummary {
   const ledger = [...files].reverse().find((f) => f.byteEstimates)?.byteEstimates;
   return files
-    .map((f) => (f.byteEstimates ? f : { ...f, exactTotals: undefined, byteEstimates: ledger }))
+    .map((f) =>
+      f.byteEstimates || !ledger ? f : { ...f, exactTotals: undefined, byteEstimates: ledger },
+    )
     .reduce((acc, next) => mergeSummaries(acc, next));
 }
 
