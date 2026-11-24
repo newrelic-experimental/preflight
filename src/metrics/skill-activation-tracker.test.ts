@@ -629,6 +629,83 @@ describe('SkillActivationTracker.recordToolStart', () => {
   });
 });
 
+describe('SkillActivationTracker.pinSubagent', () => {
+  function spawnInReviewThenSimplify(t: SkillActivationTracker): SkillStamp | null {
+    const review = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'review' }));
+    t.recordToolStart('s1', 'agent-call', 1000);
+    t.recordPrompt('s1', 'simplify');
+    return review;
+  }
+
+  it('stamps a background subagent with the run open when its Agent call started', () => {
+    const t = new SkillActivationTracker();
+    const review = spawnInReviewThenSimplify(t);
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1' }))).toEqual(review);
+  });
+
+  it('replaces the run a subagent was first seen under', () => {
+    const t = new SkillActivationTracker();
+    const review = spawnInReviewThenSimplify(t);
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1' }))?.name).toBe('simplify');
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', toolUseId: 'u2' }))).toEqual(review);
+  });
+
+  it('keeps a run the subagent opened itself', () => {
+    const t = new SkillActivationTracker();
+    spawnInReviewThenSimplify(t);
+    const lint = t.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'lint', agentId: 'agent-1' }),
+    );
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', toolUseId: 'u2' }))).toEqual(lint);
+  });
+
+  it('replaces a main-agent run the subagent was first seen under', () => {
+    const t = new SkillActivationTracker();
+    const review = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'review' }));
+    t.recordToolStart('s1', 'agent-call', 1000);
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'lint', toolUseId: 'u2' }));
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', toolUseId: 'u3' }))?.name).toBe(
+      'lint',
+    );
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', toolUseId: 'u4' }))).toEqual(review);
+  });
+
+  it('falls back to the run open at first sight when the Agent call start was not seen', () => {
+    const t = new SkillActivationTracker();
+    spawnInReviewThenSimplify(t);
+    t.pinSubagent('s1', 'agent-1', 'other-call');
+
+    expect(t.hasAgent('s1', 'agent-1')).toBe(false);
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1' }))?.name).toBe('simplify');
+    expect(t.hasAgent('s1', 'agent-1')).toBe(true);
+  });
+
+  it('pins a subagent spawned after an idle gap to no run, and one spawned before to its run', () => {
+    const t = new SkillActivationTracker();
+    const review = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'review' }));
+    t.recordToolStart('s1', 'agent-early', 1100);
+    const later = 1100 + DEFAULT_IDLE_TIMEOUT_MS + 1;
+    t.recordToolStart('s1', 'agent-late', later);
+    for (const agentId of ['agent-1', 'agent-2']) {
+      t.recordToolCall(makeRecord({ agentId, toolUseId: `${agentId}-first`, timestamp: later }));
+    }
+    t.pinSubagent('s1', 'agent-1', 'agent-early');
+    t.pinSubagent('s1', 'agent-2', 'agent-late');
+
+    const next = later + 200;
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', timestamp: next }))).toEqual(review);
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-2', timestamp: next }))).toBeNull();
+  });
+});
+
 describe('SkillActivationTracker onRunOpened', () => {
   it('fires again for a run reopened after an idle gap closed the last one', () => {
     const opened: SkillStamp[] = [];
