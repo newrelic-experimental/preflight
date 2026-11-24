@@ -1456,7 +1456,8 @@ type Scores = { readonly [K in ScoreField]-?: FullSessionSummary[K] };
 function subtractEfficiencyScores(t: FullSessionSummary, p: FullSessionSummary): Scores {
   const [countT, countP] = [t.efficiencyScoreSampleCount ?? 0, p.efficiencyScoreSampleCount ?? 0];
   const [partsT, partsP] = [t.efficiencyScoreComponents, p.efficiencyScoreComponents];
-  if (t.efficiencyScore === null || p.efficiencyScore === null || !partsT || !partsP) {
+  const unweighable = countT === 0 || countP === 0 || !partsT || !partsP;
+  if (t.efficiencyScore === null || p.efficiencyScore === null || unweighable) {
     return {
       efficiencyScore: t.efficiencyScore,
       efficiencyScoreSampleCount: t.efficiencyScoreSampleCount,

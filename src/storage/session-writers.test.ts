@@ -543,6 +543,18 @@ describe('captureLegacyIndex', () => {
     });
     const unrated = captureLegacyIndex([scored(0.875, 5, 0.75, 8)], [contribution(file({}))]);
     expect(unrated.summary).toMatchObject({ toolSuccessRate: 0.75, taskSuccessRate: 0.75 });
+    const uncounted = (score: number) =>
+      file({
+        efficiencyScore: score,
+        efficiencyScoreComponents: {
+          speed: score,
+          correctness: score,
+          autonomy: score,
+          firstAttemptQuality: score,
+        },
+      });
+    const old = captureLegacyIndex([uncounted(0.625)], [contribution(uncounted(0.5))]);
+    expect(old.summary.efficiencyScore).toBe(0.625);
     const tested = (runs: number, passes: number) =>
       file({ testRunCount: runs, testPassCount: passes, taskCount: 2, taskSuccessRate: 0.5 });
     const counted = captureLegacyIndex([tested(10, 7)], [contribution(tested(4, 1))]);
@@ -572,6 +584,24 @@ describe('captureLegacyIndex', () => {
       tokensInput: 7,
     });
     expect(fold([contribution(writer), contribution(summary)]).estimatedCostUsd).toBe(total);
+  });
+
+  it('carries a retraction an older build saved as an all-zero ledger', () => {
+    const writer = file({
+      estimatedCostUsd: 5,
+      byteEstimates: { ...NO_LEDGER, costUsd: 3 },
+      exactTotals: { costUsd: 2, inputTokens: 0, outputTokens: 0, costByDayUsd: {} },
+    });
+    const replayed = file({
+      estimatedCostUsd: 6,
+      byteEstimates: NO_LEDGER,
+      exactTotals: { costUsd: 6, inputTokens: 0, outputTokens: 0, costByDayUsd: {} },
+    });
+    const capture = captureLegacyIndex([replayed], [contribution(writer)]);
+    expect(capture.retracted).toBe(true);
+    expect(fold([contribution(writer), capture]).estimatedCostUsd).toBe(6);
+    const estimating = captureLegacyIndex([writer], []);
+    expect(estimating.retracted).toBe(false);
   });
 
   it('keeps an index without cost or day buckets without them', () => {
