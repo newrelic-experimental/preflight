@@ -1684,6 +1684,7 @@ export class SessionStore {
   }
 
   private retireContribution(writerId: string, sessionId: string): void {
+    if (!isValidSessionId(sessionId)) return;
     const own = join(this.sessionsDir, WRITERS_DIR, sessionId, `${writerId}.json`);
     if (!existsSync(own)) return;
     try {
@@ -1944,8 +1945,9 @@ export class SessionStore {
     const inWindow = (file: SessionFileInfo): boolean =>
       !sinceDate || file.date >= sinceDate || modifiedSince(file);
 
+    const listed = this.listSessionFiles();
     const filesById = new Map<string, SessionFileInfo[]>();
-    for (const file of this.listSessionFiles().filter(inWindow)) {
+    for (const file of listed.filter(inWindow)) {
       const group = filesById.get(file.sessionId);
       if (group) group.push(file);
       else filesById.set(file.sessionId, [file]);
@@ -1959,7 +1961,8 @@ export class SessionStore {
       const whole = writerDirs.has(sessionId);
       const relist = () =>
         this.listSessionFiles().filter((f) => f.sessionId === sessionId && (whole || inWindow(f)));
-      const reads = this.readListedFiles(whole ? relist() : files, relist).filter(
+      const first = whole ? listed.filter((f) => f.sessionId === sessionId) : files;
+      const reads = this.readListedFiles(first, relist).filter(
         ({ parsed }) =>
           !options?.developer ||
           (parsed.kind !== 'unreadable' && parsed.summary.developer === options.developer),

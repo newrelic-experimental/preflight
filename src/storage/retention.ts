@@ -86,12 +86,8 @@ export function purgeOldSessions(storagePath: string, retainDays: number): numbe
   let deleted = purgeOldFiles(storagePath, 'sessions', retainDays, 'session', (file) =>
     isLiveWriterSession(parseSessionFilename(file)?.sessionId),
   );
-  for (const sessionId of writerDirs) {
+  for (const sessionId of writerDirs.filter((id) => !isLiveWriterSession(id))) {
     const dir = join(writersDir, sessionId);
-    if (isLiveWriterSession(sessionId)) {
-      deleted += sweepStaleTemps(dir);
-      continue;
-    }
     const files = listDirOrEmpty(dir).length;
     try {
       rmSync(dir, { recursive: true, force: true });
@@ -101,19 +97,6 @@ export function purgeOldSessions(storagePath: string, retainDays: number): numbe
     }
   }
   return deleted;
-}
-
-/** A temp file an hour old was left by a save that died before its rename. */
-function sweepStaleTemps(dir: string): number {
-  const cutoffMs = Date.now() - 60 * 60 * 1000;
-  let swept = 0;
-  for (const name of listDirOrEmpty(dir)) {
-    const path = join(dir, name);
-    if (!name.endsWith('.tmp') || mtimeOf(path) >= cutoffMs) continue;
-    rmSync(path, { force: true });
-    swept++;
-  }
-  return swept;
 }
 
 function mtimeOf(path: string): number {

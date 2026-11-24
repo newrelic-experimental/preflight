@@ -179,6 +179,14 @@ describe('SessionStore.writer', () => {
     expect(totals(store.loadSession(SID))).toEqual({ calls: 6, usd: 0.6, input: 60 });
   });
 
+  it('moves the index to the earlier start a share brings', () => {
+    writeIndex(activity(ids('p', 2), { start: START + 86_400_000 }), '2026-03-02');
+
+    store.writer('engine').save(own(activity(ids('a', 1))));
+
+    expect(topLevel().filter((f) => f.endsWith('.json'))).toEqual([`${DAY}_${SID}.json`]);
+  });
+
   it('skips an unusable session id and a share with nothing in it', () => {
     const save = (s: FullSessionSummary) => store.writer('engine').save(own(s));
     const skip = (reason: string) => ({ kind: 'skipped', reason });
@@ -228,12 +236,13 @@ describe('SessionWriter.retire', () => {
   it('removes the session when its share was the only one', () => {
     const a = store.writer('engine');
     a.save(own(activity(ids('a', 2))));
+    writeFileSync(join(sessionsDir, `2026-03-05_${SID}.json`), '{"sessionId": "shar');
 
     a.retire(SID);
 
     expect(store.loadSession(SID)).toBeNull();
-    expect(store.listSessions()).toEqual([]);
-    expect(topLevel()).toEqual([WRITERS_DIR]);
+    expect(store.listSessions().map((s) => s.date)).toEqual(['2026-03-05']);
+    expect(topLevel()).toEqual([WRITERS_DIR, `2026-03-05_${SID}.json`]);
   });
 
   it('keeps a captured pre-upgrade index when its share goes', () => {
@@ -251,11 +260,14 @@ describe('SessionWriter.retire', () => {
     writeIndex(activity(ids('p', 4)));
     const before = readFileSync(join(sessionsDir, `${DAY}_${SID}.json`));
 
-    store.writer('engine').retire(SID);
-    store.writer('engine').retire('../x');
+    const a = store.writer('engine');
+    a.retire(SID);
 
     expect(topLevel()).toEqual([`${DAY}_${SID}.json`]);
     expect(readFileSync(join(sessionsDir, `${DAY}_${SID}.json`)).equals(before)).toBe(true);
+    a.save(own(activity(ids('a', 2))));
+    a.retire(`x/../${SID}`);
+    expect(writerFiles()).toContain(`${a.id}.json`);
   });
 });
 
