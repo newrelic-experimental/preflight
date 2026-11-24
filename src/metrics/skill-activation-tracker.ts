@@ -58,6 +58,9 @@ export class SkillActivationTracker implements Resettable {
   private readonly runAtStart = new BoundedMap<string, SkillStamp | null>({
     maxEntries: MAX_STARTED_CALLS,
   });
+  private readonly subagentAwaitingStart = new BoundedMap<string, string>({
+    maxEntries: MAX_STARTED_CALLS,
+  });
 
   constructor(private readonly options: SkillActivationTrackerOptions = {}) {}
 
@@ -87,9 +90,14 @@ export class SkillActivationTracker implements Resettable {
     toolUseId: string,
     timestamp: number,
   ): void {
+    const key = startKey(sessionId, toolUseId);
     const sessionKey = sessionId ?? NULL_SESSION_KEY;
     const open = this.idleGapEnds(sessionKey, timestamp) ? null : this.openRun(sessionId);
-    this.runAtStart.set(startKey(sessionId, toolUseId), open);
+    this.runAtStart.set(key, open);
+    const agentId = this.subagentAwaitingStart.get(key);
+    if (agentId === undefined) return;
+    this.subagentAwaitingStart.delete(key);
+    this.pin(sessionId, agentId, open);
   }
 
   recordToolCall(record: ToolCallRecord): SkillStamp | null {
@@ -134,11 +142,20 @@ export class SkillActivationTracker implements Resettable {
    * spawning call started. A background subagent's first call can be
    * recorded after a later prompt, so the main run open then is not its
    * spawner. Replaces that guess, but not a run the subagent opened itself.
-   * Does nothing when the spawning call's start was not seen.
+   * Called before that call's start is seen, the pin waits for it.
    */
   pinSubagent(sessionId: string | null | undefined, agentId: string, spawnToolUseId: string): void {
-    const spawnRun = this.runAtStart.get(startKey(sessionId, spawnToolUseId));
-    if (spawnRun === undefined) return;
+    const key = startKey(sessionId, spawnToolUseId);
+    const spawnRun = this.runAtStart.get(key);
+    if (spawnRun === undefined) this.subagentAwaitingStart.set(key, agentId);
+    else this.pin(sessionId, agentId, spawnRun);
+  }
+
+  private pin(
+    sessionId: string | null | undefined,
+    agentId: string,
+    spawnRun: SkillStamp | null,
+  ): void {
     const runs = this.runsFor(sessionId);
     const current = runs.get(agentId);
     if (current && this.subagentOpenedRuns.has(current)) return;
