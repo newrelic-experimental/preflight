@@ -1104,6 +1104,33 @@ describe('LocalStore', () => {
       return path;
     }
 
+    it('leaves buffer-unknown.jsonl to a live pending engine until it removes its marker', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const pending = new LocalStore(tmpDir);
+      pending.setOwnIdPending(true);
+      pending.writePendingMarker();
+      makeBufferFile('buffer-unknown.jsonl', Date.now() - 6 * 60 * 1000);
+      makeBufferFile('buffer-sess-idle.jsonl', Date.now() - 6 * 60 * 1000);
+      const gc = new LocalStore(tmpDir);
+
+      expect(gc.gcOrphanBuffers(new Set()).archived).toBe(1);
+      expect(existsSync(resolve(tmpDir, 'buffer-unknown.jsonl'))).toBe(true);
+
+      pending.setOwnIdPending(false);
+      pending.removePendingMarker();
+      expect(gc.gcOrphanBuffers(new Set()).archived).toBe(1);
+    });
+
+    it("archives buffer-unknown.jsonl when no live engine is pending, and removes a dead PID's marker", () => {
+      mkdirSync(tmpDir, { recursive: true });
+      makeBufferFile('buffer-unknown.jsonl', Date.now() - 6 * 60 * 1000);
+      const marker = resolve(tmpDir, `pending-${DEAD_PID}.pid`);
+      writeFileSync(marker, String(DEAD_PID));
+
+      expect(new LocalStore(tmpDir).gcOrphanBuffers(new Set()).archived).toBe(1);
+      expect(existsSync(marker)).toBe(false);
+    });
+
     it('archives a buffer whose heartbeat PID is dead', () => {
       mkdirSync(tmpDir, { recursive: true });
       makeBufferFile('buffer-sess-dead.jsonl');

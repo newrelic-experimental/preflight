@@ -74,6 +74,8 @@ const ORPHAN_BUFFER_MTIME_MS = 5 * 60 * 1000;
 
 const COUNTED_IDS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
+const PENDING_MARKER_RE = /^pending-(\d+)\.pid$/;
+
 function readCountedToolUseIds(path: string): string[] {
   if (!existsSync(path)) return [];
   try {
@@ -296,6 +298,44 @@ export class LocalStore {
    */
   setOwnIdPending(pending: boolean): void {
     this.ownIdPending = pending;
+  }
+
+  writePendingMarker(): void {
+    try {
+      writeFileSync(this.pendingMarkerPath(), '', { mode: 0o600 });
+    } catch (err) {
+      logger.warn('Failed to write pending engine marker', { error: String(err) });
+    }
+  }
+
+  removePendingMarker(): void {
+    try {
+      rmSync(this.pendingMarkerPath(), { force: true });
+    } catch (err) {
+      logger.debug('Failed to remove pending engine marker', { error: String(err) });
+    }
+  }
+
+  private pendingMarkerPath(): string {
+    return resolve(this.storagePath, `pending-${process.pid}.pid`);
+  }
+
+  private sweepPendingMarkers(entries: readonly string[]): boolean {
+    let live = false;
+    for (const name of entries) {
+      const pid = PENDING_MARKER_RE.exec(name)?.[1];
+      if (pid === undefined) continue;
+      if (isPidAlive(Number(pid))) {
+        live = true;
+        continue;
+      }
+      try {
+        rmSync(resolve(this.storagePath, name), { force: true });
+      } catch (err) {
+        logger.debug('Failed to remove dead pending engine marker', { error: String(err) });
+      }
+    }
+    return live;
   }
 
   /**
@@ -814,6 +854,11 @@ export class LocalStore {
    * there is considered live regardless of heartbeat/mtime, which protects
    * against heartbeat write delays on slow disks.
    *
+   * `buffer-unknown.jsonl` has no heartbeat of its own. It is kept while any
+   * `pending-<pid>.pid` marker names a live process, since a pending engine
+   * leaves it to its adoption's final drain. Markers of dead processes are
+   * deleted.
+   *
    * Orphan buffers are renamed to `buffer-<sessionId>.jsonl.archived-<ts>`
    * (preserved on disk for forensics, no longer scanned by the aggregator).
    *
@@ -837,6 +882,7 @@ export class LocalStore {
     let archived = 0;
     let staleHeartbeats = 0;
     const now = Date.now();
+    const pendingEngineLive = this.sweepPendingMarkers(entries);
 
     for (const name of entries) {
       // Match `buffer-<sessionId>.jsonl` exactly. Skip `.drain` companions and
@@ -873,6 +919,7 @@ export class LocalStore {
       // known to be live (via tool-call activity / LiveSessionRegistry). If
       // present here, the buffer is owned even if no heartbeat is on disk yet.
       if (activeSessionIds.has(sessionId)) ownerAlive = true;
+      if (sessionId === 'unknown' && pendingEngineLive) ownerAlive = true;
 
       if (ownerAlive) continue;
 
