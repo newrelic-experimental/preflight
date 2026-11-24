@@ -44,11 +44,7 @@ import type { FeedbackCollector } from '../tools/workflow-tools.js';
 import type { BudgetThresholdEvent } from '../metrics/budget-tracker.js';
 import type { ContextTurnSnapshot, ToolContextContribution } from '../metrics/context-tracker.js';
 import { ProxyMetricsTracker } from '../metrics/proxy-metrics.js';
-import {
-  AuditTrailManager,
-  auditRecordToNrEvent,
-  securityAlertToNrEvent,
-} from '../security/index.js';
+import { AuditTrailManager, auditRecordToNrEvent } from '../security/index.js';
 import type { AuditRecord } from '../security/index.js';
 import type {
   TurnCostAttributor,
@@ -1583,16 +1579,6 @@ export class NrIngestManager {
         ? this.auditTrail.recordProxyCall(record)
         : this.auditTrail.recordToolCall(record));
     this.ingestAuditRecord(finalAuditRecord);
-    if (finalAuditRecord.securityAlert) {
-      this.routeEvent(
-        securityAlertToNrEvent(finalAuditRecord, {
-          teamId: this.teamId,
-          projectId: this.projectId,
-          orgId: this.orgId,
-          repoUrl: this.repoUrl,
-        }),
-      );
-    }
   }
 
   ingestCodingTask(task: AiCodingTask): void {
