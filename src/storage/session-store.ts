@@ -18,20 +18,31 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { createLogger } from '../core/index.js';
 import { renameIntoPlace } from './rename-into-place.js';
 import {
+  captureLegacyIndex,
+  createOnce,
   foldSessionFiles,
+  LEGACY_PREFIX,
   listDirOrEmpty,
+  newWriterId,
   readWriterFiles,
+  writeAtomic,
+  writerFileBody,
   WRITERS_DIR,
   type IndexFile,
+  type Producer,
+  type SaveResult,
+  type SessionWriter,
+  type WriterContribution,
 } from './session-writers.js';
 import { redactIdentifier, redactSensitive } from '../config.js';
 import { stripRepoNameCredentials } from '../lib/git-remote.js';
@@ -1548,7 +1559,7 @@ export class SessionStore {
   saveSession(
     summary: FullSessionSummary,
   ): { readonly previous: FullSessionSummary | null } | null {
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(summary.sessionId) || summary.sessionId === 'unknown') {
+    if (!isValidSessionId(summary.sessionId)) {
       logger.warn('Rejecting invalid sessionId for file path', { sessionId: summary.sessionId });
       return null;
     }
@@ -1624,57 +1635,12 @@ export class SessionStore {
     // incoming write's own — mergeSummaries() takes Math.min() of the two,
     // so this is normally the existing file's own date; recomputing here
     // keeps the filename consistent with what's actually written.
-    const startDate = new Date(toWrite.startTime);
-    if (!isFinite(startDate.getTime())) {
-      throw new Error(`Invalid startTime for session ${toWrite.sessionId}: ${toWrite.startTime}`);
-    }
-    const date = startDate.toISOString().slice(0, 10);
-    const filename = `${date}_${toWrite.sessionId}.json`;
-    const filepath = resolve(this.sessionsDir, filename);
-    if (!filepath.startsWith(this.sessionsDir + sep)) {
-      throw new Error(`Session path escaped storage directory: ${filepath}`);
-    }
-
-    const unparsedFilesReplaced = filesRead.filter(
-      (file) => file.parsed.kind !== 'clean' && file.filepath === filepath,
-    );
-
-    // Write-then-rename so two processes saving the same session id can never
-    // interleave bytes in the target file (the temp name does not end in .json,
-    // so loaders never see it).
-    const content = JSON.stringify(toWrite, null, 2) + '\n';
-    const tmpPath = `${filepath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    const filepath = this.indexPath(toWrite);
+    const filename = basename(filepath);
     try {
-      try {
-        writeFileSync(tmpPath, content, { mode: 0o600 });
-        if (!unparsedFilesReplaced.every(copiedAsideUnchanged)) return null;
-        renameIntoPlace(tmpPath, filepath, content);
-      } finally {
-        try {
-          unlinkSync(tmpPath);
-        } catch {
-          // Renamed into place, or never written.
-        }
-      }
-      // Every other file the record was combined from is now superseded. A
-      // file rewritten since it was read holds data this write lacks, so it
-      // stays for the next save to fold in. Superseded files are renamed, not
-      // deleted: the add-vs-max choice is a heuristic, and a `*.merged` copy
-      // (which loaders ignore) keeps those files' bytes. It cannot undo a wrong
-      // combine alone, because the earliest file is overwritten by the combined
-      // record and has no copy.
-      for (const file of filesRead) {
-        if (file.parsed.kind === 'unreadable' || file.filepath === filepath) continue;
-        try {
-          if (!readFileSync(file.filepath).equals(file.bytes)) continue;
-          renameSync(file.filepath, `${file.filepath}.${Date.now()}.merged`);
-        } catch (err) {
-          logger.warn('Failed to set aside superseded session file after merge', {
-            sessionId: toWrite.sessionId,
-            stalePath: file.filepath,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
+      const content = JSON.stringify(toWrite, null, 2) + '\n';
+      if (!this.replaceIndex(toWrite.sessionId, filepath, content, filesRead)) {
+        return null;
       }
       logger.debug('Session saved', { sessionId: toWrite.sessionId, filename });
       return { previous: existing };
@@ -1687,6 +1653,153 @@ export class SessionStore {
       });
       return null;
     }
+  }
+
+  /** One per process and producer. Each session it saves gets one file of its own. */
+  writer(producer: Producer): SessionWriter {
+    const id = newWriterId(producer);
+    return {
+      id,
+      save: (contribution) => this.saveContribution(id, contribution),
+      retire: (sessionId) => this.retireContribution(id, sessionId),
+    };
+  }
+
+  private saveContribution(writerId: string, contribution: WriterContribution): SaveResult {
+    const { sessionId } = contribution.summary;
+    if (!isValidSessionId(sessionId)) return { kind: 'skipped', reason: 'invalid-session-id' };
+    if (!hasRecordedUsage(contribution.summary)) {
+      return { kind: 'skipped', reason: 'no-recorded-usage' };
+    }
+    try {
+      const folded = this.project(sessionId, (dir) =>
+        writeAtomic(join(dir, `${writerId}.json`), writerFileBody(contribution)),
+      );
+      return { kind: 'saved', retracted: Boolean(folded?.retracted) };
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      logger.warn('Failed to save a session writer file', { sessionId, error });
+      return { kind: 'failed', error };
+    }
+  }
+
+  private retireContribution(writerId: string, sessionId: string): void {
+    if (!isValidSessionId(sessionId)) return;
+    const own = join(this.sessionsDir, WRITERS_DIR, sessionId, `${writerId}.json`);
+    if (!existsSync(own)) return;
+    try {
+      this.project(sessionId, () => rmSync(own, { force: true }));
+    } catch (err) {
+      logger.warn('Failed to retire a session writer file', { sessionId, error: String(err) });
+    }
+  }
+
+  /**
+   * Runs `writeOwn` between reading the session and rewriting its index. The
+   * index is read before the writer files: read the other way round, a writer
+   * an older build already folded into the index is missed, and its capture
+   * counts that writer twice. An index this design did not write is captured
+   * before anything replaces it. Returns null when no writer file is left.
+   */
+  private project(sessionId: string, writeOwn: (dir: string) => void): WriterContribution | null {
+    const dir = join(this.sessionsDir, WRITERS_DIR, sessionId);
+    const reads = this.readIndexFiles(sessionId);
+    const index = reads.flatMap(({ parsed }) => (parsed.kind === 'unreadable' ? [] : [parsed]));
+    const before = readWriterFiles(this.sessionsDir, sessionId);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    if (index.some((f) => !f.isProjection)) {
+      const capture = captureLegacyIndex(
+        index.map((f) => f.summary) as [FullSessionSummary],
+        before?.writers ?? [],
+      );
+      createOnce(join(dir, `${LEGACY_PREFIX}${sha16(reads)}.json`), writerFileBody(capture));
+    }
+    writeOwn(dir);
+
+    const after = readWriterFiles(this.sessionsDir, sessionId);
+    if (!after) {
+      for (const file of reads) {
+        if (file.parsed.kind === 'unreadable' || !file.parsed.isProjection) continue;
+        if (readFileSync(file.filepath).equals(file.bytes)) rmSync(file.filepath, { force: true });
+      }
+      // A writer that saved while the index was going has no index to list it.
+      return readWriterFiles(this.sessionsDir, sessionId)
+        ? this.project(sessionId, () => {})
+        : null;
+    }
+    const folded = foldSessionFiles(index, after);
+    const projection = {
+      ...folded.summary,
+      contributions: { version: 1, writers: after.writers.length },
+    };
+    const content = JSON.stringify(projection, null, 2) + '\n';
+    this.replaceIndex(sessionId, this.indexPath(folded.summary), content, reads);
+    return folded;
+  }
+
+  private indexPath({ sessionId, startTime }: FullSessionSummary): string {
+    const startDate = new Date(startTime);
+    if (!isFinite(startDate.getTime())) {
+      throw new Error(`Invalid startTime for session ${sessionId}: ${startTime}`);
+    }
+    const filepath = resolve(this.sessionsDir, `${formatDate(startDate)}_${sessionId}.json`);
+    if (!filepath.startsWith(this.sessionsDir + sep)) {
+      throw new Error(`Session path escaped storage directory: ${filepath}`);
+    }
+    return filepath;
+  }
+
+  /**
+   * Writes `content` to `filepath` and sets aside every other file in
+   * `filesRead`. Returns false, writing nothing, when an unparsed file at
+   * `filepath` changed since it was read or cannot be copied aside.
+   */
+  private replaceIndex(
+    sessionId: string,
+    filepath: string,
+    content: string,
+    filesRead: readonly SessionFileRead[],
+  ): boolean {
+    const unparsedFilesReplaced = filesRead.filter(
+      (file) => file.parsed.kind !== 'clean' && file.filepath === filepath,
+    );
+
+    // Write-then-rename so two processes saving the same session id can never
+    // interleave bytes in the target file (the temp name does not end in .json,
+    // so loaders never see it).
+    const tmpPath = `${filepath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    try {
+      writeFileSync(tmpPath, content, { mode: 0o600 });
+      if (!unparsedFilesReplaced.every(copiedAsideUnchanged)) return false;
+      renameIntoPlace(tmpPath, filepath, content);
+    } finally {
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+        // Renamed into place, or never written.
+      }
+    }
+    // Every other file the record was combined from is now superseded. A
+    // file rewritten since it was read holds data this write lacks, so it
+    // stays for the next save to fold in. Superseded files are renamed, not
+    // deleted: the add-vs-max choice is a heuristic, and a `*.merged` copy
+    // (which loaders ignore) keeps those files' bytes. It cannot undo a wrong
+    // combine alone, because the earliest file is overwritten by the combined
+    // record and has no copy.
+    for (const file of filesRead) {
+      if (file.parsed.kind === 'unreadable' || file.filepath === filepath) continue;
+      try {
+        if (!readFileSync(file.filepath).equals(file.bytes)) continue;
+        renameSync(file.filepath, `${file.filepath}.${Date.now()}.merged`);
+      } catch (err) {
+        logger.warn('Failed to set aside superseded session file after merge', {
+          sessionId,
+          stalePath: file.filepath,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    return true;
   }
 
   loadSession(sessionId: string): FullSessionSummary | null {
@@ -1705,26 +1818,29 @@ export class SessionStore {
     readonly existing: FullSessionSummary | null;
     readonly filesRead: readonly SessionFileRead[];
   } {
-    if (!existsSync(this.sessionsDir)) return { existing: null, filesRead: [] };
-
-    const listFiles = () => this.listSessionFiles().filter((f) => f.sessionId === sessionId);
-    const filesRead = this.readListedFiles(listFiles(), listFiles);
+    const filesRead = this.readIndexFiles(sessionId);
     return { existing: this.combineWithWriterFiles(sessionId, filesRead), filesRead };
+  }
+
+  private readIndexFiles(sessionId: string): SessionFileRead[] {
+    if (!existsSync(this.sessionsDir)) return [];
+    const listFiles = () => this.listSessionFiles().filter((f) => f.sessionId === sessionId);
+    return this.readListedFiles(listFiles(), listFiles);
   }
 
   private combineWithWriterFiles(
     sessionId: string,
     reads: readonly SessionFileRead[],
     hasWriterDir = true,
+    withoutWriters: (read: SessionFileRead) => boolean = () => true,
   ): FullSessionSummary | null {
-    const [first, ...rest] = reads.flatMap(({ parsed }) =>
+    const files = hasWriterDir ? readWriterFiles(this.sessionsDir, sessionId) : null;
+    const index = (files ? reads : reads.filter(withoutWriters)).flatMap(({ parsed }) =>
       parsed.kind === 'unreadable' ? [] : [parsed],
     );
-    if (!first) return null;
-    const index: [IndexFile, ...IndexFile[]] = [first, ...rest];
-    const files = hasWriterDir ? readWriterFiles(this.sessionsDir, sessionId) : null;
+    if (index.length === 0) return null;
     return files
-      ? foldSessionFiles(index, files)
+      ? foldSessionFiles(index, files).summary
       : combineSessionFiles(index.map((f) => f.summary));
   }
 
@@ -1838,14 +1954,20 @@ export class SessionStore {
 
     const writerDirs = new Set(listDirOrEmpty(join(this.sessionsDir, WRITERS_DIR)));
     for (const [sessionId, files] of filesById) {
+      // Writer files hold the whole session, so the window only picks it, and
+      // a capture must see every index file it was taken from. Every index file
+      // is read before the writer files, which decide whether it counts.
+      const whole = writerDirs.has(sessionId);
       const relist = () =>
-        this.listSessionFiles().filter((f) => f.sessionId === sessionId && inWindow(f));
-      const reads = this.readListedFiles(files, relist).filter(
+        this.listSessionFiles().filter((f) => f.sessionId === sessionId && (whole || inWindow(f)));
+      const reads = this.readListedFiles(whole ? relist() : files, relist).filter(
         ({ parsed }) =>
           !options?.developer ||
           (parsed.kind !== 'unreadable' && parsed.summary.developer === options.developer),
       );
-      const session = this.combineWithWriterFiles(sessionId, reads, writerDirs.has(sessionId));
+      const session = this.combineWithWriterFiles(sessionId, reads, whole, ({ filepath }) =>
+        inWindow(parseSessionFilename(basename(filepath))!),
+      );
       if (!session) continue;
 
       // Synthetic session IDs (`local-*`, `proxy-*`, `pending-*`) are
@@ -2288,6 +2410,19 @@ export function sessionSummaryToDriftRecord(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function isValidSessionId(sessionId: string): boolean {
+  return /^[A-Za-z0-9_-]{1,128}$/.test(sessionId) && sessionId !== 'unknown';
+}
+
+/** Names a capture by the index bytes it was taken from, so two writers make one file. */
+function sha16(reads: readonly SessionFileRead[]): string {
+  const hash = createHash('sha256');
+  for (const { filepath, bytes, parsed } of reads) {
+    if (parsed.kind !== 'unreadable') hash.update(basename(filepath)).update(bytes);
+  }
+  return hash.digest('hex').slice(0, 16);
+}
 
 function formatDate(date: Date): string {
   return date.toISOString().slice(0, 10);
