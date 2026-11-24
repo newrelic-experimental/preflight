@@ -26,6 +26,13 @@ import { randomBytes } from 'node:crypto';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { createLogger } from '../core/index.js';
 import { renameIntoPlace } from './rename-into-place.js';
+import {
+  foldSessionFiles,
+  listDirOrEmpty,
+  readWriterFiles,
+  WRITERS_DIR,
+  type IndexFile,
+} from './session-writers.js';
 import { redactIdentifier, redactSensitive } from '../config.js';
 import { stripRepoNameCredentials } from '../lib/git-remote.js';
 import { isSyntheticSessionId, type SessionNameSource } from '../hooks/session-resolver.js';
@@ -1679,7 +1686,6 @@ export class SessionStore {
     }
   }
 
-  /** Every readable file for the id, combined into one record (see combineSessionFiles). */
   loadSession(sessionId: string): FullSessionSummary | null {
     return this.loadSessionFiles(sessionId).existing;
   }
@@ -1700,11 +1706,23 @@ export class SessionStore {
 
     const listFiles = () => this.listSessionFiles().filter((f) => f.sessionId === sessionId);
     const filesRead = this.readListedFiles(listFiles(), listFiles);
-    const summaries = summariesIn(filesRead);
-    return {
-      existing: summaries.length > 0 ? combineSessionFiles(summaries) : null,
-      filesRead,
-    };
+    return { existing: this.combineWithWriterFiles(sessionId, filesRead), filesRead };
+  }
+
+  private combineWithWriterFiles(
+    sessionId: string,
+    reads: readonly SessionFileRead[],
+    hasWriterDir = true,
+  ): FullSessionSummary | null {
+    const [first, ...rest] = reads.flatMap(({ parsed }) =>
+      parsed.kind === 'unreadable' ? [] : [parsed],
+    );
+    if (!first) return null;
+    const index: [IndexFile, ...IndexFile[]] = [first, ...rest];
+    const files = hasWriterDir ? readWriterFiles(this.sessionsDir, sessionId) : null;
+    return files
+      ? foldSessionFiles(index, files)
+      : combineSessionFiles(index.map((f) => f.summary));
   }
 
   private listSessionFiles(): SessionFileInfo[] {
@@ -1815,14 +1833,17 @@ export class SessionStore {
       else filesById.set(file.sessionId, [file]);
     }
 
+    const writerDirs = new Set(listDirOrEmpty(join(this.sessionsDir, WRITERS_DIR)));
     for (const [sessionId, files] of filesById) {
       const relist = () =>
         this.listSessionFiles().filter((f) => f.sessionId === sessionId && inWindow(f));
-      const summaries = summariesIn(this.readListedFiles(files, relist)).filter(
-        (s) => !options?.developer || s.developer === options.developer,
+      const reads = this.readListedFiles(files, relist).filter(
+        ({ parsed }) =>
+          !options?.developer ||
+          (parsed.kind !== 'unreadable' && parsed.summary.developer === options.developer),
       );
-      if (summaries.length === 0) continue;
-      const session = combineSessionFiles(summaries);
+      const session = this.combineWithWriterFiles(sessionId, reads, writerDirs.has(sessionId));
+      if (!session) continue;
 
       // Synthetic session IDs (`local-*`, `proxy-*`, `pending-*`) are
       // MCP-internal bookkeeping from --local / proxy modes, never a real
@@ -2277,7 +2298,7 @@ function formatDate(date: Date): string {
  * runtime guard stays exactly as defensive as before (a legacy on-disk file
  * from an older build may not match this shape).
  */
-interface SerializedFullSessionSummary {
+export interface SerializedFullSessionSummary {
   readonly sessionId?: unknown;
   readonly sessionName?: unknown;
   readonly sessionNameSource?: unknown;
@@ -2829,8 +2850,7 @@ export function deserializeFullSessionSummary(
 }
 
 type ParsedSessionFile =
-  | { readonly kind: 'clean' | 'recovered'; readonly summary: FullSessionSummary }
-  | { readonly kind: 'unreadable' };
+  ({ readonly kind: 'clean' | 'recovered' } & IndexFile) | { readonly kind: 'unreadable' };
 
 interface SessionFileRead {
   readonly filepath: string;
@@ -2840,31 +2860,27 @@ interface SessionFileRead {
 
 const warnedKeys = new Set<string>();
 
-function warnOnce(key: string, message: string, data: Record<string, unknown>): void {
+export function warnOnce(key: string, message: string, data: Record<string, unknown>): void {
   if (warnedKeys.has(key)) return;
   warnedKeys.add(key);
   logger.warn(message, data);
 }
 
 function parseSessionFile(raw: string, filepath: string): ParsedSessionFile {
-  const summary = parseSummary(raw);
-  if (summary) return { kind: 'clean', summary };
+  const clean = parseDocument(raw);
+  if (clean) return { kind: 'clean', ...clean };
 
   const first = firstTopLevelJsonDocument(raw);
-  const recovered = first === null ? null : parseSummary(first);
+  const recovered = first === null ? null : parseDocument(first);
   const file = basename(filepath);
   if (recovered) {
     warnOnce(`recovered:${filepath}`, 'Recovered first JSON document from corrupt session file', {
       file,
     });
-    return { kind: 'recovered', summary: recovered };
+    return { kind: 'recovered', ...recovered };
   }
   warnOnce(`unreadable:${filepath}`, 'Failed to deserialize session file', { file });
   return { kind: 'unreadable' };
-}
-
-function summariesIn(files: readonly SessionFileRead[]): FullSessionSummary[] {
-  return files.flatMap(({ parsed }) => (parsed.kind === 'unreadable' ? [] : [parsed.summary]));
 }
 
 function readSessionFile(filepath: string): FullSessionSummary | null {
@@ -2876,7 +2892,7 @@ function readSessionFile(filepath: string): FullSessionSummary | null {
  * Parse a raw session JSON string and extract known fields. Delegates field
  * extraction to `deserializeFullSessionSummary` to avoid duplication.
  */
-function parseSummary(raw: string): FullSessionSummary | null {
+function parseDocument(raw: string): IndexFile | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -2884,7 +2900,11 @@ function parseSummary(raw: string): FullSessionSummary | null {
     return null;
   }
   if (typeof parsed !== 'object' || parsed === null) return null;
-  return deserializeFullSessionSummary(parsed as SerializedFullSessionSummary);
+  const { contributions } = parsed as { contributions?: unknown };
+  return {
+    summary: deserializeFullSessionSummary(parsed as SerializedFullSessionSummary),
+    isProjection: typeof contributions === 'object' && contributions !== null,
+  };
 }
 
 function copiedAsideUnchanged(file: SessionFileRead): boolean {
@@ -2946,7 +2966,7 @@ function firstTopLevelJsonDocument(raw: string): string | null {
   return null;
 }
 
-function parseSessionFilename(filename: string): SessionFileInfo | null {
+export function parseSessionFilename(filename: string): SessionFileInfo | null {
   // Expected format: YYYY-MM-DD_sessionId.json
   const match = filename.match(/^(\d{4}-\d{2}-\d{2})_(.+)\.json$/);
   if (!match) return null;

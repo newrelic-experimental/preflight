@@ -1,15 +1,28 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { ByteEstimateLedger } from '../metrics/cost-tracker.js';
 import {
   addSummaries,
   byWriteOrder,
   combineSessionFiles,
+  deserializeFullSessionSummary,
   exactTotalsOf,
+  mergeSummaries,
   savedToolNameByUseId,
   subtractCallUsageParts,
   subtractSummaries,
+  warnOnce,
   type FullSessionSummary,
+  type SerializedFullSessionSummary,
 } from './session-store.js';
 
+/**
+ * Each writer's files for session `<sid>` live in `sessions/.writers/<sid>/`,
+ * never beside the index, where an older build would read them as more of the
+ * session and set them aside once it combined them.
+ */
+export const WRITERS_DIR = '.writers';
+const LEGACY_PREFIX = 'legacy.';
 /**
  * One writer's own share of a session: only what this process drained, never a
  * total seeded from the saved file. Hook events and transcript turns are each
@@ -111,4 +124,88 @@ function withoutEstimates(s: FullSessionSummary): FullSessionSummary {
     ...subtractCallUsageParts(s, ledger),
     byteEstimates: NO_ESTIMATES,
   };
+}
+
+export interface IndexFile {
+  readonly summary: FullSessionSummary;
+  readonly isProjection: boolean;
+}
+
+export interface WriterFiles {
+  readonly writers: readonly WriterContribution[];
+  readonly legacyCaptures: readonly WriterContribution[];
+}
+
+export function readWriterFiles(sessionsDir: string, sessionId: string): WriterFiles | null {
+  const dir = join(sessionsDir, WRITERS_DIR, sessionId);
+  const names = listDirOrEmpty(dir).filter(
+    (name) => name.endsWith('.json') && !name.startsWith('.'),
+  );
+  const writers: WriterContribution[] = [];
+  const legacyCaptures: WriterContribution[] = [];
+  for (const name of names.sort()) {
+    let raw: string;
+    try {
+      raw = readFileSync(join(dir, name), 'utf-8');
+    } catch {
+      continue;
+    }
+    const parsed = parseWriterFile(raw, sessionId);
+    if (!parsed) {
+      warnOnce(`writer:${join(dir, name)}`, 'Skipping a writer file that does not parse', {
+        sessionId,
+        file: name,
+      });
+    } else if (name.startsWith(LEGACY_PREFIX)) {
+      legacyCaptures.push(parsed);
+    } else {
+      writers.push(parsed);
+    }
+  }
+  return writers.length + legacyCaptures.length === 0 ? null : { writers, legacyCaptures };
+}
+
+export function foldSessionFiles(
+  index: readonly [IndexFile, ...IndexFile[]],
+  files: WriterFiles,
+): FullSessionSummary {
+  const legacy = [...files.legacyCaptures];
+  if (index.some((f) => !f.isProjection)) {
+    legacy.push(
+      captureLegacyIndex(index.map((f) => f.summary) as [FullSessionSummary], files.writers),
+    );
+  }
+  const parts = legacy.length > 0 ? [...files.writers, maxOfCaptures(legacy)] : files.writers;
+  return foldWriterContributions(parts as [WriterContribution]);
+}
+
+function maxOfCaptures(captures: readonly WriterContribution[]): WriterContribution {
+  const summaries = captures.map((c) => c.summary).sort(byWriteOrder);
+  return {
+    summary: summaries.reduce((a, b) => mergeSummaries(a, b)),
+    retracted: captures.some((c) => c.retracted),
+  };
+}
+
+export function listDirOrEmpty(dir: string): string[] {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
+
+function parseWriterFile(raw: string, sessionId: string): WriterContribution | null {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof doc !== 'object' || doc === null) return null;
+  const { version, retracted, summary } = doc as Record<string, unknown>;
+  if (version !== 1 || typeof retracted !== 'boolean') return null;
+  if (typeof summary !== 'object' || summary === null) return null;
+  const parsed = deserializeFullSessionSummary(summary as SerializedFullSessionSummary);
+  return parsed.sessionId === sessionId ? { summary: parsed, retracted } : null;
 }

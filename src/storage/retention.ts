@@ -1,6 +1,8 @@
-import { readdirSync, statSync, unlinkSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { rmSync, statSync, unlinkSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { createLogger } from '../core/index.js';
+import { parseSessionFilename } from './session-store.js';
+import { listDirOrEmpty, WRITERS_DIR } from './session-writers.js';
 
 const logger = createLogger('retention');
 
@@ -16,21 +18,15 @@ function purgeOldFiles(
   subdir: string,
   retainDays: number,
   fileKind: string,
+  keep: (file: string) => boolean = () => false,
 ): number {
   const dir = resolve(storagePath, subdir);
   // Files are deleted if mtime < cutoff. Files exactly at the cutoff (rare in practice) are retained.
   const cutoffMs = Date.now() - retainDays * 24 * 60 * 60 * 1000;
   let deletedCount = 0;
 
-  let files: string[];
-  try {
-    files = readdirSync(dir);
-  } catch {
-    return 0; // directory doesn't exist yet
-  }
-
-  for (const file of files) {
-    if (!PURGED_SUFFIXES.some((suffix) => file.endsWith(suffix))) continue;
+  for (const file of listDirOrEmpty(dir)) {
+    if (!PURGED_SUFFIXES.some((suffix) => file.endsWith(suffix)) || keep(file)) continue;
     const fullPath = resolve(dir, file);
     try {
       const stat = statSync(fullPath);
@@ -65,7 +61,50 @@ function purgeOldFiles(
 }
 
 export function purgeOldSessions(storagePath: string, retainDays: number): number {
-  return purgeOldFiles(storagePath, 'sessions', retainDays, 'session');
+  const sessionsDir = resolve(storagePath, 'sessions');
+  const writersDir = join(sessionsDir, WRITERS_DIR);
+  const cutoffMs = Date.now() - retainDays * 24 * 60 * 60 * 1000;
+  const newest = new Map<string, number>();
+  const seen = (sessionId: string, path: string) =>
+    newest.set(sessionId, Math.max(newest.get(sessionId) ?? 0, mtimeOf(path)));
+  for (const file of listDirOrEmpty(sessionsDir)) {
+    const sessionId = parseSessionFilename(file)?.sessionId;
+    if (sessionId) seen(sessionId, join(sessionsDir, file));
+  }
+  const writerDirs = listDirOrEmpty(writersDir);
+  const hasWriters = new Set(writerDirs);
+  for (const sessionId of writerDirs) {
+    const dir = join(writersDir, sessionId);
+    for (const path of [dir, ...listDirOrEmpty(dir).map((name) => join(dir, name))])
+      seen(sessionId, path);
+  }
+  const isLiveWriterSession = (sessionId: string | undefined) =>
+    sessionId !== undefined &&
+    hasWriters.has(sessionId) &&
+    (newest.get(sessionId) ?? 0) >= cutoffMs;
+
+  let deleted = purgeOldFiles(storagePath, 'sessions', retainDays, 'session', (file) =>
+    isLiveWriterSession(parseSessionFilename(file)?.sessionId),
+  );
+  for (const sessionId of writerDirs.filter((id) => !isLiveWriterSession(id))) {
+    const dir = join(writersDir, sessionId);
+    const files = listDirOrEmpty(dir).length;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      deleted += files;
+    } catch (err) {
+      logger.warn('Failed to delete session writer files', { sessionId, error: String(err) });
+    }
+  }
+  return deleted;
+}
+
+function mtimeOf(path: string): number {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return 0;
+  }
 }
 
 export function purgeOldWeeklySummaries(storagePath: string, retainDays: number): number {
