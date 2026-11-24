@@ -2174,6 +2174,7 @@ function processHook(raw, cliEvent) {
   const stampedPlatform = HOOK_EVENT_PLATFORM[eventName ?? ""] ?? detectStampPlatform(sessionId);
   if (stampedPlatform) event.platform = stampedPlatform;
   const selfReport = selfReportCall && stampedPlatform && hookSelfReportLine(selfReportCall, sessionId, timestamp, stampedPlatform);
+  if (selfReport) delete event.outputSize;
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;

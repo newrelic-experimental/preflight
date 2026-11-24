@@ -1534,6 +1534,9 @@ function processHook(raw: string, cliEvent?: string): void {
     selfReportCall &&
     stampedPlatform &&
     hookSelfReportLine(selfReportCall, sessionId, timestamp, stampedPlatform);
+  // The report line lands after this call's event, so the engine would still
+  // estimate the call's output from its size on top of the report.
+  if (selfReport) delete event.outputSize;
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;

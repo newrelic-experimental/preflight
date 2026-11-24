@@ -2422,6 +2422,7 @@ describe('collector-script', () => {
         const events = readBufferLines('conv-reporting');
         expect(events.map((e) => e.mode)).toEqual(['post', 'self_report']);
         expect(events.map((e) => e.platform)).toEqual([platform, platform]);
+        expect(events[0]!.outputSize).toBeUndefined();
         expect(events[1]).toMatchObject(expectedLine('conv-reporting', platform));
         expect(readBufferLines('conv-other')).toEqual([]);
       },
