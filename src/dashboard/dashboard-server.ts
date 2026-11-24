@@ -65,14 +65,16 @@ type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promis
 /**
  * A browser can send a POST without a CORS preflight, so another page, or a
  * sandboxed one with a `null` origin, could trigger a state change it cannot
- * read back. Browsers mark such requests with Sec-Fetch-Site or an Origin that
- * differs from the Host they target. CLI and MCP clients send neither header.
- * Only GET routes are read-only, so every other method is checked.
+ * read back. Only GET routes are read-only, so every other method is checked.
+ * Page script cannot set Sec-Fetch-Site, so when the browser sends it, it
+ * decides: only `same-origin` passes, which keeps a proxy that rewrites Host
+ * working. `none` marks a navigation the user typed, which never writes.
+ * Without it, an Origin must match the Host. CLI and MCP clients send neither.
  */
 function isCrossOriginWrite(req: IncomingMessage): boolean {
   if (req.method === 'GET') return false;
   const site = req.headers['sec-fetch-site'];
-  if (site === 'cross-site' || site === 'same-site') return true;
+  if (site !== undefined) return site !== 'same-origin';
   const origin = req.headers.origin;
   if (origin === undefined) return false;
   try {

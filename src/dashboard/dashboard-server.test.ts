@@ -582,6 +582,11 @@ describe('DashboardServer cross-origin writes', () => {
     ['an unparseable Origin', () => ({ origin: 'not a url' })],
     ['Sec-Fetch-Site: cross-site and no Origin', () => ({ 'sec-fetch-site': 'cross-site' })],
     ['Sec-Fetch-Site: same-site and no Origin', () => ({ 'sec-fetch-site': 'same-site' })],
+    ['Sec-Fetch-Site: none, which no page can send', () => ({ 'sec-fetch-site': 'none' })],
+    [
+      'Sec-Fetch-Site: cross-site and its own Origin',
+      (p) => ({ origin: `http://127.0.0.1:${p}`, 'sec-fetch-site': 'cross-site' }),
+    ],
   ])('rejects a POST with %s before the route runs', async (_name, headers) => {
     const port = await start();
     const res = await send(port, 'POST', '/ingest', headers(port));
@@ -607,7 +612,6 @@ describe('DashboardServer cross-origin writes', () => {
     ],
     ['its own [::1] origin', (p) => ({ host: `[::1]:${p}`, origin: `http://[::1]:${p}` })],
     ['an upper-case Host', (p) => ({ host: `LOCALHOST:${p}`, origin: `http://localhost:${p}` })],
-    ['Sec-Fetch-Site: none', () => ({ 'sec-fetch-site': 'none' })],
   ])('accepts a POST from %s', async (_name, headers) => {
     const port = await start();
     const res = await send(port, 'POST', '/ingest', headers(port));
@@ -659,6 +663,31 @@ describe('DashboardServer cross-origin writes', () => {
     });
     expect([own.status, other.status]).toEqual([204, 403]);
     expect(ingested).toBe(1);
+  });
+
+  it('in serverMode trusts Sec-Fetch-Site: same-origin behind a proxy that rewrites Host', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-cross-origin-'));
+    try {
+      const configFilePath = join(dir, 'config.json');
+      writeFileSync(configFilePath, '{}');
+      const port = await start(true, configFilePath);
+      const proxied = {
+        host: 'preflight-internal:3000',
+        origin: 'https://dash.example.com',
+      };
+      const browser = await send(
+        port,
+        'PATCH',
+        '/api/settings',
+        { ...proxied, 'sec-fetch-site': 'same-origin' },
+        '{"teamId":"team-a"}',
+      );
+      const script = await send(port, 'PATCH', '/api/settings', proxied, '{"teamId":"team-b"}');
+      expect([browser.status, script.status]).toEqual([200, 403]);
+      expect(JSON.parse(readFileSync(configFilePath, 'utf-8'))).toEqual({ teamId: 'team-a' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

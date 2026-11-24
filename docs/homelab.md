@@ -110,6 +110,13 @@ allows RFC-1918/loopback destinations. It still refuses to connect to cloud
 metadata endpoints (e.g. AWS/GCP/Azure's `169.254.169.254`) even if one is
 configured or a DNS response resolves there, and only accepts `http:`/`https:`.
 
+A reverse proxy in front of the server may rewrite `Host` (nginx's default
+`proxy_pass` does). Browsers keep working, because the dashboard trusts the
+`Sec-Fetch-Site: same-origin` header they send on its own requests. A
+non-browser client that sends an `Origin` header on a `POST`, `PATCH`, `PUT` or
+`DELETE` gets 403 unless that origin matches `Host`, so either drop `Origin` or
+have the proxy pass `Host` through (`proxy_set_header Host $host;`).
+
 ## Smoke Test
 
 After starting the server, verify it works:
