@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, waitFor, within, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
@@ -9,15 +9,30 @@ import {
   aggregateModelPerformance,
   padDailyCostWindow,
   computeHistoryKpis,
-  filterSessionsToWindow,
 } from './History';
 import { formatUsd, formatPct, formatUsdOrDash } from '../lib/format';
+import type { SpendBarsProps } from '../components/SpendBars';
+
+// Recharts draws nothing at jsdom's zero size, so list the daily bars instead.
+vi.mock('../components/SpendBars', () => ({
+  SpendBars: ({ data }: SpendBarsProps) => (
+    <ol aria-label="Daily spend bars">
+      {data
+        .filter((d) => d.spendUsd > 0)
+        .map((d) => (
+          <li key={d.key}>{`${d.key} ${d.spendUsd}`}</li>
+        ))}
+    </ol>
+  ),
+}));
 
 // Session dates are relative to the real clock (not fixed 2026 calendar
-// dates) because the redesigned page filters sessions to the selected
-// window client-side (`filterSessionsToWindow`) — a fixture dated in the
-// past relative to whenever the suite actually runs would fall outside
-// every window and silently empty every windowed panel.
+// dates) because the forecasts and the windowed rows below key off them.
+function localKey(ts: string | number): string {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 function daysAgo(n: number, hour = 9): string {
   const d = new Date();
   d.setDate(d.getDate() - n);
@@ -356,13 +371,34 @@ function findPanel(title: string): HTMLElement {
   return screen.getByText(title).closest('.glass-card') as HTMLElement;
 }
 
+// The server's windowed rows for sessions that ran wholly inside the window:
+// each one's cost lands on the day it started.
+function asWindowRows(rows: typeof SAMPLE_SESSIONS) {
+  return rows.map((r) => ({
+    ...r,
+    costByDayUsd:
+      r.estimatedCostUsd != null && r.startTime != null
+        ? { [localKey(r.startTime)]: r.estimatedCostUsd }
+        : {},
+  }));
+}
+
 function renderHistory(overrides: FetchOverrides = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
   const fetchedUrls: string[] = [];
   globalThis.fetch = ((url: string) => {
     fetchedUrls.push(url);
     if (url.startsWith('/api/usage-insights')) {
-      return Promise.resolve(jsonResponse(overrides.usageInsights ?? SAMPLE_USAGE_INSIGHTS));
+      return Promise.resolve(
+        jsonResponse(
+          overrides.usageInsights ?? {
+            ...SAMPLE_USAGE_INSIGHTS,
+            sessions: asWindowRows(
+              (overrides.sessions ?? SAMPLE_SESSIONS) as typeof SAMPLE_SESSIONS,
+            ),
+          },
+        ),
+      );
     }
     if (url.startsWith('/api/weekly')) {
       return Promise.resolve(jsonResponse(overrides.weekly ?? SAMPLE_WEEKLY));
@@ -451,45 +487,6 @@ describe('History view', () => {
   it('renders the model performance panel title', async () => {
     renderHistory();
     await waitFor(() => expect(screen.getByText('Model performance')).toBeInTheDocument());
-  });
-
-  it('does not flag the daily spend chart for an account with only a few recent sessions', async () => {
-    // Only 5 sessions total, well under the 200-row cap — nothing was
-    // withheld, so the account's history genuinely started this morning
-    // and the early days of the window are confirmed zero-spend.
-    const recentOnly = Array.from({ length: 5 }, (_, i) => ({
-      sessionId: `recent-${i}`,
-      startTime: new Date(Date.now() - i * 60 * 60 * 1000).toISOString(),
-      estimatedCostUsd: 1,
-      model: 'claude-opus-4-6',
-      toolBreakdown: { Read: 1 },
-    }));
-    renderHistory({ sessions: recentOnly });
-    await waitFor(() => expect(screen.getByText('Daily spend')).toBeInTheDocument());
-    expect(screen.queryByText(/sample doesn.t reach back 30 days/i)).not.toBeInTheDocument();
-  });
-
-  it('flags the daily spend chart when a full 200-session sample does not reach back 30 days', async () => {
-    // 200 sessions (hitting the fetch cap) all within the last few hours —
-    // the sample is capped AND doesn't cover the 30-day window, so early
-    // days are genuinely unsampled rather than confirmed zero-spend.
-    const cappedRecentOnly = Array.from({ length: 200 }, (_, i) => ({
-      sessionId: `recent-${i}`,
-      startTime: new Date(Date.now() - i * 60 * 1000).toISOString(),
-      estimatedCostUsd: 1,
-      model: 'claude-opus-4-6',
-      toolBreakdown: { Read: 1 },
-    }));
-    renderHistory({ sessions: cappedRecentOnly });
-    await waitFor(() =>
-      expect(screen.getByText(/sample doesn.t reach back 30 days/i)).toBeInTheDocument(),
-    );
-  });
-
-  it('does not flag the daily spend chart when the session sample is well under the 200-row cap', async () => {
-    renderHistory();
-    await waitFor(() => expect(screen.getByText('Daily spend')).toBeInTheDocument());
-    expect(screen.queryByText(/sample doesn.t reach back 30 days/i)).not.toBeInTheDocument();
   });
 
   it('renders forecast caption with this week and this month when todayAggregate provides forecastEndOfDayUsd', async () => {
@@ -760,7 +757,7 @@ describe('History — window', () => {
 describe('History — KPI strip', () => {
   it('renders Spend, Sessions, Avg efficiency, Avg cost / session, and Flags computed from the mocked sessions', async () => {
     const { container } = renderHistory();
-    const kpis = computeHistoryKpis(filterSessionsToWindow(SAMPLE_SESSIONS, 30));
+    const kpis = computeHistoryKpis(SAMPLE_SESSIONS);
     const strip = (await waitFor(() => {
       const el = container.querySelector('.glow-green') as HTMLElement | null;
       if (!el || !within(el).queryByText(formatUsd(kpis.spendUsd))) throw new Error('not ready');
@@ -773,19 +770,91 @@ describe('History — KPI strip', () => {
     expect(within(strip).getByText(String(kpis.flags))).toBeInTheDocument();
     expect(within(strip).getByText(`${kpis.sessionCount} sessions`)).toBeInTheDocument();
   });
+});
 
-  it('adds the "oldest N days shown" note only when the 200-session cap truncates the window', async () => {
-    const cappedRecentOnly = Array.from({ length: 200 }, (_, i) => ({
-      sessionId: `recent-${i}`,
-      startTime: new Date(Date.now() - i * 60 * 1000).toISOString(),
-      estimatedCostUsd: 1,
-      model: 'claude-opus-4-6',
-    }));
-    const { container } = renderHistory({ sessions: cappedRecentOnly });
-    await waitFor(() => {
-      const el = container.querySelector('.glow-green') as HTMLElement | null;
-      expect(el && within(el).queryByText(/oldest \d+ days shown/)).toBeTruthy();
+describe('History — windowed totals', () => {
+  it("counts only a resumed session's in-window spend in the KPI, the daily chart and Model performance", async () => {
+    // Started 20 days ago for $4 in all, $1 of it two days ago. The 30-day
+    // window holds only that $1.
+    const { container } = renderHistory({
+      sessions: [
+        {
+          sessionId: 'resumed',
+          startTime: daysAgo(20),
+          estimatedCostUsd: 4,
+          model: 'claude-opus-4-6',
+        },
+      ],
+      usageInsights: {
+        ...SAMPLE_USAGE_INSIGHTS,
+        sessionCount: 1,
+        totalCostUsd: 1,
+        sessions: [
+          {
+            sessionId: 'resumed',
+            model: 'claude-opus-4-6',
+            estimatedCostUsd: 1,
+            costByDayUsd: { [localKey(daysAgo(2))]: 1 },
+          },
+        ],
+      },
     });
+    const strip = (await waitFor(() => {
+      const el = container.querySelector('.glow-green') as HTMLElement | null;
+      if (!el || !within(el).queryByText('1 sessions')) throw new Error('not ready');
+      return el;
+    })) as HTMLElement;
+    expect(within(strip).getAllByText(formatUsd(1))).toHaveLength(2);
+    const bars = screen.getByRole('list', { name: 'Daily spend bars' });
+    expect(
+      within(bars)
+        .getAllByRole('listitem')
+        .map((li) => li.textContent),
+    ).toEqual([`${localKey(daysAgo(2))} 1`]);
+    const row = (await screen.findByText('claude-opus-4-6')).closest('tr') as HTMLElement;
+    expect(
+      within(row)
+        .getAllByRole('cell')
+        .map((c) => c.textContent),
+    ).toEqual(['claude-opus-4-6', '1', '—', '—', '$1.00', '100%', '—']);
+  });
+
+  it('keeps the previous window on screen until the new window loads', async () => {
+    const { container } = renderHistory();
+    const strip = () => container.querySelector('.glow-green') as HTMLElement;
+    const before = computeHistoryKpis(SAMPLE_SESSIONS);
+    await waitFor(() =>
+      expect(within(strip()).getByText(`${before.sessionCount} sessions`)).toBeInTheDocument(),
+    );
+    await screen.findByText('claude-opus-4-6');
+
+    const serve = globalThis.fetch;
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    globalThis.fetch = ((url: string) =>
+      url.startsWith('/api/usage-insights?days=7')
+        ? held.then(() =>
+            jsonResponse({
+              ...SAMPLE_USAGE_INSIGHTS,
+              sessions: [
+                {
+                  sessionId: 'week',
+                  model: 'claude-opus-4-6',
+                  estimatedCostUsd: 1,
+                  costByDayUsd: { [localKey(daysAgo(1))]: 1 },
+                },
+              ],
+            }),
+          )
+        : serve(url)) as typeof globalThis.fetch;
+    fireEvent.click(screen.getByRole('tab', { name: '7d' }));
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(within(strip()).getByText(`${before.sessionCount} sessions`)).toBeInTheDocument();
+    expect(screen.queryByText('No model data yet')).not.toBeInTheDocument();
+
+    release();
+    await waitFor(() => expect(within(strip()).getByText('1 sessions')).toBeInTheDocument());
   });
 });
 
@@ -903,6 +972,29 @@ describe('History — error handling', () => {
     );
   });
 
+  it('shows an error banner when the windowed totals fail to load', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    globalThis.fetch = ((url: string) => {
+      if (url.startsWith('/api/usage-insights'))
+        return Promise.resolve(new Response('Internal Server Error', { status: 503 }));
+      if (url.startsWith('/api/weekly')) return Promise.resolve(jsonResponse(SAMPLE_WEEKLY));
+      if (url.startsWith('/api/cost-per-outcome'))
+        return Promise.resolve(jsonResponse(SAMPLE_OUTCOME));
+      if (url.startsWith('/api/sessions')) return Promise.resolve(jsonResponse(SAMPLE_SESSIONS));
+      if (url.startsWith('/api/concurrency'))
+        return Promise.resolve(jsonResponse({ dailyPeaks: [] }));
+      return Promise.resolve(new Response('Not Found', { status: 404 }));
+    }) as typeof globalThis.fetch;
+
+    render(
+      <QueryClientProvider client={qc}>
+        <History />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText(/Error loading some history data/)).toBeInTheDocument();
+  });
+
   it('shows no error banner when every query succeeds', async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
     globalThis.fetch = (async () => jsonResponse([])) as typeof fetch;
@@ -957,117 +1049,31 @@ describe('History data helpers', () => {
     });
   });
 
-  describe('filterSessionsToWindow', () => {
-    it('keeps sessions within the last N days and drops older ones', () => {
-      const today = new Date('2026-06-15T12:00:00');
-      const rows = [
-        { sessionId: 'in', startTime: new Date('2026-06-10T09:00:00').getTime() },
-        { sessionId: 'out', startTime: new Date('2026-05-01T09:00:00').getTime() },
-      ];
-      const result = filterSessionsToWindow(rows, 7, today);
-      expect(result.map((r) => r.sessionId)).toEqual(['in']);
-    });
-
-    it('drops sessions with no startTime', () => {
-      const rows = [{ sessionId: 'no-date' }, { sessionId: 'has-date', startTime: Date.now() }];
-      const result = filterSessionsToWindow(rows, 30);
-      expect(result.map((r) => r.sessionId)).toEqual(['has-date']);
-    });
-
-    it('returns an empty array for an empty input', () => {
-      expect(filterSessionsToWindow([], 30)).toEqual([]);
-    });
-  });
-
   describe('aggregateDailyCost', () => {
-    it('groups sessions by day, sums cost, and trims to N most recent days', () => {
-      // Locally-constructed instants so the test is timezone-portable;
-      // UTC ISO strings would shift days under negative-offset runners
-      // after bucketing moved to local-time getters.
+    it("adds every session's in-window cost to the day it was spent", () => {
       const out = aggregateDailyCost(
         [
-          {
-            sessionId: 'a',
-            startTime: new Date(2026, 4, 26, 9, 0, 0).getTime(),
-            estimatedCostUsd: 1.2,
-          },
-          {
-            sessionId: 'b',
-            startTime: new Date(2026, 4, 26, 15, 0, 0).getTime(),
-            estimatedCostUsd: 0.8,
-          },
-          {
-            sessionId: 'c',
-            startTime: new Date(2026, 4, 27, 10, 0, 0).getTime(),
-            estimatedCostUsd: 2.4,
-          },
+          { costByDayUsd: { '2026-05-27': 1, '2026-05-29': 0.5 } },
+          { costByDayUsd: { '2026-05-27': 0.25 } },
         ],
         30,
       );
       expect(out).toEqual([
-        { day: '2026-05-26', cost: 2.0 },
-        { day: '2026-05-27', cost: 2.4 },
+        { day: '2026-05-27', cost: 1.25 },
+        { day: '2026-05-29', cost: 0.5 },
       ]);
-    });
-
-    it('skips sessions with null cost', () => {
-      const out = aggregateDailyCost(
-        [
-          {
-            sessionId: 'a',
-            startTime: new Date(2026, 4, 26, 9, 0, 0).getTime(),
-            estimatedCostUsd: null,
-          },
-          {
-            sessionId: 'b',
-            startTime: new Date(2026, 4, 26, 15, 0, 0).getTime(),
-            estimatedCostUsd: 0.8,
-          },
-        ],
-        30,
-      );
-      expect(out).toEqual([{ day: '2026-05-26', cost: 0.8 }]);
     });
 
     it('keeps only the most recent N days when there are more', () => {
       const rows = Array.from({ length: 10 }, (_, i) => ({
-        sessionId: `s${i}`,
-        startTime: new Date(2026, 4, 20 + i, 9, 0, 0).getTime(),
-        estimatedCostUsd: 1,
+        costByDayUsd: { [`2026-05-${20 + i}`]: 1 },
       }));
       const out = aggregateDailyCost(rows, 3);
-      expect(out).toHaveLength(3);
       expect(out.map((d) => d.day)).toEqual(['2026-05-27', '2026-05-28', '2026-05-29']);
     });
 
     it('returns an empty array when given no rows', () => {
       expect(aggregateDailyCost([], 30)).toEqual([]);
-    });
-
-    it('buckets sessions by local day, not UTC day', () => {
-      // Construct an instant whose local representation is unambiguous
-      // regardless of the runner's timezone. getTime() yields epoch ms that
-      // round-trip through new Date(...) to the same local Y/M/D/H/M/S.
-      // For runners east of UTC, toISOString() of this instant may report
-      // the next UTC day — local bucketing must still report 05-31.
-      const localLateEvening = new Date(2026, 4, 31, 22, 0, 0).getTime();
-      const out = aggregateDailyCost(
-        [{ sessionId: 'late', startTime: localLateEvening, estimatedCostUsd: 1.5 }],
-        30,
-      );
-      expect(out).toEqual([{ day: '2026-05-31', cost: 1.5 }]);
-    });
-
-    it('buckets local early-morning sessions to their local day', () => {
-      // Mirror of the above in the negative direction: runners west of UTC
-      // see toISOString() report the previous UTC day for an early-morning
-      // local instant, but local bucketing must report 06-01.
-      const localEarlyMorning = new Date(2026, 5, 1, 1, 30, 0).getTime();
-      const out = aggregateDailyCost(
-        [{ sessionId: 'early', startTime: localEarlyMorning, estimatedCostUsd: 0.4 }],
-        30,
-      );
-      expect(out).toEqual([{ day: '2026-06-01', cost: 0.4 }]);
     });
   });
 
@@ -1233,66 +1239,6 @@ describe('History data helpers', () => {
  * "week" instead of "weekStart", "avgEfficiencyScore" instead of "efficiencyScore").
  */
 describe('History helpers with real API data shapes', () => {
-  describe('aggregateDailyCost with real /api/sessions shape', () => {
-    it('handles sessions with numeric startTime (epoch ms)', () => {
-      // Real API returns startTime as epoch ms number, not ISO string
-      const out = aggregateDailyCost(
-        [
-          { sessionId: 'abc-123', startTime: 1780361259600, estimatedCostUsd: 0.42 },
-          { sessionId: 'def-456', startTime: 1780361259600 + 3600000, estimatedCostUsd: 0.58 },
-        ],
-        30,
-      );
-      expect(out.length).toBeGreaterThan(0);
-      // Both sessions are on the same day, so costs should be summed
-      expect(out[0].cost).toBe(1.0);
-      // The day string should be a valid MM-DD format
-      expect(out[0].day).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    });
-
-    it('handles sessions with undefined estimatedCostUsd (skips them)', () => {
-      const out = aggregateDailyCost(
-        [
-          { sessionId: 'abc-123', startTime: 1780361259600, estimatedCostUsd: undefined },
-          { sessionId: 'def-456', startTime: 1780361259600, estimatedCostUsd: 0.5 },
-        ],
-        30,
-      );
-      // Only the session with a defined cost should be included
-      expect(out).toHaveLength(1);
-      expect(out[0].cost).toBe(0.5);
-    });
-
-    it('handles sessions with null estimatedCostUsd (skips them)', () => {
-      const out = aggregateDailyCost(
-        [
-          { sessionId: 'abc-123', startTime: 1780361259600, estimatedCostUsd: null },
-          { sessionId: 'def-456', startTime: 1780361259600, estimatedCostUsd: 1.2 },
-        ],
-        30,
-      );
-      expect(out).toHaveLength(1);
-      expect(out[0].cost).toBe(1.2);
-    });
-
-    it('handles sessions with undefined startTime (skips them)', () => {
-      const out = aggregateDailyCost(
-        [
-          { sessionId: 'abc-123', startTime: undefined, estimatedCostUsd: 0.42 },
-          { sessionId: 'def-456', startTime: 1780361259600, estimatedCostUsd: 0.5 },
-        ],
-        30,
-      );
-      // The session without startTime should be skipped
-      expect(out).toHaveLength(1);
-      expect(out[0].cost).toBe(0.5);
-    });
-
-    it('returns empty array for empty input', () => {
-      expect(aggregateDailyCost([], 30)).toEqual([]);
-    });
-  });
-
   describe('buildAntiPatternSeries with real /api/weekly shape', () => {
     it('handles weeks with "week" field (not "weekStart")', () => {
       // Real API returns "week": "2026-W22" instead of "weekStart": "2026-05-25"

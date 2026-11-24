@@ -1,5 +1,6 @@
 import { describe, it, expect } from '@jest/globals';
 import { computeUsageInsights } from './usage-insights.js';
+import { lastDaysWindow } from '../storage/session-window.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
 import type {
   AttributionBucket,
@@ -96,6 +97,7 @@ describe('computeUsageInsights', () => {
       loops: [],
       loopsTotalCount: 0,
       attributionRatePct: null,
+      sessions: [],
     });
   });
 
@@ -148,6 +150,79 @@ describe('computeUsageInsights', () => {
 
     expect(report.sessionCount).toBe(1);
     expect(report.totalCostUsd).toBeCloseTo(30, 9);
+  });
+
+  it("rows carry each session's in-window share, with its cost on the days it was spent", () => {
+    const windowStart = lastDaysWindow(NOW, 7).startMs;
+    const resumed = NOW - 2 * DAY_MS;
+    const report = computeUsageInsights(
+      [
+        // No day map: half its active time is in the window.
+        makeSummary({
+          sessionId: 'resumed',
+          startTime: windowStart - 2 * DAY_MS,
+          endTime: windowStart + 2 * DAY_MS,
+          durationMs: 4 * DAY_MS,
+          estimatedCostUsd: 4,
+          tokensInput: 1000,
+          tokensCacheRead: 400,
+          toolBreakdown: { Read: 6, Edit: 1, Write: 0 },
+          efficiencyScore: 0.7,
+          toolSuccessRate: 0.9,
+          antiPatterns: [{ type: 'thrashing' } as FullSessionSummary['antiPatterns'][number]],
+        }),
+        makeSummary({
+          sessionId: 'two-days',
+          startTime: resumed,
+          estimatedCostUsd: 3,
+          costByDayUsd: { [localDateKey(resumed)]: 1, [localDateKey(NOW)]: 1 },
+        }),
+      ],
+      { nowMs: NOW, windowDays: 7 },
+    );
+    const [noMap, twoDays] = report.sessions;
+    expect(noMap).toEqual({
+      sessionId: 'resumed',
+      model: 'claude-sonnet-4-20250514',
+      estimatedCostUsd: 2,
+      costByDayUsd: { [localDateKey(windowStart)]: 2 },
+      efficiencyScore: 0.7,
+      toolSuccessRate: 0.9,
+      antiPatterns: [{ type: 'thrashing' }],
+      toolBreakdown: { Read: 3, Edit: 1 },
+      tokensInput: 500,
+      tokensOutput: 50,
+      tokensThinking: 0,
+      tokensCacheRead: 200,
+      tokensCacheCreation: 0,
+    });
+    // A day map that sums short of the session's cost is scaled up to it.
+    expect(twoDays.costByDayUsd).toEqual({
+      [localDateKey(resumed)]: 1.5,
+      [localDateKey(NOW)]: 1.5,
+    });
+  });
+
+  it('rows sum on in-window days to the total for a session with cost booked before the window', () => {
+    const windowStart = lastDaysWindow(NOW, 7).startMs;
+    const firstDay = localDateKey(windowStart);
+    const report = computeUsageInsights(
+      [
+        makeSummary({
+          startTime: windowStart + 10 * 60_000,
+          endTime: windowStart + 60 * 60_000,
+          estimatedCostUsd: 1,
+          costByDayUsd: { [localDateKey(windowStart - 60 * 60_000)]: 0.4, [firstDay]: 0.6 },
+        }),
+      ],
+      { nowMs: NOW, windowDays: 7 },
+    );
+    const chartSum = report.sessions
+      .flatMap((r) => Object.entries(r.costByDayUsd))
+      .filter(([day]) => day >= firstDay)
+      .reduce((sum, [, usd]) => sum + usd, 0);
+    expect(report.totalCostUsd).toBeCloseTo(0.6, 10);
+    expect(chartSum).toBeCloseTo(report.totalCostUsd, 10);
   });
 
   describe("selection: 'today'", () => {

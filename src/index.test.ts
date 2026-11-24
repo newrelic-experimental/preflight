@@ -1105,6 +1105,8 @@ describe('stdio integration', () => {
       };
       return {
         storagePath,
+        sanitizedCwd,
+        cwd: realpathSync(projectCwd),
         writeCrumb,
         stats,
         sessionId,
@@ -1174,6 +1176,48 @@ describe('stdio integration', () => {
       } finally {
         await engine.close();
         rmSync(home, { recursive: true, force: true });
+      }
+    }, 30000);
+
+    it('lets a Codex engine adopt its unstamped hook run inside a Claude Code shell, and keeps Claude Code off it', async () => {
+      const engine = await startEngine({ MCP_CLIENT: 'codex' });
+      try {
+        await engine.connect();
+        const hook = spawnSync(
+          'node',
+          [resolve(__dirname, '..', 'dist', 'hooks', 'collector-script.js'), 'pre-tool'],
+          {
+            input: JSON.stringify({
+              session_id: 'codex-session-id',
+              cwd: engine.cwd,
+              hook_event_name: 'PreToolUse',
+              tool_name: 'Bash',
+              tool_input: { command: 'ls' },
+              tool_use_id: 'toolu_codex',
+            }),
+            env: {
+              ...envWithoutTerminalPlatform({
+                CLAUDECODE: '1',
+                CLAUDE_CODE_SESSION_ID: 'claude-session-id',
+              }),
+              NEW_RELIC_AI_MCP_STORAGE_PATH: engine.storagePath,
+            },
+            timeout: 5000,
+          },
+        );
+        expect(hook.status).toBe(0);
+        expect(await engine.waitForSessionId('codex-session-id')).toBe('codex-session-id');
+        expect(
+          existsSync(
+            resolve(
+              breadcrumbRoot(engine.storagePath, 'claude-code'),
+              'session-by-cwd',
+              `${engine.sanitizedCwd}.txt`,
+            ),
+          ),
+        ).toBe(false);
+      } finally {
+        await engine.close();
       }
     }, 30000);
 
@@ -3068,6 +3112,7 @@ describe('stdio integration', () => {
         adopt: (id: string) => Promise<void>,
         close: () => Promise<void>,
         pid: number,
+        client: Client,
       ) => Promise<void>,
       nodeArgs: (env: Record<string, string>) => string[] = () => [],
       mcpClient = 'claude-code',
@@ -3123,7 +3168,7 @@ describe('stdio integration', () => {
           ).toBe(false);
         };
         try {
-          await body(env, adopt, close, pid);
+          await body(env, adopt, close, pid, client);
         } finally {
           if (!closed) await client.close().catch(() => undefined);
         }
@@ -3143,6 +3188,39 @@ describe('stdio integration', () => {
         }
       };
       return until(pending, (v) => v === '');
+    };
+    const subagentTurn = async (storage: string, sessionId: string, messageId: string) => {
+      appendToHookBuffer(
+        resolve(storage, `buffer-${sessionId}.jsonl`),
+        JSON.stringify({
+          mode: 'subagent_token',
+          tool: 'subagent',
+          timestamp: Date.now(),
+          sessionId,
+          agentId: 'a1234567890abcdef',
+          messageId,
+          model: 'claude-sonnet-4-6',
+          inputTokens: 100000,
+          outputTokens: 20000,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          reasoningTokens: 0,
+        }) + '\n',
+      );
+      expect(await drained(storage, sessionId)).toBe('');
+    };
+    const guessFromCwd = async (storage: string, conversationId: string) => {
+      const crumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-cwd');
+      mkdirSync(crumbs, { recursive: true });
+      writeFileSync(
+        resolve(crumbs, `${realpathSync(process.cwd()).replace(/[\\/:]/g, '-')}.txt`),
+        conversationId,
+      );
+      const adopted = await until(
+        () => existsSync(resolve(storage, `active-${conversationId}.pid`)),
+        (alive) => alive,
+      );
+      expect(adopted).toBe(true);
     };
 
     it('a cursor engine saves a self-report for its conversation on shutdown without adopting', async () => {
@@ -3198,16 +3276,7 @@ describe('stdio integration', () => {
         const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
         runHook(env, reportHook('conv-guess', 'r-guess-0001'));
         expect(await drained(storage, 'conv-guess')).toBe('');
-        const crumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-cwd');
-        mkdirSync(crumbs, { recursive: true });
-        writeFileSync(
-          resolve(crumbs, `${realpathSync(process.cwd()).replace(/[\\/:]/g, '-')}.txt`),
-          'conv-guess',
-        );
-        await until(
-          () => existsSync(resolve(storage, 'active-conv-guess.pid')),
-          (alive) => alive,
-        );
+        await guessFromCwd(storage, 'conv-guess');
 
         const ppidCrumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-ppid');
         mkdirSync(ppidCrumbs, { recursive: true });
@@ -3247,29 +3316,9 @@ describe('stdio integration', () => {
       async (_label, adoptedId, adoptedTurns) => {
         await withPendingEngine('600000', async (env, adopt, close) => {
           const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
-          const subagentTurn = async (sessionId: string, messageId: string) => {
-            appendToHookBuffer(
-              resolve(storage, `buffer-${sessionId}.jsonl`),
-              JSON.stringify({
-                mode: 'subagent_token',
-                tool: 'subagent',
-                timestamp: Date.now(),
-                sessionId,
-                agentId: 'a1234567890abcdef',
-                messageId,
-                model: 'claude-sonnet-4-6',
-                inputTokens: 100000,
-                outputTokens: 20000,
-                cacheReadTokens: 0,
-                cacheCreationTokens: 0,
-                reasoningTokens: 0,
-              }) + '\n',
-            );
-            expect(await drained(storage, sessionId)).toBe('');
-          };
-          await subagentTurn('conv-sub', 'msg_sub_1');
+          await subagentTurn(storage, 'conv-sub', 'msg_sub_1');
           await adopt(adoptedId);
-          await subagentTurn(adoptedId, 'msg_sub_2');
+          await subagentTurn(storage, adoptedId, 'msg_sub_2');
           await close();
 
           const sub = savedSession(storage, 'conv-sub');
@@ -3286,33 +3335,57 @@ describe('stdio integration', () => {
     );
 
     it('a pending engine adds the report it drained before its cwd guess is confirmed to the ones after', async () => {
-      await withPendingEngine('600000', async (env, _adopt, close) => {
+      await withPendingEngine('600000', async (env, _adopt, close, _pid, client) => {
         const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
         runHook(env, reportHook('conv-guess', 'r-guess-0001'));
         expect(await drained(storage, 'conv-guess')).toBe('');
-        const crumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-cwd');
-        mkdirSync(crumbs, { recursive: true });
-        writeFileSync(
-          resolve(crumbs, `${realpathSync(process.cwd()).replace(/[\\/:]/g, '-')}.txt`),
-          'conv-guess',
-        );
-        await until(
-          () => existsSync(resolve(storage, 'active-conv-guess.pid')),
-          (alive) => alive,
-        );
+        await guessFromCwd(storage, 'conv-guess');
         const ppidCrumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-ppid');
         mkdirSync(ppidCrumbs, { recursive: true });
         writeFileSync(resolve(ppidCrumbs, `${process.pid}.txt`), 'conv-guess');
-        await until(
-          () => savedSession(storage, 'conv-guess')?.tokensInput,
-          (tokens) => tokens === 1000,
-        );
+        const ownInputTokens = async () => {
+          const result = await client.callTool({
+            name: 'nr_observe_get_cost_breakdown',
+            arguments: {},
+          });
+          const [content] = result.content as Array<{ text: string }>;
+          return (JSON.parse(content!.text) as { tokens: { input: number } }).tokens.input;
+        };
+        expect(await until(ownInputTokens, (tokens) => tokens === 1000)).toBe(1000);
         expect(savedSession(storage, 'conv-guess')?.outcome).toBe('in progress');
         runHook(env, reportHook('conv-guess', 'r-guess-0002'));
         expect(await drained(storage, 'conv-guess')).toBe('');
         await close();
 
         expect(savedSession(storage, 'conv-guess')?.tokensInput).toBe(2000);
+      });
+    }, 40000);
+
+    it('a pending engine that stops before its cwd guess is confirmed adds the report it drained before the guess to the ones after', async () => {
+      await withPendingEngine('600000', async (env, _adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        runHook(env, reportHook('conv-guess', 'r-guess-0001'));
+        expect(await drained(storage, 'conv-guess')).toBe('');
+        await guessFromCwd(storage, 'conv-guess');
+        runHook(env, reportHook('conv-guess', 'r-guess-0002'));
+        expect(await drained(storage, 'conv-guess')).toBe('');
+        await close();
+
+        expect(savedSession(storage, 'conv-guess')).toMatchObject({
+          tokensInput: 2000,
+          outcome: 'completed',
+        });
+      });
+    }, 40000);
+
+    it('a pending engine that stops before its cwd guess is confirmed saves the subagent turn it drained before the guess', async () => {
+      await withPendingEngine('600000', async (env, _adopt, close) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        await subagentTurn(storage, 'conv-guess', 'msg_sub_1');
+        await guessFromCwd(storage, 'conv-guess');
+        await close();
+
+        expect(savedSession(storage, 'conv-guess')).toMatchObject({ tokensInput: 100000 });
       });
     }, 40000);
 
