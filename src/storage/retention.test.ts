@@ -209,6 +209,8 @@ describe('purgeOldSessions with writer files', () => {
     writeFileSync(fresh, '{"ver');
     const hourAgo = new Date(Date.now() - 61 * 60 * 1000);
     utimesSync(stale, hourAgo, hourAgo);
+    const justUnder = new Date(Date.now() - 59 * 60 * 1000);
+    utimesSync(fresh, justUnder, justUnder);
     utimesSync(join(writers, 'engine.1.a.b.json'), hourAgo, hourAgo);
 
     expect(purgeOldSessions(dir, 30)).toBe(1);

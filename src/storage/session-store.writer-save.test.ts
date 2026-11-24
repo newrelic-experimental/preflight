@@ -5,6 +5,7 @@ jest.mock('node:fs', () => {
   return {
     ...real,
     linkSync: jest.fn(real.linkSync),
+    readFileSync: jest.fn(real.readFileSync),
     renameSync: jest.fn(real.renameSync),
     rmSync: jest.fn(real.rmSync),
     writeFileSync: jest.fn(real.writeFileSync),
@@ -27,6 +28,7 @@ const { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, w
   real;
 const mocked = {
   linkSync: jest.mocked(fs.linkSync),
+  readFileSync: fs.readFileSync as unknown as jest.Mock<(...args: unknown[]) => unknown>,
   renameSync: jest.mocked(fs.renameSync),
   rmSync: jest.mocked(fs.rmSync),
   writeFileSync: jest.mocked(fs.writeFileSync),
@@ -41,6 +43,7 @@ beforeEach(() => {
   sessionsDir = join(storagePath, 'sessions');
   store = new SessionStore({ storagePath });
   mocked.linkSync.mockImplementation(real.linkSync);
+  mocked.readFileSync.mockImplementation(real.readFileSync as (...args: unknown[]) => unknown);
   mocked.renameSync.mockImplementation(real.renameSync);
   mocked.rmSync.mockImplementation(real.rmSync);
   mocked.writeFileSync.mockImplementation(real.writeFileSync);
@@ -195,6 +198,15 @@ describe('SessionStore.writer', () => {
     expect(a.save(own(activity(ids('a', 1))))).toMatchObject({ retracted: false });
     expect(b.save(own(activity(ids('b', 1)), true))).toMatchObject({ retracted: true });
     expect(a.save(own(activity(ids('a', 2))))).toMatchObject({ retracted: true });
+  });
+
+  it('tells a writer the session is retracted when an older build retracted it', () => {
+    const zero = { costUsd: 0, inputTokens: 0, outputTokens: 0, costByModel: {}, costByDayUsd: {} };
+    writeIndex({ ...activity(ids('p', 2)), byteEstimates: zero });
+
+    expect(store.writer('engine').save(own(activity(ids('a', 1))))).toMatchObject({
+      retracted: true,
+    });
   });
 });
 
@@ -364,6 +376,43 @@ describe('writer saves under filesystem faults', () => {
       kind: 'saved',
     });
     expect(writerFiles().filter((f) => f.startsWith('legacy.'))).toHaveLength(1);
+    expect(calls()).toBe(9);
+  });
+});
+
+describe('the order a save reads and writes in', () => {
+  it('reads the index before the writer files, so an older rewrite in between counts once', () => {
+    writeIndex(activity(ids('p', 4)));
+    const a = store.writer('engine');
+    a.save(own(activity(ids('a', 2))));
+    mocked.readFileSync.mockImplementation((path, options) => {
+      if (isIndex(path)) {
+        mocked.readFileSync.mockImplementation(
+          real.readFileSync as (...args: unknown[]) => unknown,
+        );
+        a.save(own(activity(ids('a', 3))));
+        writeIndex(activity([...ids('p', 4), ...ids('a', 3), 'old0']));
+      }
+      return real.readFileSync(path as string, options as BufferEncoding);
+    });
+
+    store.writer('aggregator').save(own(activity(ids('b', 3))));
+
+    expect(totals(store.loadSession(SID))).toEqual({ calls: 11, usd: 1.1, input: 110 });
+  });
+
+  it('captures the index before its own file, so a save in between cannot shrink the capture', () => {
+    writeIndex(activity(ids('p', 4)));
+    const a = store.writer('engine');
+    mocked.renameSync.mockImplementation((from, to) => {
+      real.renameSync(from, to);
+      if (!String(to).endsWith(`${a.id}.json`)) return;
+      mocked.renameSync.mockImplementation(real.renameSync);
+      new SessionStore({ storagePath }).writer('aggregator').save(own(activity(ids('b', 3))));
+    });
+
+    a.save(own(activity(ids('a', 2))));
+
     expect(calls()).toBe(9);
   });
 });

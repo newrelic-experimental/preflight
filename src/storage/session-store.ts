@@ -1684,7 +1684,6 @@ export class SessionStore {
   }
 
   private retireContribution(writerId: string, sessionId: string): void {
-    if (!isValidSessionId(sessionId)) return;
     const own = join(this.sessionsDir, WRITERS_DIR, sessionId, `${writerId}.json`);
     if (!existsSync(own)) return;
     try {
@@ -1718,9 +1717,9 @@ export class SessionStore {
 
     const after = readWriterFiles(this.sessionsDir, sessionId);
     if (!after) {
-      for (const file of reads) {
-        if (file.parsed.kind === 'unreadable' || !file.parsed.isProjection) continue;
-        if (readFileSync(file.filepath).equals(file.bytes)) rmSync(file.filepath, { force: true });
+      // Nothing was captured, so every index file read is a projection.
+      for (const { filepath, parsed } of reads) {
+        if (parsed.kind !== 'unreadable') rmSync(filepath, { force: true });
       }
       // A writer that saved while the index was going has no index to list it.
       return readWriterFiles(this.sessionsDir, sessionId)
@@ -2418,8 +2417,8 @@ function isValidSessionId(sessionId: string): boolean {
 /** Names a capture by the index bytes it was taken from, so two writers make one file. */
 function sha16(reads: readonly SessionFileRead[]): string {
   const hash = createHash('sha256');
-  for (const { filepath, bytes, parsed } of reads) {
-    if (parsed.kind !== 'unreadable') hash.update(basename(filepath)).update(bytes);
+  for (const { bytes, parsed } of reads) {
+    if (parsed.kind !== 'unreadable') hash.update(bytes);
   }
   return hash.digest('hex').slice(0, 16);
 }

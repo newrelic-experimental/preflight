@@ -89,6 +89,7 @@ export function createOnce(path: string, body: string): void {
     rmSync(tmp, { force: true });
   }
 }
+
 /**
  * One writer's own share of a session: only what this process drained, never a
  * total seeded from the saved file. Hook events and transcript turns are each
