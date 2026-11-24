@@ -544,6 +544,7 @@ describe('AiCodingTask emission in cloud mode', () => {
       NEW_RELIC_AI_MCP_HARVEST_EVENTS_MS: String(harvestEventsMs),
       CAPTURE_PATH: capturePath,
       NODE_OPTIONS: `--import ${preloadPath}`,
+      CLAUDE_CONFIG_DIR: resolve(root, 'claude'),
     });
   }
 
@@ -700,6 +701,87 @@ describe('AiCodingTask emission in cloud mode', () => {
 
     expect(capturedEvents('AiToolCall')).toContainEqual(
       expect.objectContaining({ tool: 'Bash', skill_name: 'lint' }),
+    );
+  }, 60_000);
+
+  it('stamps a background subagent with the skill run its Agent call started in', async () => {
+    const session = '93400000-0000-4000-8000-000000000934';
+    const subagents = resolve(root, 'claude', 'projects', 'slug', session, 'subagents');
+    const turn = (agentId: string, toolUseId: string): string =>
+      JSON.stringify({
+        type: 'assistant',
+        agentId,
+        uuid: `turn-${toolUseId}`,
+        timestamp: new Date().toISOString(),
+        sessionId: session,
+        message: {
+          id: `msg-${toolUseId}`,
+          role: 'assistant',
+          model: 'claude-opus-4-7',
+          stop_reason: 'tool_use',
+          content: [{ type: 'tool_use', id: toolUseId, name: 'Read', input: {} }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      }) + '\n';
+    // An earlier subagent, so the watcher's first poll learns this directory.
+    mkdirSync(subagents, { recursive: true });
+    writeFileSync(
+      resolve(subagents, 'agent-a0000000000000001.jsonl'),
+      turn('a0000000000000001', 'toolu_old'),
+    );
+    const job = resolve(root, 'job-934');
+    mkdirSync(job, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      resolve(job, 'state.json'),
+      JSON.stringify({ linkScanPath: `/fake/transcript/${session}.jsonl` }),
+      { mode: 0o600 },
+    );
+    const bufferPath = resolve(storage, `buffer-${session}.jsonl`);
+    const append = (frame: Record<string, unknown>): void =>
+      appendToHookBuffer(
+        bufferPath,
+        JSON.stringify({ sessionId: session, timestamp: Date.now(), ...frame }) + '\n',
+      );
+    const child = startCloudEngine(3_600_000, job);
+    try {
+      await waitForBoot(child, BOOT_TIMEOUT_MS);
+      await initialize(child);
+      // The watcher writes this cursor once a poll has read the earlier
+      // subagent, so by then it knows the directory.
+      const cursor = resolve(storage, `.subagent-pos-${session}-a0000000000000001`);
+      const deadline = Date.now() + TOOLS_CALL_TIMEOUT_MS;
+      while (!existsSync(cursor)) {
+        if (Date.now() > deadline) throw new Error('the subagent watcher never polled');
+        await delay(50);
+      }
+      seedToolCalls(session, 1, 'Skill');
+      append({
+        mode: 'pre',
+        tool: 'Agent',
+        toolUseId: 'toolu_spawn',
+        toolInput: { run_in_background: true },
+      });
+      append({ mode: 'user_prompt_submit', slashCommand: 'simplify' });
+      await waitForDrain(session);
+      writeFileSync(
+        resolve(subagents, 'agent-a0000000000000002.meta.json'),
+        JSON.stringify({ agentType: 'Explore', toolUseId: 'toolu_spawn' }),
+      );
+      writeFileSync(
+        resolve(subagents, 'agent-a0000000000000002.jsonl'),
+        turn('a0000000000000002', 'toolu_sub'),
+      );
+      const call = { tool: 'Read', toolUseId: 'toolu_sub', agentId: 'a0000000000000002' };
+      append({ ...call, mode: 'pre', toolInput: { file_path: '/fake/a.ts' } });
+      append({ ...call, mode: 'post', success: true });
+      await waitForStats(child, 2, TOOLS_CALL_TIMEOUT_MS);
+    } finally {
+      child.proc.stdin.end();
+      await waitExit(child, 8000);
+    }
+
+    expect(capturedEvents('AiToolCall')).toContainEqual(
+      expect.objectContaining({ tool: 'Read', agent_id: 'a0000000000000002', skill_name: 'lint' }),
     );
   }, 60_000);
 
