@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 // src/hooks/collector-script.ts
-import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, mkdirSync as mkdirSync3, existsSync, utimesSync } from "node:fs";
-import { resolve as resolve3, dirname as dirname3 } from "node:path";
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, mkdirSync as mkdirSync3, existsSync, statSync as statSync3, utimesSync } from "node:fs";
+import { resolve as resolve3, dirname as dirname3, isAbsolute } from "node:path";
 import { homedir } from "node:os";
 import { createHash as createHash2 } from "node:crypto";
 
@@ -1405,6 +1405,15 @@ function sizeOf(value) {
     return 0;
   }
 }
+function fileSizeOf(path) {
+  if (typeof path !== "string" || !isAbsolute(path)) return 0;
+  try {
+    const stats = statSync3(path, { throwIfNoEntry: false });
+    return stats?.isFile() ? stats.size : 0;
+  } catch {
+    return 0;
+  }
+}
 var TRUNCATED = "...[truncated]";
 function truncate(value, maxLen) {
   if (value.length <= maxLen) return value;
@@ -1938,7 +1947,8 @@ function processHook(raw, cliEvent) {
       mode: "post",
       tool: "Bash",
       timestamp,
-      success: true
+      success: true,
+      outputSize: sizeOf(data.output)
     };
   } else if (eventName === "beforemcpexecution") {
     const mcpTool = data.tool_name ?? "unknown";
@@ -1955,7 +1965,8 @@ function processHook(raw, cliEvent) {
       mode: "post",
       tool: mcpTool,
       timestamp,
-      success: true
+      success: true,
+      outputSize: sizeOf(data.result_json)
     };
     selfReportCall = {
       tool: mcpTool,
@@ -1969,6 +1980,8 @@ function processHook(raw, cliEvent) {
       tool: "Read",
       timestamp,
       success: true,
+      inputSize: sizeOf(data.file_path),
+      outputSize: sizeOf(data.content),
       ...data.file_path !== void 0 && { toolInput: { file_path: data.file_path } }
     };
     if (recordContent && data.content !== void 0) {
@@ -1980,6 +1993,7 @@ function processHook(raw, cliEvent) {
       tool: "Edit",
       timestamp,
       success: true,
+      inputSize: sizeOf(data.edits),
       ...data.file_path !== void 0 && { toolInput: { file_path: data.file_path } }
     };
   } else if (eventName === "pre_read_code") {
@@ -1999,15 +2013,17 @@ function processHook(raw, cliEvent) {
       tool: "Read",
       timestamp,
       success: true,
+      outputSize: fileSizeOf(filePath),
       ...typeof filePath === "string" && { toolInput: { file_path: filePath } }
     };
   } else if (eventName === "pre_write_code") {
-    const filePath = getWindsurfToolInfo(data).file_path;
+    const toolInfo = getWindsurfToolInfo(data);
+    const filePath = toolInfo.file_path;
     event = {
       mode: "pre",
       tool: "Edit",
       timestamp,
-      inputSize: sizeOf(filePath),
+      inputSize: sizeOf(toolInfo.edits),
       inputHash: hashInput(filePath),
       ...typeof filePath === "string" && { toolInput: { file_path: filePath } }
     };
@@ -2055,7 +2071,8 @@ function processHook(raw, cliEvent) {
       mode: "post",
       tool: mcpTool,
       timestamp,
-      success: true
+      success: true,
+      outputSize: sizeOf(toolInfo.mcp_result)
     };
     selfReportCall = {
       tool: mcpTool,
@@ -2157,6 +2174,7 @@ function processHook(raw, cliEvent) {
   const stampedPlatform = HOOK_EVENT_PLATFORM[eventName ?? ""] ?? detectStampPlatform(sessionId);
   if (stampedPlatform) event.platform = stampedPlatform;
   const selfReport = selfReportCall && stampedPlatform && hookSelfReportLine(selfReportCall, sessionId, timestamp, stampedPlatform);
+  if (selfReport) delete event.outputSize;
   if (data.tool_use_id) event.toolUseId = data.tool_use_id;
   if (data.agent_id) event.agentId = data.agent_id;
   if (data.agent_type) event.agentType = data.agent_type;

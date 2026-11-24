@@ -933,15 +933,18 @@ export function mergeSummaries(
 
 /** Whether two files' timelines hold one call, by the identity `mergeTimeline` dedupes on. */
 function sharesTimelineEntry(x: FullSessionSummary, y: FullSessionSummary): boolean {
-  const [a, b] = [x.timeline ?? [], y.timeline ?? []];
-  const ids = new Set(a.flatMap((e) => (e.toolUseId ? [e.toolUseId] : [])));
-  const keys = new Set(a.map(legacyTimelineKey));
-  const keysWithoutId = new Set(a.filter((e) => !e.toolUseId).map(legacyTimelineKey));
-  return b.some((e) =>
+  return (y.timeline ?? []).some(heldIn(x.timeline ?? []));
+}
+
+/** Whether `entries` hold an entry's call, by the keys `mergeTimeline` dedupes on. */
+function heldIn(entries: readonly ReplayTimelineEntry[]): (e: ReplayTimelineEntry) => boolean {
+  const ids = new Set(entries.flatMap((e) => (e.toolUseId ? [e.toolUseId] : [])));
+  const keys = new Set(entries.map(legacyTimelineKey));
+  const keysWithoutId = new Set(entries.filter((e) => !e.toolUseId).map(legacyTimelineKey));
+  return (e) =>
     e.toolUseId
       ? ids.has(e.toolUseId) || keysWithoutId.has(legacyTimelineKey(e))
-      : keys.has(legacyTimelineKey(e)),
-  );
+      : keys.has(legacyTimelineKey(e));
 }
 
 /**
@@ -1294,8 +1297,8 @@ function weightedRate(
  * - the fields `addSummaries` takes from `mergeSummaries` stay `total`'s, since
  *   that merge keeps the larger or newer side. The transcript message counts
  *   are among them, as every writer reads the transcript whole;
- * - the timeline drops the calls whose toolUseId `part` holds, so a fold that
- *   counts a repeated call once does not take it out a second time.
+ * - the timeline drops the calls `part` holds, by toolUseId or, where an entry
+ *   has none, by `(timestamp, toolName)` as `mergeTimeline` dedupes them.
  */
 export function subtractSummaries(
   total: FullSessionSummary,
@@ -1413,8 +1416,8 @@ function timelineWithout(
   taken: readonly ReplayTimelineEntry[] | undefined,
 ): ReplayTimelineEntry[] | undefined {
   if (entries === undefined) return undefined;
-  const ids = new Set((taken ?? []).flatMap((e) => (e.toolUseId ? [e.toolUseId] : [])));
-  return entries.filter((e) => !e.toolUseId || !ids.has(e.toolUseId));
+  const held = heldIn(taken ?? []);
+  return entries.filter((e) => !held(e));
 }
 
 export function subtractCallUsageParts(a: CallUsageParts, b: CallUsageParts): AddedCallUsage {
@@ -1524,7 +1527,7 @@ function taskSuccessRateLeft(t: FullSessionSummary, p: FullSessionSummary): numb
   if (runs === 0 || p.testRunCount === 0) {
     return rateLeft(t.taskSuccessRate, t.taskCount, p.taskSuccessRate, p.taskCount);
   }
-  return Math.round((less(t.testPassCount, p.testPassCount) / runs) * 1000) / 1000;
+  return clampUnit(Math.round((less(t.testPassCount, p.testPassCount) / runs) * 1000) / 1000);
 }
 
 export class SessionStore {
