@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { BoundedMap } from '../lib/bounded-map.js';
 import type { SkillStamp, ToolCallRecord } from '../storage/types.js';
+import { DEFAULT_IDLE_TIMEOUT_MS } from './task-detector.js';
 import type { Resettable } from './tracker-contracts.js';
 
 const NULL_SESSION_KEY = '__no_session__';
@@ -29,24 +30,28 @@ export interface SkillActivationTrackerOptions {
    * slash run absorbs its Skill call, nor when a subagent pins an existing run.
    */
   readonly onRunOpened?: (stamp: SkillStamp, ctx: SkillRunOpenContext) => void;
+  /** Called when an idle gap closes the main agent's run, at the record that ended the gap. */
+  readonly onRunIdleClosed?: (stamp: SkillStamp, timestamp: number) => void;
 }
 
 /**
  * Tracks the open skill run per session and per agent, so every tool call can
  * be stamped with the skill whose work it is. A run opens on a successful,
  * named `Skill` tool call or a `/<skill>` prompt and lasts until the next
- * prompt or the next skill (last wins: there is no signal for a nested skill
- * returning, so the new run records the one it replaced as its parent
- * instead). A subagent keeps the run the main agent had open when its
+ * prompt, an idle gap, or the next skill (last wins: there is no signal for a
+ * nested skill returning, so the new run records the one it replaced as its
+ * parent instead). A subagent keeps the run the main agent had open when its
  * spawning call started, once its transcript sidecar names that call, and
- * until then the run open when the subagent first appeared; later prompts and
- * skills on the main agent don't move it. A main-agent call whose start
- * was seen keeps the run open at its start, since its record can arrive after
- * a later prompt.
+ * until then the run open when the subagent first appeared; later prompts,
+ * idle gaps, and skills on the main agent don't move it. A main-agent call
+ * whose start was seen keeps the run open at its start, since its record can
+ * arrive after a later prompt.
  */
 export class SkillActivationTracker implements Resettable {
   /** Per session, per agent; `null` pins a subagent that appeared outside any run. */
   private readonly sessions = new Map<string, Map<string, SkillStamp | null>>();
+  private readonly lastActivity = new Map<string, number>();
+  private readonly promptedSessions = new Set<string>();
   /** Runs a subagent's own Skill call opened, which a spawn pin must not replace. */
   private readonly subagentOpenedRuns = new WeakSet<SkillStamp>();
   /** The main agent's open run when each call started, by session and toolUseId. */
@@ -64,7 +69,11 @@ export class SkillActivationTracker implements Resettable {
     } else {
       if (this.sessions.size >= DEFAULT_MAX_SESSIONS) {
         const oldest = this.sessions.keys().next().value;
-        if (oldest !== undefined) this.sessions.delete(oldest);
+        if (oldest !== undefined) {
+          this.sessions.delete(oldest);
+          this.lastActivity.delete(oldest);
+          this.promptedSessions.delete(oldest);
+        }
       }
       runs = new Map();
     }
@@ -73,12 +82,19 @@ export class SkillActivationTracker implements Resettable {
   }
 
   /** Remembers the run open as a call starts, for its record to carry. */
-  recordToolStart(sessionId: string | null | undefined, toolUseId: string): void {
-    this.runAtStart.set(startKey(sessionId, toolUseId), this.openRun(sessionId));
+  recordToolStart(
+    sessionId: string | null | undefined,
+    toolUseId: string,
+    timestamp: number,
+  ): void {
+    const sessionKey = sessionId ?? NULL_SESSION_KEY;
+    const open = this.idleGapEnds(sessionKey, timestamp) ? null : this.openRun(sessionId);
+    this.runAtStart.set(startKey(sessionId, toolUseId), open);
   }
 
   recordToolCall(record: ToolCallRecord): SkillStamp | null {
     const runs = this.runsFor(record.sessionId);
+    this.closeMainRunAfterIdleGap(record.sessionId ?? NULL_SESSION_KEY, runs, record);
     const agentKey = record.agentId ?? MAIN_AGENT_KEY;
     if (agentKey !== MAIN_AGENT_KEY && !runs.has(agentKey)) {
       admitAgent(runs, agentKey, runs.get(MAIN_AGENT_KEY) ?? null);
@@ -140,6 +156,38 @@ export class SkillActivationTracker implements Resettable {
     return this.sessions.get(sessionId ?? NULL_SESSION_KEY)?.get(MAIN_AGENT_KEY) ?? null;
   }
 
+  /**
+   * Measures the gap from the end of the session's latest call. Only a
+   * main-agent call can end it, since a subagent's silence is the main agent
+   * waiting on that subagent.
+   */
+  private closeMainRunAfterIdleGap(
+    sessionKey: string,
+    runs: Map<string, SkillStamp | null>,
+    record: ToolCallRecord,
+  ): void {
+    if (this.promptedSessions.has(sessionKey)) return;
+    const open = runs.get(MAIN_AGENT_KEY);
+    if (
+      open &&
+      (record.agentId ?? MAIN_AGENT_KEY) === MAIN_AGENT_KEY &&
+      this.idleGapEnds(sessionKey, record.timestamp)
+    ) {
+      runs.set(MAIN_AGENT_KEY, null);
+      this.options.onRunIdleClosed?.(open, record.timestamp);
+    }
+    const last = this.lastActivity.get(sessionKey);
+    const end = record.timestamp + (record.durationMs ?? 0);
+    if (last === undefined || end > last) this.lastActivity.set(sessionKey, end);
+  }
+
+  /** Whether main-agent activity at `timestamp` ends an idle gap in a session that has sent no prompt. */
+  private idleGapEnds(sessionKey: string, timestamp: number): boolean {
+    if (this.promptedSessions.has(sessionKey)) return false;
+    const last = this.lastActivity.get(sessionKey);
+    return last !== undefined && timestamp - last > DEFAULT_IDLE_TIMEOUT_MS;
+  }
+
   /** Closes the main agent's run and returns the slash run it opens, if any. */
   recordPrompt(
     sessionId: string | null | undefined,
@@ -150,6 +198,8 @@ export class SkillActivationTracker implements Resettable {
       ? { name: slashCommand, source: 'slash', runId: randomUUID() }
       : null;
     this.runsFor(sessionId).set(MAIN_AGENT_KEY, stamp);
+    const sessionKey = sessionId ?? NULL_SESSION_KEY;
+    this.promptedSessions.add(sessionKey);
     if (stamp) this.options.onRunOpened?.(stamp, { sessionId: sessionId ?? null, timestamp });
     return stamp;
   }
@@ -167,6 +217,8 @@ export class SkillActivationTracker implements Resettable {
 
   reset(_sessionId?: string): void {
     this.sessions.clear();
+    this.lastActivity.clear();
+    this.promptedSessions.clear();
   }
 }
 

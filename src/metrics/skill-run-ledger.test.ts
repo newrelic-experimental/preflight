@@ -117,6 +117,19 @@ describe('SkillRunLedger', () => {
     expect(closed).toMatchObject([{ toolCallCount: 1 }]);
   });
 
+  it('waits for the unpriced call of an idle-closed run from the close, not before it', () => {
+    const { closed, ledger, call, tokens } = makeLedger();
+    const stamp = makeStamp('run-1');
+    ledger.recordRunOpened(stamp, { sessionId: SESSION, timestamp: 700_000 });
+    call(makeCall({ activeSkill: stamp, timestamp: 700_100 }));
+    ledger.recordRunClosed('run-1', 740_000);
+    tokens(700_050);
+    expect(closed).toEqual([]);
+
+    tokens(740_000 + 10 * 60 * 1000 + 1);
+    expect(closed).toMatchObject([{ toolCallCount: 1 }]);
+  });
+
   it('hands over open runs on flush, once', () => {
     const { closed, ledger } = makeLedger();
     ledger.recordRunOpened(makeStamp('run-1'), { sessionId: SESSION, timestamp: 500 });
@@ -197,6 +210,7 @@ describe('AiWorkUnit through the hook buffer', () => {
     );
     const skills = new SkillActivationTracker({
       onRunOpened: (stamp, ctx) => ledger.recordRunOpened(stamp, ctx),
+      onRunIdleClosed: (stamp, timestamp) => ledger.recordRunClosed(stamp.runId, timestamp),
     });
     processor = new HookEventProcessor({
       store: new LocalStore(dir, SESSION),
@@ -284,6 +298,19 @@ describe('AiWorkUnit through the hook buffer', () => {
     expect(units[0]!.cost_usd).toBeGreaterThan(0);
     expect(units[0]!.cost_usd).toBeCloseTo(sum('cost_usd'), 12);
     expect(units[0]).not.toHaveProperty('parent_session_id');
+  });
+
+  it('sends a run an idle gap closed, ending at its last call', async () => {
+    const sent = await runFrames([
+      ...pair('tu-skill', 'Skill', 1_000, 1_050, { toolInput: { skill: 'lint' } }),
+      ...pair('tu-read', 'Read', 1_100, 1_400),
+      tokens(2_000),
+      ...pair('tu-bash', 'Bash', 40_000, 40_100),
+    ]);
+
+    expect(sent.filter((e) => e.eventType === 'AiWorkUnit')).toMatchObject([
+      { skill_name: 'lint', started_at: 1_000, duration_ms: 400, tool_call_count: 2 },
+    ]);
   });
 
   it('names the parent session of a run a subagent opened', async () => {
