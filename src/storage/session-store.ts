@@ -986,7 +986,7 @@ function groupBySharedActivity(files: readonly FullSessionSummary[]): FullSessio
  * Oldest writer first. Contents break a tie on end time so a combine cannot
  * depend on the order files were listed.
  */
-function byWriteOrder(x: FullSessionSummary, y: FullSessionSummary): number {
+export function byWriteOrder(x: FullSessionSummary, y: FullSessionSummary): number {
   return x.endTime - y.endTime || JSON.stringify(x).localeCompare(JSON.stringify(y));
 }
 
@@ -1040,7 +1040,7 @@ type FromMerge = Span | Labels | Picks | Unions | Outcome | TranscriptCounts;
 type AddedFields = { readonly [K in Exclude<SummaryField, FromMerge>]-?: FullSessionSummary[K] };
 
 /** Sums two files holding separate activity, `b` the newer writer. */
-function addSummaries(a: FullSessionSummary, b: FullSessionSummary): FullSessionSummary {
+export function addSummaries(a: FullSessionSummary, b: FullSessionSummary): FullSessionSummary {
   const merged = mergeSummaries(a, b);
   const ledger = addOptional(a.byteEstimates, b.byteEstimates, addLedgers);
   const [exactA, exactB] = [exactTotalsOf(a), exactTotalsOf(b)];
