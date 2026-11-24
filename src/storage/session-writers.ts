@@ -65,8 +65,8 @@ export function foldWriterContributions(
  * split across several is captured whole. Pass writer files only, never an
  * earlier capture: each capture is a cumulative view of the same history, so
  * readers combine captures by max and add that once. An older build saves its
- * estimates as an all-zero ledger once a real report replaced them, so that
- * ledger carries the session's retraction.
+ * estimates as an all-zero ledger once a real report replaced them. Retraction
+ * is a fact about the session, so any top-level file with that ledger carries it.
  */
 export function captureLegacyIndex(
   indexFiles: readonly [FullSessionSummary, ...FullSessionSummary[]],
@@ -77,13 +77,16 @@ export function captureLegacyIndex(
     writers.length === 0
       ? index
       : subtractSummaries(index, foldWriterContributions(writers as [WriterContribution]));
-  const ledger = index.byteEstimates;
-  const retracted =
+  return { summary, retracted: indexFiles.some(savedRetraction) };
+}
+
+function savedRetraction({ byteEstimates: ledger }: FullSessionSummary): boolean {
+  return (
     ledger !== undefined &&
     ledger.costUsd === 0 &&
     ledger.inputTokens === 0 &&
-    ledger.outputTokens === 0;
-  return { summary, retracted };
+    ledger.outputTokens === 0
+  );
 }
 
 function repeatedCallNames(summaries: readonly FullSessionSummary[]): string[] {
