@@ -1,7 +1,7 @@
 import { createLogger } from '../core/index.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from '../metrics/quality-proxy-tracker.js';
-import type { ToolCallRecord } from '../storage/types.js';
-import { SessionStore } from '../storage/session-store.js';
+import type { ReplayTimelineEntry, ToolCallRecord } from '../storage/types.js';
+import { SessionStore, savedToolNameByUseId } from '../storage/session-store.js';
 import type { FullSessionSummary } from '../storage/session-store.js';
 
 const logger = createLogger('homelab-accumulator');
@@ -19,7 +19,7 @@ export interface HomelabIngestPayload {
 interface ActiveSession {
   readonly developer: string;
   readonly sessionId: string;
-  records: ToolCallRecord[];
+  readonly recordsByToolUseId: Map<string, ToolCallRecord>;
   readonly startTime: number;
   lastSeen: number;
 }
@@ -49,19 +49,19 @@ export class HomelabAccumulator {
     if (!developer || !SESSION_ID_RE.test(sessionId)) return 'invalid';
 
     const key = `${developer}:${sessionId}`;
-    const existing = this.sessions.get(key);
-    if (existing) {
-      existing.records.push(...records);
-      existing.lastSeen = Date.now();
-    } else {
-      this.sessions.set(key, {
+    let session = this.sessions.get(key);
+    if (!session) {
+      session = {
         developer,
         sessionId,
-        records: [...records],
+        recordsByToolUseId: new Map(),
         startTime: records[0]?.timestamp ?? Date.now(),
         lastSeen: Date.now(),
-      });
+      };
+      this.sessions.set(key, session);
     }
+    for (const r of records) session.recordsByToolUseId.set(r.toolUseId, r);
+    session.lastSeen = Date.now();
     return 'ok';
   }
 
@@ -96,9 +96,13 @@ export class HomelabAccumulator {
   }
 
   private saveSession(session: ActiveSession): void {
-    const summary = buildMinimalSummary(session);
     try {
-      this.sessionStore.saveSession(summary);
+      const saved = this.sessionStore.loadSession(session.sessionId);
+      const counted = savedToolNameByUseId(saved);
+      const fresh = [...session.recordsByToolUseId.values()].filter(
+        (r) => !counted.has(r.toolUseId),
+      );
+      this.sessionStore.saveSession(buildMinimalSummary(session, fresh, saved));
     } catch (err) {
       logger.warn('Failed to save homelab session', {
         error: String(err),
@@ -108,19 +112,33 @@ export class HomelabAccumulator {
   }
 }
 
-function buildMinimalSummary(session: ActiveSession): FullSessionSummary {
-  const toolBreakdown: Record<string, number> = {};
-  for (const r of session.records) {
+function toTimelineEntry(r: ToolCallRecord): ReplayTimelineEntry {
+  return {
+    timestamp: r.timestamp,
+    toolUseId: r.toolUseId,
+    toolName: r.toolName,
+    durationMs: r.durationMs,
+    success: r.success,
+  };
+}
+
+function buildMinimalSummary(
+  session: ActiveSession,
+  fresh: readonly ToolCallRecord[],
+  saved: FullSessionSummary | null,
+): FullSessionSummary {
+  const toolBreakdown: Record<string, number> = { ...saved?.toolBreakdown };
+  for (const r of fresh) {
     toolBreakdown[r.toolName] = (toolBreakdown[r.toolName] ?? 0) + 1;
   }
 
-  const endTime = session.records.at(-1)?.timestamp ?? session.lastSeen;
+  const endTime = [...session.recordsByToolUseId.values()].at(-1)?.timestamp ?? session.lastSeen;
   return {
     sessionId: session.sessionId,
     startTime: session.startTime,
     endTime,
     durationMs: endTime - session.startTime,
-    toolCallCount: session.records.length,
+    toolCallCount: (saved?.toolCallCount ?? 0) + fresh.length,
     developer: session.developer,
     sessionName: null,
     sessionNameSource: null,
@@ -128,6 +146,7 @@ function buildMinimalSummary(session: ActiveSession): FullSessionSummary {
     repoName: null,
     model: null,
     toolBreakdown,
+    timeline: fresh.map(toTimelineEntry),
     skillBreakdown: {},
     filesRead: [],
     filesModified: [],
