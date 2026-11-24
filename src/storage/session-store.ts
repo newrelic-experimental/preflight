@@ -1011,11 +1011,25 @@ function byProgress(x: FullSessionSummary, y: FullSessionSummary): number {
  */
 export function combineSessionFiles(files: readonly FullSessionSummary[]): FullSessionSummary {
   const separate = groupBySharedActivity(files.filter((f) => f.timeline?.length))
-    .map((group) => group.sort(byProgress).reduce((acc, next) => mergeSummaries(acc, next)))
+    .map((group) => maxMerge(group.sort(byProgress)))
     .sort(byWriteOrder);
   const withoutTimeline = files.filter((f) => !f.timeline?.length).sort(byWriteOrder);
   const added = separate.length > 0 ? [separate.reduce((a, b) => addSummaries(a, b))] : [];
-  return [...withoutTimeline, ...added].reduce((acc, next) => mergeSummaries(acc, next));
+  return maxMerge([...withoutTimeline, ...added]);
+}
+
+/**
+ * Folds `files` with `mergeSummaries`, which keeps the last ledger. A file without a ledger cannot
+ * say which of its totals were estimated, so it is read as holding that ledger too. Its total then
+ * competes with the other files' exact share plus the ledger, not the exact share alone.
+ */
+function maxMerge(files: readonly FullSessionSummary[]): FullSessionSummary {
+  const ledger = [...files].reverse().find((f) => f.byteEstimates)?.byteEstimates;
+  return files
+    .map((f) =>
+      f.byteEstimates || !ledger ? f : { ...f, exactTotals: undefined, byteEstimates: ledger },
+    )
+    .reduce((acc, next) => mergeSummaries(acc, next));
 }
 
 type SummaryField = keyof {
