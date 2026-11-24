@@ -556,11 +556,11 @@ describe('AiCodingTask emission in cloud mode', () => {
     sessionId: string,
     count: number,
     tool: 'Bash' | 'Read' | 'AskUserQuestion' | 'Skill' = 'Bash',
+    base = Date.now() - 1000,
   ): void {
     const bufferPath = resolve(storage, `buffer-${sessionId}.jsonl`);
-    const base = Date.now() - 1000;
     for (let i = 0; i < count; i++) {
-      const common = { tool, sessionId, toolUseId: `toolu_${sessionId}_${tool}_${i}` };
+      const common = { tool, sessionId, toolUseId: `toolu_${sessionId}_${tool}_${base}_${i}` };
       appendToHookBuffer(
         bufferPath,
         JSON.stringify({
@@ -669,6 +669,27 @@ describe('AiCodingTask emission in cloud mode', () => {
 
     expect(capturedEvents('AiWorkUnit')).toMatchObject([
       { skill_name: 'lint', tool_call_count: 2 },
+    ]);
+  }, 60_000);
+
+  it('ends a skill run an idle gap closed at its last call, not at the next run', async () => {
+    const child = startCloudEngine(3_600_000, jobDir);
+    const start = Date.now() - 120_000;
+    try {
+      await waitForBoot(child, BOOT_TIMEOUT_MS);
+      await initialize(child);
+      seedToolCalls(SESSION, 1, 'Skill', start);
+      seedToolCalls(SESSION, 1, 'Bash', start + 100);
+      seedToolCalls(SESSION, 1, 'Skill', start + 60_000);
+      await waitForStats(child, 3, TOOLS_CALL_TIMEOUT_MS);
+    } finally {
+      child.proc.stdin.end();
+      await waitExit(child, 8000);
+    }
+
+    expect(capturedEvents('AiWorkUnit')).toMatchObject([
+      { skill_name: 'lint', started_at: start, duration_ms: 101, tool_call_count: 2 },
+      { skill_name: 'lint', started_at: start + 60_000, tool_call_count: 1 },
     ]);
   }, 60_000);
 
