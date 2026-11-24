@@ -10,8 +10,10 @@ import {
 
 /**
  * One writer's own share of a session: only what this process drained, never a
- * total seeded from the saved file. Each process drains hook events and claims
- * transcript turns of its own, so writers' shares are disjoint and add.
+ * total seeded from the saved file. Hook events and transcript turns are each
+ * drained once, so shares add, except a call whose pre and post two engines
+ * drained. Its counts must include every call its timeline holds by toolUseId,
+ * under that entry's tool name, so the fold can take the repeat back out.
  */
 export interface WriterContribution {
   readonly summary: FullSessionSummary;

@@ -186,6 +186,19 @@ describe('foldWriterContributions', () => {
     }
   });
 
+  it('takes labels from the newest writer', () => {
+    const share = randomShare(mulberry32(7), 0);
+    const named = (sessionName: string, endTime: number) => ({
+      ...summaryOf({ ...share, endTime }),
+      sessionName,
+    });
+    const folded = fold([
+      { summary: named('newer', START + 9000), retracted: false },
+      { summary: named('older', START + 2000), retracted: false },
+    ]);
+    expect(folded.sessionName).toBe('newer');
+  });
+
   it('returns a single writer unchanged', () => {
     for (let seed = 1; seed <= RUNS; seed++) {
       const summary = summaryOf(randomShare(mulberry32(seed), 0));
