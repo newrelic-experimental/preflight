@@ -73,7 +73,7 @@ Each `MCP_CLIENT === '<name>'` or `NEW_RELIC_AI_PLATFORM === '<name>'` check bel
 
 **Pairing:** None of these events carries a `tool_use_id`, so the collector mints one at `beforeShellExecution` or `beforeMCPExecution` and hands it to the oldest open pre of the same tool at `afterShellExecution` or `afterMCPExecution`. A denied command or MCP call fires no `after*` event, so its pre is recorded as a timeout once its wait runs out (11 minutes for a shell command, 60 seconds otherwise). Until then, the next `after*` event of the same tool pairs with it, as the processor's own FIFO does for any call without an id. `beforeReadFile` and `afterFileEdit` have no pre to pair with.
 
-**Sizes:** each tool call records the size of its input and output, in characters of the payload text. Shell calls count the `command` and the `output`, MCP calls the `tool_input` and the `result_json`, reads the `file_path` and the `content`, and edits the `edits`. `beforeReadFile` and `afterFileEdit` have no pre event, so the post event carries the input size. An `nr_observe_report_tokens` call that the hook records as a self-report carries no output size, so its result is not estimated on top of the report.
+**Sizes:** each tool call records the size of its input and output, in characters of the payload text. Shell calls count the `command` and the `output`, MCP calls the `tool_input` and the `result_json`, reads the `file_path` and the `content`, and edits the `edits`. `beforeReadFile` and `afterFileEdit` have no pre event, so the post event carries the input size. An `nr_observe_report_tokens` call that the hook records as a self-report carries no output size, so a size estimate cannot count its result on top of the report.
 
 **Setup:**
 
