@@ -75,6 +75,20 @@ describe('HomelabAccumulator', () => {
     expect(saved()?.toolBreakdown).toEqual({ Read: 3, Edit: 4 });
   });
 
+  it.each([undefined, '', 7])(
+    'rejects a batch holding a record with toolUseId %p and keeps the saved calls',
+    (toolUseId) => {
+      runServer(records(0, 5));
+      const acc = new HomelabAccumulator({ storagePath: tmpDir });
+      const bad = [...records(5, 2), { ...makeRecord(7), toolUseId }];
+      expect(acc.handleIngest({ developer: 'alice', sessionId: 'session-abc', records: bad })).toBe(
+        'invalid',
+      );
+      acc.stop();
+      expect(saved()?.toolCallCount).toBe(5);
+    },
+  );
+
   it('adds a later batch to the calls the session already saved', () => {
     runServer(records(0, 12));
     expect(saved()?.toolCallCount).toBe(12);

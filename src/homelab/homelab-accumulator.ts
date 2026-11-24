@@ -30,7 +30,11 @@ function isIngestPayload(v: unknown): v is HomelabIngestPayload {
   return (
     typeof obj.developer === 'string' &&
     typeof obj.sessionId === 'string' &&
-    Array.isArray(obj.records)
+    Array.isArray(obj.records) &&
+    obj.records.every((r: { toolUseId?: unknown } | null) => {
+      const id = r?.toolUseId;
+      return typeof id === 'string' && id !== '';
+    })
   );
 }
 
