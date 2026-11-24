@@ -1,10 +1,12 @@
 import type { ByteEstimateLedger } from '../metrics/cost-tracker.js';
-import { combineCallUsageByDay, subtractCallUsage } from '../metrics/call-usage.js';
 import {
   addSummaries,
   byWriteOrder,
+  combineSessionFiles,
   exactTotalsOf,
   savedToolNameByUseId,
+  subtractCallUsageParts,
+  subtractSummaries,
   type FullSessionSummary,
 } from './session-store.js';
 
@@ -56,6 +58,37 @@ export function foldWriterContributions(
   };
 }
 
+/**
+ * The top-level files for a session as one more writer: what they hold beyond
+ * the writer files. Older builds keep saving there, on top of what they read,
+ * which can already include the writer files. Every top-level file counts, so a session
+ * split across several is captured whole. Pass writer files only, never an
+ * earlier capture: each capture is a cumulative view of the same history, so
+ * readers combine captures by max and add that once. An older build saves its
+ * estimates as an all-zero ledger once a real report replaced them. Retraction
+ * is a fact about the session, so any top-level file with that ledger carries it.
+ */
+export function captureLegacyIndex(
+  indexFiles: readonly [FullSessionSummary, ...FullSessionSummary[]],
+  writers: readonly WriterContribution[],
+): WriterContribution {
+  const index = combineSessionFiles(indexFiles);
+  const summary =
+    writers.length === 0
+      ? index
+      : subtractSummaries(index, foldWriterContributions(writers as [WriterContribution]));
+  return { summary, retracted: indexFiles.some(savedRetraction) };
+}
+
+function savedRetraction({ byteEstimates: ledger }: FullSessionSummary): boolean {
+  return (
+    ledger !== undefined &&
+    ledger.costUsd === 0 &&
+    ledger.inputTokens === 0 &&
+    ledger.outputTokens === 0
+  );
+}
+
 function repeatedCallNames(summaries: readonly FullSessionSummary[]): string[] {
   const seen = new Set<string>();
   const repeats: string[] = [];
@@ -78,16 +111,7 @@ function withoutEstimates(s: FullSessionSummary): FullSessionSummary {
     costByDayUsd: s.costByDayUsd && exact.costByDayUsd,
     tokensInput: exact.inputTokens,
     tokensOutput: exact.outputTokens,
-    unpricedByModel:
-      s.unpricedByModel && subtractCallUsage(s.unpricedByModel, ledger.unpricedByModel),
-    estimatedByModel:
-      s.estimatedByModel && subtractCallUsage(s.estimatedByModel, ledger.estimatedByModel),
-    unpricedByDay:
-      s.unpricedByDay &&
-      combineCallUsageByDay(s.unpricedByDay, ledger.unpricedByDay, subtractCallUsage),
-    estimatedByDay:
-      s.estimatedByDay &&
-      combineCallUsageByDay(s.estimatedByDay, ledger.estimatedByDay, subtractCallUsage),
+    ...subtractCallUsageParts(s, ledger),
     byteEstimates: NO_ESTIMATES,
   };
 }

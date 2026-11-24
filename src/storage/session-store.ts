@@ -595,7 +595,7 @@ function subtractRecord(
   b: Readonly<Record<string, number>>,
 ): Record<string, number> {
   const out: Record<string, number> = {};
-  for (const [k, v] of Object.entries(a)) out[k] = Math.max(0, v - (b[k] ?? 0));
+  for (const [k, v] of Object.entries(a)) out[k] = less(v, b[k] ?? 0);
   return out;
 }
 
@@ -926,15 +926,18 @@ export function mergeSummaries(
 
 /** Whether two files' timelines hold one call, by the identity `mergeTimeline` dedupes on. */
 function sharesTimelineEntry(x: FullSessionSummary, y: FullSessionSummary): boolean {
-  const [a, b] = [x.timeline ?? [], y.timeline ?? []];
-  const ids = new Set(a.flatMap((e) => (e.toolUseId ? [e.toolUseId] : [])));
-  const keys = new Set(a.map(legacyTimelineKey));
-  const keysWithoutId = new Set(a.filter((e) => !e.toolUseId).map(legacyTimelineKey));
-  return b.some((e) =>
+  return (y.timeline ?? []).some(heldIn(x.timeline ?? []));
+}
+
+/** Whether `entries` hold an entry's call, by the keys `mergeTimeline` dedupes on. */
+function heldIn(entries: readonly ReplayTimelineEntry[]): (e: ReplayTimelineEntry) => boolean {
+  const ids = new Set(entries.flatMap((e) => (e.toolUseId ? [e.toolUseId] : [])));
+  const keys = new Set(entries.map(legacyTimelineKey));
+  const keysWithoutId = new Set(entries.filter((e) => !e.toolUseId).map(legacyTimelineKey));
+  return (e) =>
     e.toolUseId
       ? ids.has(e.toolUseId) || keysWithoutId.has(legacyTimelineKey(e))
-      : keys.has(legacyTimelineKey(e)),
-  );
+      : keys.has(legacyTimelineKey(e));
 }
 
 /**
@@ -1273,6 +1276,251 @@ function weightedRate(
   if (rateA === null || rateB === null) return rateA ?? rateB;
   if (weightA + weightB === 0) return (rateA + rateB) / 2;
   return (rateA * weightA + rateB * weightB) / (weightA + weightB);
+}
+
+/**
+ * What `total` holds beyond `part`, so that `addSummaries` of the two gives
+ * `total` back wherever `total` covers `part`. The rules clamp:
+ * - every count, cost and token total stops at zero, and a breakdown keeps only
+ *   `total`'s keys, so a part larger than the total leaves nothing, never less;
+ * - the exact share and the byte-estimate ledger subtract apart, and a total
+ *   saved before the ledger existed loses the part's estimates as exact cost;
+ * - rates and score means are taken out by weight and clamp to [0, 1], and
+ *   none is left once the part's weight reaches the total's;
+ * - the fields `addSummaries` takes from `mergeSummaries` stay `total`'s, since
+ *   that merge keeps the larger or newer side. The transcript message counts
+ *   are among them, as every writer reads the transcript whole;
+ * - the timeline drops the calls `part` holds, by toolUseId or, where an entry
+ *   has none, by `(timestamp, toolName)` as `mergeTimeline` dedupes them.
+ */
+export function subtractSummaries(
+  total: FullSessionSummary,
+  part: FullSessionSummary,
+): FullSessionSummary {
+  const ledger =
+    total.byteEstimates && part.byteEstimates
+      ? subtractLedgers(total.byteEstimates, part.byteEstimates)
+      : total.byteEstimates;
+  const exactT = exactTotalsOf(total);
+  const exactP = exactTotalsOf(
+    total.byteEstimates ? part : { ...part, exactTotals: undefined, byteEstimates: undefined },
+  );
+  const exactTotals: ExactTotals = {
+    costUsd: less(exactT.costUsd, exactP.costUsd),
+    inputTokens: less(exactT.inputTokens, exactP.inputTokens),
+    outputTokens: less(exactT.outputTokens, exactP.outputTokens),
+    costByDayUsd: subtractRecord(exactT.costByDayUsd, exactP.costByDayUsd),
+  };
+  const left: AddedFields = {
+    toolCallCount: less(total.toolCallCount, part.toolCallCount),
+    toolBreakdown: subtractRecord(total.toolBreakdown, part.toolBreakdown),
+    skillBreakdown: subtractRecord(total.skillBreakdown, part.skillBreakdown),
+    linesAdded: less(total.linesAdded, part.linesAdded),
+    linesRemoved: less(total.linesRemoved, part.linesRemoved),
+    bashCommandCount: less(total.bashCommandCount, part.bashCommandCount),
+    testRunCount: less(total.testRunCount, part.testRunCount),
+    testPassCount: less(total.testPassCount, part.testPassCount),
+    buildRunCount: less(total.buildRunCount, part.buildRunCount),
+    buildPassCount: less(total.buildPassCount, part.buildPassCount),
+    estimatedCostUsd:
+      total.estimatedCostUsd === null ? null : exactTotals.costUsd + (ledger?.costUsd ?? 0),
+    subagentCostUsd: less(total.subagentCostUsd, part.subagentCostUsd),
+    costByDayUsd:
+      total.costByDayUsd && addRecord(exactTotals.costByDayUsd, ledger?.costByDayUsd ?? {}),
+    subagentCostByDayUsd:
+      total.subagentCostByDayUsd &&
+      subtractRecord(total.subagentCostByDayUsd, part.subagentCostByDayUsd ?? {}),
+    ...subtractCallUsageParts(total, part),
+    byteEstimates: ledger,
+    exactTotals,
+    tokensInput: exactTotals.inputTokens + (ledger?.inputTokens ?? 0),
+    tokensOutput: exactTotals.outputTokens + (ledger?.outputTokens ?? 0),
+    tokensThinking: less(total.tokensThinking, part.tokensThinking),
+    tokensCacheRead: less(total.tokensCacheRead, part.tokensCacheRead),
+    tokensCacheCreation: less(total.tokensCacheCreation, part.tokensCacheCreation),
+    selfReportCount:
+      total.selfReportCount === undefined
+        ? undefined
+        : less(total.selfReportCount, part.selfReportCount ?? 0),
+    cacheSavingsUsd: less(total.cacheSavingsUsd, part.cacheSavingsUsd),
+    ...subtractEfficiencyScores(total, part),
+    antiPatterns: withoutEach(total.antiPatterns, part.antiPatterns),
+    taskCount: less(total.taskCount, part.taskCount),
+    taskSuccessRate: taskSuccessRateLeft(total, part),
+    toolSuccessRate: rateLeft(
+      total.toolSuccessRate,
+      total.toolCallCount,
+      part.toolSuccessRate,
+      part.toolCallCount,
+    ),
+    contextCompressions: less(total.contextCompressions, part.contextCompressions),
+    agentSpawns: less(total.agentSpawns, part.agentSpawns),
+    costByWorkflowRunId: subtractEach(
+      total.costByWorkflowRunId,
+      part.costByWorkflowRunId,
+      subtractRecord,
+    ),
+    modelBreakdown: subtractEach(total.modelBreakdown, part.modelBreakdown, subtractFields),
+    qualityProxy: subtractFields(total.qualityProxy, part.qualityProxy),
+    attribution:
+      total.attribution && part.attribution
+        ? subtractAttribution(total.attribution, part.attribution)
+        : total.attribution,
+  };
+  return { ...total, timeline: timelineWithout(total.timeline, part.timeline), ...left };
+}
+
+function less(a: number, b: number): number {
+  return Math.max(0, a - b);
+}
+
+function clampUnit(x: number): number {
+  return Math.min(1, Math.max(0, x));
+}
+
+function subtractEach<T>(
+  a: Readonly<Record<string, T>>,
+  b: Readonly<Record<string, T>>,
+  subtract: (x: T, y: T) => T,
+): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const [key, value] of Object.entries(a))
+    out[key] = key in b ? subtract(value, b[key]) : value;
+  return out;
+}
+
+function subtractFields<T extends { readonly [K in keyof T]: number }>(a: T, b: Partial<T>): T {
+  return subtractRecord(a as Record<string, number>, b as Record<string, number>) as T;
+}
+
+function withoutEach<T>(items: readonly T[], taken: readonly T[]): T[] {
+  const owed = new Map<string, number>();
+  for (const key of taken.map((t) => JSON.stringify(t))) owed.set(key, (owed.get(key) ?? 0) + 1);
+  return items.filter((item) => {
+    const key = JSON.stringify(item);
+    const n = owed.get(key) ?? 0;
+    owed.set(key, n - 1);
+    return n <= 0;
+  });
+}
+
+function timelineWithout(
+  entries: readonly ReplayTimelineEntry[] | undefined,
+  taken: readonly ReplayTimelineEntry[] | undefined,
+): ReplayTimelineEntry[] | undefined {
+  if (entries === undefined) return undefined;
+  const held = heldIn(taken ?? []);
+  return entries.filter((e) => !held(e));
+}
+
+export function subtractCallUsageParts(a: CallUsageParts, b: CallUsageParts): AddedCallUsage {
+  return {
+    unpricedByModel: a.unpricedByModel && subtractCallUsage(a.unpricedByModel, b.unpricedByModel),
+    estimatedByModel:
+      a.estimatedByModel && subtractCallUsage(a.estimatedByModel, b.estimatedByModel),
+    unpricedByDay:
+      a.unpricedByDay && combineCallUsageByDay(a.unpricedByDay, b.unpricedByDay, subtractCallUsage),
+    estimatedByDay:
+      a.estimatedByDay &&
+      combineCallUsageByDay(a.estimatedByDay, b.estimatedByDay, subtractCallUsage),
+  };
+}
+
+function subtractLedgers(a: ByteEstimateLedger, b: ByteEstimateLedger): ByteEstimateLedger {
+  return {
+    costUsd: less(a.costUsd, b.costUsd),
+    inputTokens: less(a.inputTokens, b.inputTokens),
+    outputTokens: less(a.outputTokens, b.outputTokens),
+    costByModel: subtractRecord(a.costByModel, b.costByModel),
+    costByDayUsd: subtractRecord(a.costByDayUsd, b.costByDayUsd),
+    ...subtractCallUsageParts(a, b),
+  };
+}
+
+function subtractAttribution(a: SessionAttribution, b: SessionAttribution): SessionAttribution {
+  const buckets: Partial<Record<AttributionFacet, Record<string, AttributionBucket>>> = {};
+  for (const facet of Object.keys(a.buckets) as AttributionFacet[]) {
+    buckets[facet] = subtractEach(a.buckets[facet] ?? {}, b.buckets[facet] ?? {}, subtractBucket);
+  }
+  return {
+    buckets,
+    highContextCostUsd: less(a.highContextCostUsd, b.highContextCostUsd),
+    apiDurationMs: a.apiDurationMs === null ? null : less(a.apiDurationMs, b.apiDurationMs ?? 0),
+  };
+}
+
+function subtractBucket(x: AttributionBucket, y: AttributionBucket): AttributionBucket {
+  const breakdown =
+    x.breakdown && (y.breakdown !== undefined || y.tokens === 0)
+      ? subtractFields(x.breakdown, y.breakdown ?? {})
+      : undefined;
+  const breakdownUsd =
+    x.breakdownUsd && (y.breakdownUsd !== undefined || y.costUsd === 0)
+      ? subtractFields(x.breakdownUsd, y.breakdownUsd ?? {})
+      : undefined;
+  return {
+    costUsd: less(x.costUsd, y.costUsd),
+    tokens: less(x.tokens, y.tokens),
+    count: less(x.count, y.count),
+    durationMs: less(x.durationMs, y.durationMs),
+    ...(breakdown ? { breakdown } : {}),
+    ...(breakdownUsd ? { breakdownUsd } : {}),
+  };
+}
+
+type Scores = { readonly [K in ScoreField]-?: FullSessionSummary[K] };
+
+function subtractEfficiencyScores(t: FullSessionSummary, p: FullSessionSummary): Scores {
+  const [countT, countP] = [t.efficiencyScoreSampleCount ?? 0, p.efficiencyScoreSampleCount ?? 0];
+  const [partsT, partsP] = [t.efficiencyScoreComponents, p.efficiencyScoreComponents];
+  const unweighable = countT === 0 || countP === 0 || !partsT || !partsP;
+  if (t.efficiencyScore === null || p.efficiencyScore === null || unweighable) {
+    return {
+      efficiencyScore: t.efficiencyScore,
+      efficiencyScoreSampleCount: t.efficiencyScoreSampleCount,
+      efficiencyScoreComponents: t.efficiencyScoreComponents,
+    };
+  }
+  if (countT <= countP) {
+    return {
+      efficiencyScore: null,
+      efficiencyScoreSampleCount: 0,
+      efficiencyScoreComponents: null,
+    };
+  }
+  const off = (x: number, y: number): number => unweigh(x, countT, y, countP);
+  return {
+    efficiencyScore: off(t.efficiencyScore, p.efficiencyScore),
+    efficiencyScoreSampleCount: countT - countP,
+    efficiencyScoreComponents: {
+      speed: off(partsT.speed, partsP.speed),
+      correctness: off(partsT.correctness, partsP.correctness),
+      autonomy: off(partsT.autonomy, partsP.autonomy),
+      firstAttemptQuality: off(partsT.firstAttemptQuality, partsP.firstAttemptQuality),
+    },
+  };
+}
+
+function rateLeft(
+  rateT: number | null,
+  weightT: number,
+  rateP: number | null,
+  weightP: number,
+): number | null {
+  if (rateT === null || rateP === null) return rateT;
+  return weightT > weightP ? unweigh(rateT, weightT, rateP, weightP) : null;
+}
+
+function unweigh(x: number, wT: number, y: number, wP: number): number {
+  return clampUnit((x * wT - y * wP) / (wT - wP));
+}
+
+function taskSuccessRateLeft(t: FullSessionSummary, p: FullSessionSummary): number | null {
+  const runs = less(t.testRunCount, p.testRunCount);
+  if (runs === 0 || p.testRunCount === 0) {
+    return rateLeft(t.taskSuccessRate, t.taskCount, p.taskSuccessRate, p.taskCount);
+  }
+  return clampUnit(Math.round((less(t.testPassCount, p.testPassCount) / runs) * 1000) / 1000);
 }
 
 export class SessionStore {
