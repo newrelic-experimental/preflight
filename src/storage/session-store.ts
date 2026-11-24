@@ -986,7 +986,7 @@ function groupBySharedActivity(files: readonly FullSessionSummary[]): FullSessio
  * Oldest writer first. Contents break a tie on end time so a combine cannot
  * depend on the order files were listed.
  */
-function byWriteOrder(x: FullSessionSummary, y: FullSessionSummary): number {
+export function byWriteOrder(x: FullSessionSummary, y: FullSessionSummary): number {
   return x.endTime - y.endTime || JSON.stringify(x).localeCompare(JSON.stringify(y));
 }
 
@@ -1011,11 +1011,25 @@ function byProgress(x: FullSessionSummary, y: FullSessionSummary): number {
  */
 export function combineSessionFiles(files: readonly FullSessionSummary[]): FullSessionSummary {
   const separate = groupBySharedActivity(files.filter((f) => f.timeline?.length))
-    .map((group) => group.sort(byProgress).reduce((acc, next) => mergeSummaries(acc, next)))
+    .map((group) => maxMerge(group.sort(byProgress)))
     .sort(byWriteOrder);
   const withoutTimeline = files.filter((f) => !f.timeline?.length).sort(byWriteOrder);
   const added = separate.length > 0 ? [separate.reduce((a, b) => addSummaries(a, b))] : [];
-  return [...withoutTimeline, ...added].reduce((acc, next) => mergeSummaries(acc, next));
+  return maxMerge([...withoutTimeline, ...added]);
+}
+
+/**
+ * Folds `files` with `mergeSummaries`, which keeps the last ledger. A file without a ledger cannot
+ * say which of its totals were estimated, so it is read as holding that ledger too. Its total then
+ * competes with the other files' exact share plus the ledger, not the exact share alone.
+ */
+function maxMerge(files: readonly FullSessionSummary[]): FullSessionSummary {
+  const ledger = [...files].reverse().find((f) => f.byteEstimates)?.byteEstimates;
+  return files
+    .map((f) =>
+      f.byteEstimates || !ledger ? f : { ...f, exactTotals: undefined, byteEstimates: ledger },
+    )
+    .reduce((acc, next) => mergeSummaries(acc, next));
 }
 
 type SummaryField = keyof {
@@ -1040,7 +1054,7 @@ type FromMerge = Span | Labels | Picks | Unions | Outcome | TranscriptCounts;
 type AddedFields = { readonly [K in Exclude<SummaryField, FromMerge>]-?: FullSessionSummary[K] };
 
 /** Sums two files holding separate activity, `b` the newer writer. */
-function addSummaries(a: FullSessionSummary, b: FullSessionSummary): FullSessionSummary {
+export function addSummaries(a: FullSessionSummary, b: FullSessionSummary): FullSessionSummary {
   const merged = mergeSummaries(a, b);
   const ledger = addOptional(a.byteEstimates, b.byteEstimates, addLedgers);
   const [exactA, exactB] = [exactTotalsOf(a), exactTotalsOf(b)];
