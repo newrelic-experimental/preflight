@@ -62,6 +62,26 @@ export interface DashboardServerOptions {
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 
+/**
+ * A browser can send a POST without a CORS preflight, so another page, or a
+ * sandboxed one with a `null` origin, could trigger a state change it cannot
+ * read back. Browsers mark such requests with Sec-Fetch-Site or an Origin that
+ * differs from the Host they target. CLI and MCP clients send neither header.
+ * Only GET routes are read-only, so every other method is checked.
+ */
+function isCrossOriginWrite(req: IncomingMessage): boolean {
+  if (req.method === 'GET') return false;
+  const site = req.headers['sec-fetch-site'];
+  if (site === 'cross-site' || site === 'same-site') return true;
+  const origin = req.headers.origin;
+  if (origin === undefined) return false;
+  try {
+    return new URL(origin).host !== req.headers.host?.toLowerCase();
+  } catch {
+    return true;
+  }
+}
+
 export class DashboardServer {
   private readonly opts: DashboardServerOptions;
   private server: HttpServer | undefined;
@@ -240,6 +260,11 @@ export class DashboardServer {
       if (!this.isHostAllowed(req.headers.host)) {
         res.writeHead(403, { 'content-type': 'text/plain' });
         res.end('Forbidden: invalid Host header');
+        return;
+      }
+      if (isCrossOriginWrite(req)) {
+        res.writeHead(403, { 'content-type': 'text/plain' });
+        res.end('Forbidden: cross-origin request');
         return;
       }
       const url = req.url ?? '/';

@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DashboardServer } from './dashboard-server.js';
@@ -521,6 +521,144 @@ describe('DashboardServer Host validation', () => {
     });
     const addr = await server.start();
     expect(await requestWithHost(addr.port, 'evil.example.com')).toBe(200);
+  });
+});
+
+describe('DashboardServer cross-origin writes', () => {
+  let server: DashboardServer;
+  let ingested = 0;
+
+  afterEach(async () => {
+    await server?.stop();
+  });
+
+  async function start(serverMode = false, configFilePath?: string): Promise<number> {
+    ingested = 0;
+    server = new DashboardServer({
+      port: 0,
+      host: '127.0.0.1',
+      bus: new LiveEventBus(),
+      serverMode,
+      api: { configFilePath },
+      ingestHandler: () => {
+        ingested++;
+        return 204;
+      },
+    });
+    return (await server.start()).port;
+  }
+
+  function send(
+    port: number,
+    method: string,
+    path: string,
+    headers: Record<string, string>,
+    body = '{}',
+  ): Promise<{ status: number; body: string }> {
+    return new Promise((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port,
+          path,
+          method,
+          headers: { host: `127.0.0.1:${port}`, ...headers },
+        },
+        (res) => {
+          let body = '';
+          res.on('data', (c: Buffer) => (body += c.toString()));
+          res.on('end', () => resolve({ status: res.statusCode ?? 500, body }));
+        },
+      );
+      req.on('error', reject);
+      req.end(method === 'GET' ? undefined : body);
+    });
+  }
+
+  it.each<[string, (port: number) => Record<string, string>]>([
+    ['Origin: null, as a sandboxed frame sends', () => ({ origin: 'null' })],
+    ['another site as Origin', () => ({ origin: 'http://evil.example' })],
+    ['the same host on another port as Origin', (p) => ({ origin: `http://127.0.0.1:${p + 1}` })],
+    ['an unparseable Origin', () => ({ origin: 'not a url' })],
+    ['Sec-Fetch-Site: cross-site and no Origin', () => ({ 'sec-fetch-site': 'cross-site' })],
+    ['Sec-Fetch-Site: same-site and no Origin', () => ({ 'sec-fetch-site': 'same-site' })],
+  ])('rejects a POST with %s before the route runs', async (_name, headers) => {
+    const port = await start();
+    const res = await send(port, 'POST', '/ingest', headers(port));
+    expect(res).toEqual({ status: 403, body: 'Forbidden: cross-origin request' });
+    expect(ingested).toBe(0);
+  });
+
+  it.each(['PATCH', 'PUT', 'DELETE'])('rejects a cross-origin %s', async (method) => {
+    const port = await start();
+    const res = await send(port, method, '/api/settings', { origin: 'http://evil.example' });
+    expect(res.status).toBe(403);
+  });
+
+  it.each<[string, (port: number) => Record<string, string>]>([
+    ['no Origin or Sec-Fetch-Site, as CLI and MCP clients send', () => ({})],
+    [
+      'its own 127.0.0.1 origin',
+      (p) => ({ origin: `http://127.0.0.1:${p}`, 'sec-fetch-site': 'same-origin' }),
+    ],
+    [
+      'its own localhost origin',
+      (p) => ({ host: `localhost:${p}`, origin: `http://localhost:${p}` }),
+    ],
+    ['its own [::1] origin', (p) => ({ host: `[::1]:${p}`, origin: `http://[::1]:${p}` })],
+    ['an upper-case Host', (p) => ({ host: `LOCALHOST:${p}`, origin: `http://localhost:${p}` })],
+    ['Sec-Fetch-Site: none', () => ({ 'sec-fetch-site': 'none' })],
+  ])('accepts a POST from %s', async (_name, headers) => {
+    const port = await start();
+    const res = await send(port, 'POST', '/ingest', headers(port));
+    expect(res.status).toBe(204);
+    expect(ingested).toBe(1);
+  });
+
+  it('leaves the config untouched when a cross-origin PATCH /api/settings is refused', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pf-cross-origin-'));
+    try {
+      const configFilePath = join(dir, 'config.json');
+      writeFileSync(configFilePath, '{}');
+      const port = await start(false, configFilePath);
+      const refused = await send(
+        port,
+        'PATCH',
+        '/api/settings',
+        { origin: 'null' },
+        JSON.stringify({ developer: 'mallory' }),
+      );
+      // The allowed write merges into whatever is on disk, so a refused PATCH
+      // that still ran would show up beside it.
+      const allowed = await send(port, 'PATCH', '/api/settings', {}, '{"teamId":"team-a"}');
+      expect([refused.status, allowed.status]).toEqual([403, 200]);
+      expect(JSON.parse(readFileSync(configFilePath, 'utf-8'))).toEqual({ teamId: 'team-a' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves cross-origin GET requests to the route', async () => {
+    const port = await start();
+    const res = await send(port, 'GET', '/api/health', {
+      origin: 'http://evil.example',
+      'sec-fetch-site': 'cross-site',
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('in serverMode compares Origin with the Host the browser used', async () => {
+    const port = await start(true);
+    const own = await send(port, 'POST', '/ingest', {
+      host: 'preflight.lan',
+      origin: 'https://preflight.lan',
+    });
+    const other = await send(port, 'POST', '/ingest', {
+      host: 'preflight.lan',
+      origin: 'https://evil.example',
+    });
+    expect([own.status, other.status]).toEqual([204, 403]);
+    expect(ingested).toBe(1);
   });
 });
 

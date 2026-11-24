@@ -19,6 +19,7 @@ This document captures the security practices and invariants baked into this cod
 - [ ] Outbound requests other than New Relic ingest are opt-out, forced off by `highSecurity`, fixed-host, size-capped, and schema-validated
 - [ ] Event listeners on long-lived streams use `once` + `removeAllListeners()` after terminal events
 - [ ] Error responses to HTTP clients contain only a generic code — detail goes to the logger
+- [ ] New dashboard routes that change state use a method other than GET, so the cross-origin check in `DashboardServer` covers them
 - [ ] `randomUUID()` from `node:crypto` used for all IDs (not `Math.random()`)
 
 ---
@@ -212,6 +213,10 @@ const isStreaming = mediaType === 'text/event-stream';
 // Bad — matches the substring anywhere in the header, including in parameter values
 const isStreaming = (res.headers['content-type'] ?? '').includes('text/event-stream');
 ```
+
+### Dashboard request checks — `src/dashboard/dashboard-server.ts`
+
+The dashboard listens on loopback by default, but any page open in the user's browser can still send it a request. A `POST` with no body or a form-style body skips the CORS preflight, so the page cannot read the answer but the route still runs. Before any route runs, `DashboardServer` refuses with 403 every request other than `GET` that a browser marks as coming from elsewhere: `Sec-Fetch-Site` of `cross-site` or `same-site`, an `Origin` of `null` (a sandboxed frame or document) or one that does not parse, or an `Origin` whose host and port differ from the request's `Host`. Requests with neither header, such as CLI and MCP clients, pass. The `Host` check that runs first rejects any non-loopback host outside server mode, which blocks DNS rebinding.
 
 ### Error responses
 
