@@ -307,37 +307,6 @@ export function auditRecordToNrEvent(
   return event;
 }
 
-export function securityAlertToNrEvent(
-  record: AuditRecord,
-  attrs?: {
-    teamId?: string | null;
-    projectId?: string | null;
-    orgId?: string | null;
-    repoUrl?: string | null;
-  },
-): NrEventData {
-  const alert = record.securityAlert;
-  if (!alert) throw new Error('securityAlertToNrEvent called with no securityAlert on record');
-  const event: NrEventData = {
-    eventType: 'SecurityAlert',
-    event_version: 1,
-    timestamp: Math.floor(record.timestamp / 1000),
-    severity: alert.severity,
-    alert_type: alert.alertType,
-    description: alert.description,
-    tool: record.tool,
-    developer: record.developer,
-  };
-
-  attachTeamAttribution(event, attrs ?? {});
-  attachAuditAttribution(event, record);
-
-  if (record.filePath != null) event.file_path = redactSensitive(record.filePath);
-  if (record.command != null) event.command = redactSensitive(record.command);
-
-  return event;
-}
-
 // ---------------------------------------------------------------------------
 // Session ID resolution
 // ---------------------------------------------------------------------------

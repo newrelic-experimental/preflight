@@ -898,6 +898,14 @@ var METACHAR = /[\s;&|(]/;
 var HEREDOC_OPERATOR = /(?<!<)<<(-?)[ \t]*/y;
 var WORD_END = /[\s;&|()<>]/;
 var LINE_CONTINUES = /(?<!\\)(?:\\\\)*\\$/;
+var COMMAND_END = /[;&|()\n]/;
+var COMMAND_START = String.raw`(?:^|[;&|(\n])[ \t]*(?:(?:if|elif|then|else|do|while|until|time|!|\{)[ \t]+)*(?:[A-Za-z_]\w*=[^\s;&|()]*[ \t]+)*`;
+var NESTED_SCRIPT = new RegExp(
+  String.raw`(${COMMAND_START})(?:(?:command|builtin)[ \t]+)*(?:(eval)|(?:[^\s;&|()]*/)?(?:ba|z|da)?sh[ \t]+-[a-zA-Z]*c[a-zA-Z]*)`,
+  "g"
+);
+var BRACE_COMMAND = new RegExp(String.raw`(${COMMAND_START})\{([^\s{},]*,[^\s{}]*)\}`, "g");
+var MAX_NESTED_SCRIPTS = 3;
 function stateOpenedAt(command, i, atWordStart) {
   const ch = command[i];
   if (ch === "'") return "single";
@@ -929,7 +937,7 @@ function readHeredocWord(command, start) {
     }
     quoted = true;
   }
-  return i === start ? void 0 : { delimiter, quoted, end: i };
+  return i === start ? void 0 : { delimiter, quoted };
 }
 function heredocBodiesEnd(command, start, heredocs) {
   let i = start;
@@ -939,7 +947,7 @@ function heredocBodiesEnd(command, start, heredocs) {
       const eol = command.indexOf("\n", i);
       const end = eol === -1 ? command.length : eol;
       const segment = command.slice(i, end);
-      i = end + 1;
+      i = eol === -1 ? end : eol + 1;
       if (!quoted && LINE_CONTINUES.test(segment)) {
         line += segment.slice(0, -1);
         continue;
@@ -951,8 +959,16 @@ function heredocBodiesEnd(command, start, heredocs) {
   }
   return i;
 }
-function maskQuotedRegions(command) {
-  let out = "";
+function lex(command) {
+  let masked = "";
+  const kept = [];
+  const emit = (shown, keep) => {
+    masked += shown;
+    kept.push(keep);
+  };
+  const emitCode = (end) => {
+    for (; i < end; i++) emit(command[i], null);
+  };
   let state = "none";
   let atWordStart = true;
   const heredocs = [];
@@ -961,7 +977,13 @@ function maskQuotedRegions(command) {
   while (i < command.length) {
     const ch = command[i];
     if (ch === "\\" && ESCAPES_IN.has(state)) {
-      out += state === "none" ? command.slice(i, i + 2) : "  ";
+      const escaped = command[i + 1];
+      emit(
+        state === "none" ? ch : " ",
+        state === "double" && !'$`"\\\n'.includes(escaped ?? "") ? ch : ""
+      );
+      if (escaped !== void 0)
+        emit(state === "none" ? escaped : " ", escaped === "\n" ? "" : escaped);
       i += 2;
       atWordStart = false;
       continue;
@@ -976,53 +998,92 @@ function maskQuotedRegions(command) {
           stripTabs: operator[1] === "-",
           quoted: word.quoted
         });
-        out += command.slice(i, word.end);
-        i = word.end;
+        emitCode(i + operator[0].length);
         atWordStart = false;
         continue;
       }
       state = stateOpenedAt(command, i, atWordStart);
       if (state === "ansi-c") {
-        out += " ";
+        emit(" ", "");
         i++;
       }
       if (state !== "none") {
-        out += " ";
+        emit(" ", "");
         i++;
         atWordStart = false;
         continue;
       }
       if (ch === "$" && command[i + 1] === "(") {
         parens.push("substitution");
-        out += "$(";
+        emit("$", "$");
+        emit("(", null);
         i += 2;
         atWordStart = true;
         continue;
       }
       if (ch === "(") parens.push("group");
-      out += ch;
+      emit(ch, WORD_END.test(ch) ? null : ch);
       i++;
       atWordStart = ch === ")" ? parens.pop() !== "substitution" : METACHAR.test(ch);
       if (ch === "\n" && heredocs.length > 0) {
-        const end = heredocBodiesEnd(command, i, heredocs);
-        out += command.slice(i, end);
-        i = end;
+        emitCode(heredocBodiesEnd(command, i, heredocs));
         heredocs.length = 0;
       }
       continue;
     }
     if (ch === CLOSED_BY[state]) {
       if (state !== "comment") {
-        out += " ";
+        emit(" ", "");
         i++;
       }
       state = "none";
       continue;
     }
-    out += " ";
+    emit(" ", state === "comment" ? null : ch);
     i++;
   }
-  return out;
+  return { masked, kept };
+}
+function wordsFrom({ masked, kept }, start) {
+  const words = [];
+  let word;
+  for (let i = start; i < kept.length; i++) {
+    const piece = kept[i];
+    if (typeof piece === "string") {
+      word = (word ?? "") + piece;
+      continue;
+    }
+    if (word !== void 0) words.push(word);
+    word = void 0;
+    if (COMMAND_END.test(masked[i])) return words;
+  }
+  if (word !== void 0) words.push(word);
+  return words;
+}
+function isCommandWord(kept, at, prefix, end) {
+  return (at === 0 || kept[at] === null) && typeof kept[at + prefix.length] === "string" && typeof kept[end] !== "string";
+}
+function expandCommandBraces({ masked, kept }) {
+  return masked.replace(
+    BRACE_COMMAND,
+    (group, prefix, body, at) => isCommandWord(kept, at, prefix, at + group.length) ? prefix + body.replaceAll(",", " ") : group
+  );
+}
+function isDestructiveScript(command, depth) {
+  const lexed = lex(command);
+  const expanded = expandCommandBraces(lexed);
+  if (DESTRUCTIVE_PATTERNS.some((p) => p.test(expanded))) return true;
+  for (const match of lexed.masked.matchAll(NESTED_SCRIPT)) {
+    const end = match.index + match[0].length;
+    if (!isCommandWord(lexed.kept, match.index, match[1], end)) continue;
+    if (depth >= MAX_NESTED_SCRIPTS) {
+      return DESTRUCTIVE_PATTERNS.some((p) => p.test(command.slice(end)));
+    }
+    const words = wordsFrom(lexed, end);
+    const script = match[2] === void 0 ? words[0] : words.join(" ");
+    if (script !== void 0 && isDestructiveScript(script, depth + 1)) return true;
+  }
+  return false;
 }
 var SUDO_VALUE_SHORT_FLAG = /^-[ughpUtCr]$/;
 var SUDO_VALUE_LONG_FLAGS = /* @__PURE__ */ new Set([
@@ -1112,8 +1173,7 @@ function classifyBash(command) {
   if (trimmed.length === 0) {
     return { category: "shell-other", leading: "", isDestructive: false, isNetwork: false };
   }
-  const masked = maskQuotedRegions(trimmed);
-  const isDestructive = DESTRUCTIVE_PATTERNS.some((p) => p.test(masked));
+  const isDestructive = isDestructiveScript(trimmed, 0);
   const segment = firstSegment(trimmed);
   const tokens = tokenize(segment);
   stripEnvTokens(tokens);

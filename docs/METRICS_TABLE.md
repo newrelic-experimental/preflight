@@ -51,7 +51,7 @@ Source: `src/transport/nr-ingest.ts`, `src/core/harvest/harvest-scheduler.ts`, `
 
 Every NR event type except `NrAiObserveSetupCheck` carries an `event_version` field (currently `1`). Within a version, changes are additive only: new attributes may appear, existing ones keep name and meaning. A rename, removal, or semantic change bumps the version. The exception is an attribute the [unit of agent work schema](./UNIT_OF_WORK_SCHEMA.md#stable-attributes-bump-the-schema-version-and-experimental-ones-do-not) marks experimental, which can change under a `minor` changeset with no bump. A fix that stops sending private data, or that corrects a value that was wrong, keeps the version and is called out in the CHANGELOG. Consumers should tolerate unknown attributes and may branch on `event_version` in NRQL.
 
-`timestamp` is Unix epoch milliseconds on every event that has one, except `AiAuditEvent` and `SecurityAlert`, which use epoch seconds. Keep that in mind when joining them to `AiToolCall` by time.
+`timestamp` is Unix epoch milliseconds on every event that has one, except `AiAuditEvent`, which uses epoch seconds. Keep that in mind when joining it to `AiToolCall` by time.
 
 ## Unit of Agent Work
 
@@ -215,31 +215,7 @@ Emitted for every tool call as a security audit record, including proxied calls 
 
 Source: `src/security/audit-trail.ts` — `auditRecordToNrEvent()`
 
-#### `SecurityAlert`
-
-**What it is:** A flag raised when an audit record looks risky, with a severity and a plain-language description. Use it to alert on risky assistant behavior without querying every audit record.
-
-Emitted only when a security alert is triggered (subset of audit events).
-
-| Field           | Type   | Description                                                                                                            |
-| --------------- | ------ | ---------------------------------------------------------------------------------------------------------------------- |
-| `eventType`     | string | Always `"SecurityAlert"`                                                                                               |
-| `event_version` | number | Schema version, currently `1`. See [Schema Versioning](#schema-versioning).                                            |
-| `timestamp`     | number | Unix epoch seconds                                                                                                     |
-| `severity`      | string | `critical`, `high`, or `medium`                                                                                        |
-| `alert_type`    | string | `destructive_command`, `sensitive_file`, `external_network`, or `file_deletion`                                        |
-| `description`   | string | Human-readable alert description                                                                                       |
-| `tool`          | string | Tool that triggered the alert                                                                                          |
-| `developer`     | string | Developer identifier                                                                                                   |
-| `session_id`    | string | Session identifier (if available)                                                                                      |
-| `agent_id`      | string | Same as `AiAuditEvent.agent_id`.                                                                                       |
-| `agent_type`    | string | Same as `AiAuditEvent.agent_type`, so a populated value does not by itself mean a subagent raised the alert.           |
-| `team_id`       | string | User-defined team label from config (e.g. `"platform-eng"`). Not your NR account ID. Omitted when `teamId` is not set. |
-| `project_id`    | string | Project identifier (derived from git remote or configured)                                                             |
-| `repo_url`      | string | Full git remote URL, redacted for embedded credentials (own opt-out: repoUrlEnabled)                                   |
-| `org_id`        | string | Organization identifier (if configured)                                                                                |
-| `file_path`     | string | File path of the triggering call (if it had one)                                                                       |
-| `command`       | string | Command of the triggering call (if it had one)                                                                         |
+An audit record that triggers a security alert carries `audit.security_alert = true`, `audit.severity`, and `audit.alert_type`. Query alerts with `FROM AiAuditEvent WHERE audit.security_alert = true`.
 
 Security alert triggers. A tool call raises at most one alert, at the highest severity it matches:
 
@@ -247,8 +223,6 @@ Security alert triggers. A tool call raises at most one alert, at the highest se
 - **`sensitive_file`** (high): `.env`, `.pem`, `.key`, `credentials`, `secret`, `.ssh/`, `.npmrc`, `.pypirc`, `id_rsa`, `id_ed25519`, `password`, `token` (see `DEFAULT_SENSITIVE_FILE_PATTERNS` in `src/security/audit-trail.ts` for the exact patterns). Only the call's file path is checked, not paths inside a Bash command, so a Bash command that reads `.env` does not raise this alert
 - **`external_network`** (medium): `curl`, `wget`, `nc`, `ssh` commands, plus anything the classifier marks as a network client (`http`, `httpie`, `xh`, `ncat`, `scp`, `sftp`, `rsync`, `ftp`, `telnet`, `mosh`). Detection is the OR of the bash classifier (`record.bashNetwork`) and the regex pattern list.
 - **`file_deletion`** (medium): `rm` or `unlink` in command position (start of line, after `;`, `&`, `|`, or `(`, optionally with `sudo`), OR-ed with the bash classifier's leading token (`record.bashLeading`), which also strips env-var prefixes. Anchoring keeps `git rm`, `npm rm`, `docker rm`, and quoted text like `echo "rm foo"` out of scope. Recursive forms match too but lose to `destructive_command` by severity.
-
-Source: `src/security/audit-trail.ts` — `securityAlertToNrEvent()`
 
 #### `AiCodingTask`
 
