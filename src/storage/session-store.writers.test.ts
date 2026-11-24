@@ -112,6 +112,14 @@ describe('loading a session with no writer files', () => {
       JSON.stringify(activity(ids('m', 9))),
     );
     const before = loads();
+    expect(totals(store.loadSession(SID))).toEqual({ calls: 5, usd: 1.25, input: 500 });
+    expect(totals(store.loadSession('old-format'))).toEqual({ calls: 4, usd: 2, input: 0 });
+    expect(store.loadAllSessions({ developer: 'dev-a' }).map(totals)).toEqual([
+      { calls: 2, usd: 0.5, input: 200 },
+    ]);
+    expect(store.loadAllSessions({ since: new Date('2026-03-02T00:00:00Z') }).map(totals)).toEqual([
+      { calls: 3, usd: 0.75, input: 300 },
+    ]);
 
     mkdirSync(join(storagePath, 'sessions', WRITERS_DIR, SID), { recursive: true });
     expect(loads()).toBe(before);
@@ -234,6 +242,13 @@ describe('loading a session with writer files', () => {
     expect(totals(saved?.previous)).toEqual(folded);
   });
 
+  it('loads a marked index as saved when no writer file is usable', () => {
+    writeIndex(activity(ids('p', 3)), { marked: true });
+    writeRaw(SID, 'engine.1.a.b.json', '{"version": 1, "retracted": fal');
+
+    expect(totals(store.loadSession(SID))).toEqual({ calls: 3, usd: 0.75, input: 300 });
+  });
+
   it('leaves a writer directory without an index unlisted', () => {
     writeWriter('engine.1.a.b.json', { ...activity(ids('a', 2)), sessionId: 'orphan' });
     writeIndex(activity(ids('p', 1)));
@@ -253,6 +268,8 @@ describe('loading a session with writer files', () => {
     writeRaw(SID, 'engine.4.a.b.json', '{"version": 1, "retracted": fal');
     writeRaw(SID, '.engine.5.a.b.json', unused(1, activity(ids('t', 3))));
     writeRaw(SID, 'engine.6.a.b.json.77.tmp', unused(1, activity(ids('u', 6))));
+    writeRaw(SID, 'engine.7.a.b.json', JSON.stringify({ version: 1, retracted: false }));
+    writeRaw(SID, 'engine.8.a.b.json', 'null');
 
     expect(totals(store.loadSession(SID))).toEqual({ calls: 2, usd: 0.5, input: 200 });
   });
