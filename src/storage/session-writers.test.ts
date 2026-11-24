@@ -1,7 +1,15 @@
 import { describe, it, expect } from '@jest/globals';
-import { deserializeFullSessionSummary } from './session-store.js';
+import {
+  combineSessionFiles,
+  deserializeFullSessionSummary,
+  mergeSummaries,
+} from './session-store.js';
 import type { FullSessionSummary } from './session-store.js';
-import { foldWriterContributions, type WriterContribution } from './session-writers.js';
+import {
+  captureLegacyIndex,
+  foldWriterContributions,
+  type WriterContribution,
+} from './session-writers.js';
 
 const START = Date.parse('2026-03-01T10:00:00Z');
 const DAY = '2026-03-01';
@@ -279,5 +287,332 @@ describe('foldWriterContributions', () => {
     expect(folded.unpricedByDay).toBeUndefined();
     expect(folded.estimatedByModel).toBeUndefined();
     expect(folded.estimatedByDay).toBeUndefined();
+  });
+});
+
+/** Dollar amounts are quarters, which binary floats add and subtract exactly. */
+function richSummary(next: () => number, writer: string, endTime: number): FullSessionSummary {
+  const int = (n: number) => Math.floor(next() * n);
+  const usd = () => int(40) / 4;
+  const share: Share = {
+    calls: Array.from({ length: 1 + int(5) }, (_, i) => ({
+      toolUseId: `toolu_${writer}_${i}`,
+      toolName: TOOLS[int(TOOLS.length)],
+      timestamp: START + int(1000),
+    })).sort((x, y) => x.timestamp - y.timestamp),
+    exactUsd: usd(),
+    ledgerUsd: usd(),
+    exactInput: int(5000),
+    ledgerInput: int(5000),
+    ledgerCalls: 1 + int(3),
+    userMessages: int(20),
+    endTime,
+  };
+  const unpriced = { u: { calls: 1 + int(3), tokens: int(100) } };
+  const estimated = {
+    calls: share.ledgerCalls + 1,
+    tokens: share.ledgerInput + 1,
+    estimatedFrom: 'p',
+  };
+  const subagentUsd = usd();
+  const testRuns = int(5);
+  return file({
+    ...summaryOf(share),
+    durationMs: endTime - START,
+    sessionName: `name-${writer}`,
+    skillBreakdown: { s: int(4) },
+    linesAdded: int(50),
+    linesRemoved: int(50),
+    testRunCount: testRuns,
+    testPassCount: int(testRuns + 1),
+    buildRunCount: int(5),
+    buildPassCount: int(5),
+    subagentCostUsd: subagentUsd,
+    subagentCostByDayUsd: { [DAY]: subagentUsd },
+    unpricedByModel: unpriced,
+    unpricedByDay: { [DAY]: unpriced },
+    estimatedByDay: { [DAY]: { m: estimated } },
+    tokensThinking: int(100),
+    tokensCacheRead: int(100),
+    tokensCacheCreation: int(100),
+    selfReportCount: int(3),
+    cacheSavingsUsd: usd(),
+    antiPatterns: [{ type: 'loop', file: `f${int(3)}`, iterations: 2 }],
+    taskCount: 1 + int(4),
+    taskSuccessRate: int(5) / 4,
+    toolSuccessRate: int(5) / 4,
+    contextCompressions: int(3),
+    agentSpawns: int(3),
+    costByWorkflowRunId: { run: { [DAY]: usd() } },
+    modelBreakdown: {
+      m: {
+        requestCount: int(9),
+        totalInputTokens: int(900),
+        totalOutputTokens: int(900),
+        totalCostUsd: usd(),
+        totalCacheReadTokens: int(900),
+        totalCacheCreationTokens: int(900),
+        totalThinkingTokens: int(900),
+      },
+    },
+    qualityProxy: {
+      totalSignals: int(9),
+      diffApplyCleanCount: int(9),
+      diffFailCount: int(9),
+      testPassCount: int(9),
+      testFailCount: int(9),
+      backtrackCount: int(9),
+      selfCorrectionCount: int(9),
+    },
+    attribution: {
+      buckets: {
+        tool: {
+          Read: {
+            costUsd: usd(),
+            tokens: 40,
+            count: int(5),
+            durationMs: int(500),
+            breakdown: {
+              inputTokens: 10,
+              outputTokens: 10,
+              cacheReadTokens: 10,
+              cacheCreationTokens: 10,
+            },
+            breakdownUsd: { inputUsd: 1, outputUsd: 1, cacheReadUsd: 1, cacheCreationUsd: 1 },
+          },
+        },
+      },
+      highContextCostUsd: usd(),
+      apiDurationMs: int(1000),
+    },
+  });
+}
+
+const contribution = (summary: FullSessionSummary): WriterContribution => ({
+  summary,
+  retracted: false,
+});
+
+function randomWriters(next: () => number): WriterContribution[] {
+  return Array.from({ length: 1 + Math.floor(next() * 3) }, (_, w) =>
+    contribution(richSummary(next, `w${w}`, START + 1000 * (w + 1))),
+  );
+}
+
+function expectSameSession(actual: FullSessionSummary, expected: FullSessionSummary): void {
+  const rates = (s: FullSessionSummary) => [s.taskSuccessRate ?? -1, s.toolSuccessRate ?? -1];
+  const withoutRates = (s: FullSessionSummary) => ({
+    ...s,
+    taskSuccessRate: null,
+    toolSuccessRate: null,
+  });
+  expect(withoutRates(actual)).toEqual(withoutRates(expected));
+  rates(actual).forEach((rate, i) => expect(rate).toBeCloseTo(rates(expected)[i], 9));
+}
+
+describe('captureLegacyIndex', () => {
+  it('gives back an index that holds the writer files and an older build on top', () => {
+    for (let seed = 1; seed <= RUNS; seed++) {
+      const next = mulberry32(seed);
+      const writers = randomWriters(next);
+      const older = contribution(richSummary(next, 'older', START + 9000));
+      const index = fold([...writers, older]);
+      const capture = captureLegacyIndex([index], writers);
+      expectSameSession(fold([...writers, capture]), index);
+      const totals = (s: FullSessionSummary) => [
+        s.toolCallCount,
+        s.estimatedCostUsd,
+        s.costByDayUsd,
+        s.tokensInput,
+        s.tokensOutput,
+        s.exactTotals,
+        s.byteEstimates,
+      ];
+      expect(totals(capture.summary)).toEqual(totals(older.summary));
+    }
+  });
+
+  it('is zero when the writer files already hold everything in the index', () => {
+    for (let seed = 1; seed <= RUNS; seed++) {
+      const next = mulberry32(seed + RUNS);
+      const writers = randomWriters(next);
+      const stale = fold(writers.slice(0, 1 + Math.floor(next() * writers.length)));
+      const { summary } = captureLegacyIndex([stale], writers);
+      expect(summary).toMatchObject({
+        toolCallCount: 0,
+        estimatedCostUsd: 0,
+        tokensInput: 0,
+        tokensOutput: 0,
+        subagentCostUsd: 0,
+        timeline: [],
+        antiPatterns: [],
+        unpricedByModel: {},
+        estimatedByModel: {},
+      });
+      expect(summary.byteEstimates?.costUsd).toBe(0);
+      expectSameSession(fold([...writers, contribution(summary)]), fold(writers));
+    }
+  });
+
+  it('equals the legacy total when no writer files exist', () => {
+    for (let seed = 1; seed <= RUNS; seed++) {
+      const next = mulberry32(seed + 2 * RUNS);
+      const files = Array.from({ length: 1 + Math.floor(next() * 3) }, (_, i) =>
+        richSummary(next, `legacy${i}`, START + 1000 * (i + 1)),
+      );
+      const capture = captureLegacyIndex(files as [FullSessionSummary], []);
+      expect(fold([capture])).toEqual(combineSessionFiles(files));
+    }
+  });
+
+  it('captures a split legacy session once, a stale copy included', () => {
+    const next = mulberry32(5);
+    const a = richSummary(next, 'a', START + 1000);
+    const b = richSummary(next, 'b', START + 2000);
+    const staleA = {
+      ...a,
+      toolCallCount: 1,
+      timeline: a.timeline?.slice(0, 1),
+      endTime: START + 500,
+    };
+    const { summary } = captureLegacyIndex([staleA, b, a], []);
+    expect(summary.toolCallCount).toBe(a.toolCallCount + b.toolCallCount);
+    expect(summary.estimatedCostUsd).toBe((a.estimatedCostUsd ?? 0) + (b.estimatedCostUsd ?? 0));
+    expect(summary.tokensInput).toBe(a.tokensInput + b.tokensInput);
+  });
+
+  it('never counts the pre-upgrade history twice across successive captures', () => {
+    for (let seed = 1; seed <= RUNS; seed++) {
+      const next = mulberry32(seed + 3 * RUNS);
+      const preUpgrade = contribution(richSummary(next, 'pre', START + 500));
+      const [a, b] = [1, 2].map((w) => contribution(richSummary(next, `w${w}`, START + w * 1000)));
+      const older = contribution(richSummary(next, 'older', START + 9000));
+      const preUpgradeCapture = captureLegacyIndex([preUpgrade.summary], []);
+      const projectionOfA = fold([a, preUpgradeCapture]);
+      const olderBuildIndex = mergeSummaries(
+        projectionOfA,
+        fold([contribution(projectionOfA), older]),
+      );
+      const rewriteCapture = captureLegacyIndex([olderBuildIndex], [a]);
+      const captures = mergeSummaries(preUpgradeCapture.summary, rewriteCapture.summary);
+      const loaded = fold([a, b, contribution(captures)]);
+      const truth = fold([preUpgrade, a, older, b]);
+      expect(loaded.toolCallCount).toBe(truth.toolCallCount);
+      expect(loaded.toolBreakdown).toEqual(truth.toolBreakdown);
+      expect(loaded.estimatedCostUsd).toBe(truth.estimatedCostUsd);
+      expect(loaded.byteEstimates).toEqual(truth.byteEstimates);
+      expect(loaded.tokensInput).toBe(truth.tokensInput);
+      expect(loaded.modelBreakdown).toEqual(truth.modelBreakdown);
+    }
+  });
+
+  it('takes rates and score means out by weight, clamped to [0, 1]', () => {
+    const scored = (score: number, samples: number, toolSuccessRate: number, calls: number) =>
+      file({
+        toolCallCount: calls,
+        toolSuccessRate,
+        taskCount: samples,
+        taskSuccessRate: toolSuccessRate,
+        efficiencyScore: score,
+        efficiencyScoreSampleCount: samples,
+        efficiencyScoreComponents: {
+          speed: score,
+          correctness: score,
+          autonomy: score,
+          firstAttemptQuality: score,
+        },
+      });
+    const writer = scored(0.5, 1, 0.5, 4);
+    const { summary } = captureLegacyIndex([scored(0.875, 5, 0.75, 8)], [contribution(writer)]);
+    expect(summary).toMatchObject({
+      efficiencyScore: 0.96875,
+      efficiencyScoreSampleCount: 4,
+      efficiencyScoreComponents: { speed: 0.96875, firstAttemptQuality: 0.96875 },
+      toolSuccessRate: 1,
+      taskSuccessRate: 0.8125,
+    });
+    expect(fold([contribution(writer), contribution(summary)])).toMatchObject({
+      efficiencyScore: 0.875,
+      toolSuccessRate: 0.75,
+    });
+    const low = captureLegacyIndex([scored(0.25, 3, 0.25, 8)], [contribution(scored(1, 1, 1, 4))]);
+    expect(low.summary).toMatchObject({
+      efficiencyScore: 0,
+      toolSuccessRate: 0,
+      taskSuccessRate: 0,
+    });
+    const unrated = captureLegacyIndex([scored(0.875, 5, 0.75, 8)], [contribution(file({}))]);
+    expect(unrated.summary).toMatchObject({ toolSuccessRate: 0.75, taskSuccessRate: 0.75 });
+    const tested = (runs: number, passes: number) =>
+      file({ testRunCount: runs, testPassCount: passes, taskCount: 2, taskSuccessRate: 0.5 });
+    const counted = captureLegacyIndex([tested(10, 7)], [contribution(tested(4, 1))]);
+    expect(counted.summary.taskSuccessRate).toBe(1);
+    const none = captureLegacyIndex([scored(0.5, 1, 0.5, 4)], [contribution(writer)]);
+    expect(none.summary).toMatchObject({
+      efficiencyScore: null,
+      efficiencyScoreSampleCount: 0,
+      efficiencyScoreComponents: null,
+      toolSuccessRate: null,
+      taskSuccessRate: null,
+    });
+  });
+
+  it('takes a writer estimates out as exact cost from an index saved before the ledger', () => {
+    const writer = richSummary(mulberry32(9), 'w', START + 1000);
+    const total = (writer.estimatedCostUsd ?? 0) + 5;
+    const legacy = file({
+      estimatedCostUsd: total,
+      costByDayUsd: { [DAY]: total },
+      tokensInput: writer.tokensInput + 7,
+    });
+    const { summary } = captureLegacyIndex([legacy], [contribution(writer)]);
+    expect(summary).toMatchObject({
+      estimatedCostUsd: 5,
+      costByDayUsd: { [DAY]: 5 },
+      tokensInput: 7,
+    });
+    expect(fold([contribution(writer), contribution(summary)]).estimatedCostUsd).toBe(total);
+  });
+
+  it('keeps an index without cost or day buckets without them', () => {
+    const writer = richSummary(mulberry32(11), 'w', START + 1000);
+    const { summary } = captureLegacyIndex([file({ toolCallCount: 9 })], [contribution(writer)]);
+    expect(summary.estimatedCostUsd).toBeNull();
+    expect(summary.costByDayUsd).toBeUndefined();
+    expect(summary.toolCallCount).toBe(9 - writer.toolCallCount);
+  });
+
+  it('drops an attribution split the writer cannot take out', () => {
+    const bucket = (tokens: number, split: boolean) => ({
+      costUsd: tokens,
+      tokens,
+      count: 1,
+      durationMs: 1,
+      ...(split
+        ? {
+            breakdown: {
+              inputTokens: tokens,
+              outputTokens: 0,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+            },
+            breakdownUsd: { inputUsd: tokens, outputUsd: 0, cacheReadUsd: 0, cacheCreationUsd: 0 },
+          }
+        : {}),
+    });
+    const attributed = (tokens: number, split: boolean) =>
+      file({
+        attribution: {
+          buckets: { tool: { Read: bucket(tokens, split) } },
+          highContextCostUsd: 0,
+          apiDurationMs: null,
+        },
+      });
+    const read = (s: FullSessionSummary) => s.attribution?.buckets.tool?.Read;
+    const unsplit = captureLegacyIndex([attributed(8, true)], [contribution(attributed(3, false))]);
+    expect(read(unsplit.summary)).toEqual({ ...bucket(5, false), count: 0, durationMs: 0 });
+    const split = captureLegacyIndex([attributed(8, true)], [contribution(attributed(3, true))]);
+    expect(read(split.summary)).toEqual({ ...bucket(5, true), count: 0, durationMs: 0 });
+    expect(split.summary.attribution?.apiDurationMs).toBeNull();
   });
 });
