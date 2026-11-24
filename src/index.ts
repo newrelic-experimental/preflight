@@ -1036,6 +1036,7 @@ async function main(): Promise<void> {
       // Remove this MCP's heartbeat so the next dashboard-owner GC pass
       // doesn't have to mtime-archive our buffer file.
       localStoreForShutdown?.removeHeartbeat();
+      localStoreForShutdown?.removePendingMarker();
       // If this was a --local process that won the dashboard port, remove
       // its PID file so `preflight update` doesn't try to restart a process
       // that's already exiting cleanly. No-op for --stdio and for --local
@@ -1242,6 +1243,7 @@ async function main(): Promise<void> {
         : new LocalStore(config.storagePath);
     localStore.setOwnIdPending(isProvisional);
     localStore.initialize();
+    if (isProvisional) localStore.writePendingMarker();
 
     // Register every --local process in the instance registry, regardless
     // of whether it goes on to win the dashboard port bind — this is what
@@ -3420,6 +3422,7 @@ async function main(): Promise<void> {
       // store, which must stay drain-all so the adopter gets the no-session buffer.
       localStore.setOwnIdPending(false);
       eventProcessor!.replaceStore(realLocalStore, false);
+      localStore.removePendingMarker();
 
       sessionTracker!.adoptSessionId(
         realId,
