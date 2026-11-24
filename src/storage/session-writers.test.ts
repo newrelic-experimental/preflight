@@ -586,6 +586,25 @@ describe('captureLegacyIndex', () => {
     expect(fold([contribution(writer), contribution(summary)]).estimatedCostUsd).toBe(total);
   });
 
+  it('reads a split index file saved before the ledger against the kept ledger', () => {
+    const next = mulberry32(13);
+    const writer = contribution(richSummary(next, 'w', START + 1000));
+    const older = contribution(richSummary(next, 'older', START + 2000));
+    const index = fold([writer, older]);
+    const preLedgerCopy = file({
+      endTime: START + 9000,
+      estimatedCostUsd: index.estimatedCostUsd,
+      costByDayUsd: index.costByDayUsd,
+      tokensInput: index.tokensInput,
+    });
+    const capture = captureLegacyIndex([index, preLedgerCopy], [writer]);
+    const loaded = fold([writer, capture]);
+    expect(loaded.estimatedCostUsd).toBe(index.estimatedCostUsd);
+    expect(loaded.costByDayUsd).toEqual(index.costByDayUsd);
+    expect(loaded.tokensInput).toBe(index.tokensInput);
+    expect(loaded.byteEstimates).toEqual(index.byteEstimates);
+  });
+
   it('carries a retraction an older build saved as an all-zero ledger', () => {
     const writer = file({
       estimatedCostUsd: 5,
