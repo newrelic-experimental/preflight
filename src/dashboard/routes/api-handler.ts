@@ -91,6 +91,7 @@ import {
   usageInsightsWindow,
   type UsageInsightsOptions,
 } from '../../metrics/usage-insights.js';
+import type { ArtifactEntry, ArtifactGroup } from '../../artifacts/artifact-index.js';
 import type { AuditRecord } from '../../security/audit-trail.js';
 import type {
   FullSessionSummary,
@@ -529,6 +530,11 @@ export interface ApiHandlerDeps {
   readonly decisionTracker?: { getMetrics: (sessionId?: string) => DecisionTreeMetrics };
   readonly turnCostAttributor?: { getMetrics: (sessionId?: string) => CostAttributionMetrics };
   readonly auditTrailManager?: { getAuditLog: (limit?: number) => readonly AuditRecord[] };
+  /** Present only when `experimentalArtifacts` is on. `find` must return only indexed entries. */
+  readonly artifactIndex?: {
+    list: () => readonly ArtifactGroup[];
+    find: (path: string) => ArtifactEntry | null;
+  };
   readonly weeklySummaryGenerator?: WeeklySummaryGenerator;
   readonly budgetTracker?: { getStatus: () => BudgetStatus };
   readonly latencyTracker?: { getMetrics: () => LatencyMetrics };
@@ -681,6 +687,15 @@ function jsonOk(res: ServerResponse, body: unknown): void {
 function unavailable(res: ServerResponse, what: string): void {
   const payload = JSON.stringify({ error: 'unavailable', what });
   res.writeHead(503, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': String(Buffer.byteLength(payload)),
+  });
+  res.end(payload);
+}
+
+function jsonError(res: ServerResponse, status: number, error: string): void {
+  const payload = JSON.stringify({ error });
+  res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'content-length': String(Buffer.byteLength(payload)),
   });
@@ -871,6 +886,7 @@ function retryAlertsBySession(
 }
 
 const MAX_BODY_BYTES = 64 * 1024; // 64 KB — generous for any settings payload
+const ARTIFACT_VIEW_MAX_BYTES = 20 * 1024 * 1024;
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -2562,6 +2578,39 @@ export function createApiHandler(
     jsonOk(res, log.map(toAuditEntry));
   });
 
+  routes.set('GET /api/artifacts', (_req, res) => {
+    if (!deps.artifactIndex) return unavailable(res, 'artifactIndex');
+    jsonOk(res, { groups: deps.artifactIndex.list() });
+  });
+
+  routes.set('GET /api/artifacts/view', (req, res) => {
+    if (!deps.artifactIndex) return unavailable(res, 'artifactIndex');
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const path = url.searchParams.get('path');
+    if (!path) return jsonError(res, 400, 'bad_request');
+    // Security boundary: only paths the index returns are ever read.
+    const entry = deps.artifactIndex.find(path);
+    if (entry === null) return jsonError(res, 404, 'not_found');
+    if (entry.sizeBytes > ARTIFACT_VIEW_MAX_BYTES) return jsonError(res, 413, 'too_large');
+    let body: Buffer;
+    try {
+      body = readFileSync(entry.path);
+    } catch {
+      return jsonError(res, 404, 'not_found');
+    }
+    res.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'content-length': String(body.length),
+      // No allow-same-origin: the report runs in an opaque origin, so its
+      // scripts cannot read this server's /api/* responses.
+      'content-security-policy':
+        'sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads',
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'no-referrer',
+    });
+    res.end(body);
+  });
+
   routes.set('GET /api/weekly', (req, res) => {
     if (!deps.weeklySummaryGenerator) return unavailable(res, 'weeklySummaryGenerator');
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -3351,6 +3400,7 @@ export function createApiHandler(
       mode: c.mode,
       storagePath: c.storagePath,
       highSecurity: c.highSecurity,
+      experimentalArtifacts: c.experimentalArtifacts,
       licenseKey: c.licenseKey ? '••••' + c.licenseKey.slice(-4) : null,
       tiers: summarizeTiers(c.tiers),
       primaryTier: primaryTierName(c.tiers),
