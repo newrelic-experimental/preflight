@@ -1421,6 +1421,7 @@ async function main(): Promise<void> {
         emitSkillRunOpened(stamp, ctx);
         skillRunLedger.recordRunOpened(stamp, ctx);
       },
+      onRunIdleClosed: (stamp, timestamp) => skillRunLedger.recordRunClosed(stamp.runId, timestamp),
     });
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
@@ -2470,7 +2471,7 @@ async function main(): Promise<void> {
       onPreToolUse: (event) => {
         // Only the main agent's records read a start entry.
         if (event.toolUseId && !event.agentId)
-          skillActivationTracker.recordToolStart(event.sessionId, event.toolUseId);
+          skillActivationTracker.recordToolStart(event.sessionId, event.toolUseId, event.timestamp);
       },
       onRecordAmend: (record) => {
         sessionTracker?.amendToolCall(record);
