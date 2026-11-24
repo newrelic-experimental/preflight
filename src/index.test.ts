@@ -33,6 +33,7 @@ import {
   DEFAULT_PENDING_CONFIRMATION_CAP_MS,
   startRetentionSweep,
   startMaintenanceGc,
+  runMaintenanceGcPass,
   dispatchSubcommand,
 } from './index.js';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -41,7 +42,7 @@ import { sanitizeCwdForFilename } from './hooks/session-resolver.js';
 import { calculateCost } from './core/pricing.js';
 import { SessionStore, type FullSessionSummary } from './storage/session-store.js';
 import { appendToHookBuffer } from './storage/hook-buffer.js';
-import type { LocalStore } from './storage/index.js';
+import { LocalStore } from './storage/index.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from './proxy/index.js';
 import type { NrIngestManager } from './transport/nr-ingest.js';
 import { UNFORWARDED_SESSIONS_HINT } from './transport/unforwarded-session-monitor.js';
@@ -1962,6 +1963,33 @@ describe('stdio integration', () => {
         unknown
       >;
     };
+
+    it('counts a no-session call that waited over 5 minutes for it to adopt', async () => {
+      const storage = makeStorage();
+      const client = await startEngine(storage);
+      const marker = resolve(storage, `pending-${client.pid}.pid`);
+      writeCall(storage, null, 'toolu_none', { tool: 'Grep', success: true });
+      const sixMinutesAgo = new Date(Date.now() - 6 * 60 * 1000);
+      utimesSync(resolve(storage, 'buffer-unknown.jsonl'), sixMinutesAgo, sixMinutesAgo);
+      runMaintenanceGcPass({ localStore: new LocalStore(storage), liveSessionRegistry: undefined });
+
+      const heartbeat = resolve(storage, 'active-own-real-session.pid');
+      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), 'own-real-session');
+      await waitFor(() => existsSync(heartbeat) && !existsSync(marker));
+      await client.close();
+      await waitFor(() => !existsSync(heartbeat));
+
+      expect(savedCalls(storage, 'own-real-session')).toBe(1);
+    }, 30000);
+
+    it('removes its pending marker when it exits before adopting', async () => {
+      const storage = resolve(makeStorage(), 'first-run');
+      const client = await startEngine(storage);
+      const marker = resolve(storage, `pending-${client.pid}.pid`);
+      expect(existsSync(marker)).toBe(true);
+      await client.close();
+      await waitFor(() => !existsSync(marker));
+    }, 30000);
 
     describe('its trackers after it adopts, having drained another session', () => {
       const failingTest = { tool: 'Bash', toolInput: { command: 'npm test' }, success: false };
