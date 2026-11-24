@@ -437,6 +437,74 @@ describe('the byte-estimate ledger', () => {
     expect(combined.estimatedCostUsd).toBeCloseTo(10);
   });
 
+  describe('beside a file without a timeline from before the ledger', () => {
+    const usage = (calls: number) => ({ m: { calls, tokens: 10 * calls, estimatedFrom: 'p' } });
+    const withLedger = file(START, 1, 4, {
+      tokensInput: 50,
+      exactTotals: { costUsd: 1, inputTokens: 10 },
+      byteEstimates: {
+        costUsd: 4,
+        inputTokens: 40,
+        estimatedByModel: usage(4),
+        estimatedByDay: { d: usage(4) },
+      },
+      estimatedByModel: usage(5),
+      estimatedByDay: { d: usage(5) },
+    });
+    const preLedger = (total: number, extra = {}) =>
+      summary({
+        endTime: START + 2 * DAY,
+        estimatedCostUsd: total,
+        tokensInput: 10 * total,
+        estimatedByModel: usage(total),
+        estimatedByDay: { d: usage(total) },
+        ...extra,
+      });
+
+    it('counts a repeat of the same spend once', () => {
+      const combined = combineInEveryOrder([withLedger, preLedger(5)]);
+      expect(combined.estimatedCostUsd).toBeCloseTo(5);
+      expect(combined.tokensInput).toBe(50);
+      expect(combined.estimatedByModel?.m.calls).toBe(5);
+      expect(combined.estimatedByDay?.d.m.calls).toBe(5);
+    });
+
+    it('keeps the larger total when it holds more spend', () => {
+      const combined = combineInEveryOrder([withLedger, preLedger(7)]);
+      expect(combined.estimatedCostUsd).toBeCloseTo(7);
+      expect(combined.tokensInput).toBe(70);
+      expect(combined.estimatedByModel?.m.calls).toBe(7);
+      expect(combined.estimatedByDay?.d.m.calls).toBe(7);
+    });
+
+    it('counts a copy with a shared timeline once', () => {
+      const copy = preLedger(5, { timeline: withLedger.timeline });
+      expect(combineInEveryOrder([withLedger, copy]).estimatedCostUsd).toBeCloseTo(5);
+    });
+
+    it('treats a combine of such files the same, though it saved an exact share', () => {
+      const combinedBefore = preLedger(5, { exactTotals: { costUsd: 5, inputTokens: 50 } });
+      expect(combineInEveryOrder([withLedger, combinedBefore]).estimatedCostUsd).toBeCloseTo(5);
+    });
+
+    it('reads it against the ledger the combine keeps, not an older one', () => {
+      const olderLedger = summary({
+        endTime: START + DAY,
+        estimatedCostUsd: 2,
+        exactTotals: { costUsd: 1 },
+        byteEstimates: { costUsd: 1 },
+      });
+      const combined = combineInEveryOrder([withLedger, olderLedger, preLedger(5)]);
+      expect(combined.estimatedCostUsd).toBeCloseTo(5);
+    });
+
+    it('keeps the own ledger of a file saved before exact shares', () => {
+      const beforeExactShares = summary({ estimatedCostUsd: 5, byteEstimates: { costUsd: 4 } });
+      const retracted = file(START, 1, 0, { endTime: START + DAY });
+      expect(combineInEveryOrder([beforeExactShares, retracted]).estimatedCostUsd).toBeCloseTo(1);
+    });
+  });
+
   it('takes the ledger of the latest copy when calls and exact cost tie', () => {
     const before = file(START, 1, 4, { timeline: [entry(START), entry(START + 1)] });
     const retracted = file(START, 1, 0, { endTime: START + 5000, timeline: [entry(START + 1)] });
