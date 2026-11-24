@@ -159,6 +159,8 @@ export interface McpServerConfig {
   readonly recordContent: boolean;
   /** Background fetch of LiteLLM prices for models the bundled table lacks. Forced false by highSecurity. */
   readonly pricingRefresh: boolean;
+  /** HTML artifact index in the local dashboard. Experimental. Forced false by highSecurity. */
+  readonly experimentalArtifacts: boolean;
   /**
    * Set when this org also enables Claude Code's built-in OTel export, so the
    * same session isn't ingested twice into a blended "org AI spend" dashboard
@@ -336,6 +338,7 @@ export const ConfigFileSchema = z
     highSecurity: z.boolean().optional(),
     recordContent: z.boolean().optional(),
     pricingRefresh: z.boolean().optional(),
+    experimentalArtifacts: z.boolean().optional(),
     companionMode: z.boolean().optional(),
     allowHeadlessInstall: z.boolean().optional(),
     storagePath: z.string().optional(),
@@ -1292,6 +1295,13 @@ export function loadMcpConfig(
       : envBool(
           'NEW_RELIC_AI_PRICING_REFRESH',
           typeof file.pricingRefresh === 'boolean' ? file.pricingRefresh : true,
+        ),
+
+    experimentalArtifacts: highSecurity
+      ? false
+      : envBool(
+          'NEW_RELIC_AI_EXPERIMENTAL_ARTIFACTS',
+          typeof file.experimentalArtifacts === 'boolean' ? file.experimentalArtifacts : false,
         ),
 
     companionMode: resolvedCompanionMode.value,
