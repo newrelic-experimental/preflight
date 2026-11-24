@@ -73,6 +73,8 @@ Each `MCP_CLIENT === '<name>'` or `NEW_RELIC_AI_PLATFORM === '<name>'` check bel
 
 **Pairing:** None of these events carries a `tool_use_id`, so the collector mints one at `beforeShellExecution` or `beforeMCPExecution` and hands it to the oldest open pre of the same tool at `afterShellExecution` or `afterMCPExecution`. A denied command or MCP call fires no `after*` event, so its pre is recorded as a timeout once its wait runs out (11 minutes for a shell command, 60 seconds otherwise). Until then, the next `after*` event of the same tool pairs with it, as the processor's own FIFO does for any call without an id. `beforeReadFile` and `afterFileEdit` have no pre to pair with.
 
+**Sizes:** each tool call records the byte size of its input and output. Shell calls count the `command` and the `output`, MCP calls the `tool_input` and the `result_json`, reads the `file_path` and the `content`, and edits the `edits`. `beforeReadFile` and `afterFileEdit` have no pre event, so the post event carries the input size.
+
 **Setup:**
 
 1. Register the Preflight MCP server for `nr_observe_*` tools: Cursor Settings → MCP → add server under a key that contains `preflight`, such as `newrelic-preflight` (no installer writes Cursor's `mcp.json`, so you register the key by hand), command `npx preflight --stdio`, env `NEW_RELIC_LICENSE_KEY`, `NEW_RELIC_ACCOUNT_ID`, `NR_AI_MODE=cloud`
@@ -108,6 +110,8 @@ Each `MCP_CLIENT === '<name>'` or `NEW_RELIC_AI_PLATFORM === '<name>'` check bel
 **Known gaps:** `post_read_code`/`post_run_command` report success `true` unconditionally, the same gap as Cursor's `afterShellExecution`. `pre_write_code` maps to `'Edit'` (it's typically a partial edit, not a full-file write). Self-report recording from `post_mcp_tool_use` follows Windsurf's docs and has not been checked against a real Windsurf run: that `mcp_result` holds the reply text, that `mcp_server_name` is the `mcp_config.json` key, and that the hook does not fire for a denied call.
 
 **Pairing:** Cascade Hooks carry no tool-use id, so the collector mints one at each `pre_*` event and hands it to the oldest open pre of the same tool at the matching `post_*` event.
+
+**Sizes:** each tool call records the byte size of its input and output. Commands count the command line, edits the `edits`, MCP calls the `mcp_tool_arguments` and the `mcp_result`, and reads the file path and the file. `post_read_code` names the file but sends none of its content, so the collector stats the file and counts its whole size on disk, even when the agent read only part of it. `post_run_command` sends no command output, so a command records no output size.
 
 **Setup:**
 

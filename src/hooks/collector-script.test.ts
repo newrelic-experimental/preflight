@@ -2805,6 +2805,118 @@ describe('collector-script', () => {
     });
   });
 
+  describe('payload sizes from Cursor and Windsurf hooks, piped to the shipped hook', () => {
+    const hookScript = resolve(
+      __dirname,
+      '..',
+      '..',
+      'plugin',
+      '.claude-plugin',
+      'scripts',
+      'collector-script.js',
+    );
+
+    function pipe(...payloads: Record<string, unknown>[]): Record<string, unknown>[] {
+      for (const payload of payloads) {
+        execFileSync(process.execPath, [hookScript], {
+          input: JSON.stringify(payload),
+          cwd: tmpDir,
+          env: { ...process.env, NEW_RELIC_AI_MCP_BUFFER_PATH: bufferPath },
+          timeout: 5000,
+        });
+      }
+      return readBufferEvents();
+    }
+
+    function records(): ToolCallRecord[] {
+      const out: ToolCallRecord[] = [];
+      const store = new LocalStore(tmpDir);
+      new HookEventProcessor({ store, onRecord: (r) => out.push(r) }).processEvents(
+        store.drainBuffer(),
+      );
+      return out;
+    }
+
+    const cursor = { conversation_id: 'conv-sizes', generation_id: 'gen-1' };
+    const sizes = (e: Record<string, unknown>) => [e.mode, e.tool, e.inputSize, e.outputSize];
+
+    it('sizes a Cursor shell call’s output, a read’s content and an edit’s edits', () => {
+      const command = 'npm test';
+      const output = 'x'.repeat(500);
+      const content = 'y'.repeat(800);
+      const edits = [{ old_string: 'a'.repeat(100), new_string: 'b'.repeat(165) }];
+
+      const events = pipe(
+        { ...cursor, hook_event_name: 'beforeShellExecution', command, cwd: '/p' },
+        { ...cursor, hook_event_name: 'afterShellExecution', command, output, duration: 12 },
+        { ...cursor, hook_event_name: 'beforeReadFile', file_path: '/p/a.ts', content },
+        { ...cursor, hook_event_name: 'afterFileEdit', file_path: '/p/a.ts', edits },
+      );
+
+      expect(events.map(sizes)).toEqual([
+        ['pre', 'Bash', command.length, undefined],
+        ['post', 'Bash', undefined, 500],
+        ['post', 'Read', '/p/a.ts'.length, 800],
+        ['post', 'Edit', JSON.stringify(edits).length, undefined],
+      ]);
+      expect(JSON.stringify(edits).length).toBe(300);
+      expect(records().map((r) => [r.toolName, r.inputSizeBytes, r.outputSizeBytes])).toEqual([
+        ['Bash', command.length, 500],
+        ['Read', '/p/a.ts'.length, 800],
+        ['Edit', 300, undefined],
+      ]);
+    });
+
+    it('sizes a Cursor MCP call’s result_json', () => {
+      const call = { ...cursor, tool_name: 'search', tool_input: '{"q":"bugs"}' };
+      const resultJson = JSON.stringify({ hits: 'z'.repeat(400) });
+
+      const events = pipe(
+        { ...call, hook_event_name: 'beforeMCPExecution' },
+        { ...call, hook_event_name: 'afterMCPExecution', result_json: resultJson },
+      );
+
+      expect(events.map(sizes)).toEqual([
+        ['pre', 'search', call.tool_input.length, undefined],
+        ['post', 'search', undefined, resultJson.length],
+      ]);
+    });
+
+    it('sizes Windsurf reads from disk, edits from their edits and MCP calls from mcp_result', () => {
+      const filePath = resolve(tmpDir, 'module.py');
+      writeFileSync(filePath, 'w'.repeat(640));
+      const edits = [{ old_string: 'import os', new_string: 'import os\nimport sys' }];
+      const mcp = { mcp_server_name: 'github', mcp_tool_name: 'create_issue' };
+      const windsurf = (action: string, toolInfo: Record<string, unknown>) => ({
+        agent_action_name: action,
+        trajectory_id: 'traj-sizes',
+        tool_info: toolInfo,
+      });
+
+      const events = pipe(
+        windsurf('pre_read_code', { file_path: filePath }),
+        windsurf('post_read_code', { file_path: filePath }),
+        windsurf('post_read_code', { file_path: 'module.py' }),
+        windsurf('post_read_code', { file_path: tmpDir }),
+        windsurf('pre_write_code', { file_path: filePath, edits }),
+        windsurf('post_mcp_tool_use', {
+          ...mcp,
+          mcp_tool_arguments: {},
+          mcp_result: 'r'.repeat(90),
+        }),
+      );
+
+      expect(events.map(sizes)).toEqual([
+        ['pre', 'Read', filePath.length, undefined],
+        ['post', 'Read', undefined, 640],
+        ['post', 'Read', undefined, 0],
+        ['post', 'Read', undefined, 0],
+        ['pre', 'Edit', JSON.stringify(edits).length, undefined],
+        ['post', 'create_issue', undefined, 90],
+      ]);
+    });
+  });
+
   // ---------------------------------------------------------------------------
   // Per-session buffer paths + PPID breadcrumb
   // ---------------------------------------------------------------------------

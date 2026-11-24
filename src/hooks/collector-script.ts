@@ -13,8 +13,8 @@
  *   - Config via env vars only (no file reads for config)
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, utimesSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, utimesSync } from 'node:fs';
+import { resolve, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { cutAtWord, redactSecrets } from '../redaction-patterns.js';
@@ -190,6 +190,21 @@ function sizeOf(value: unknown): number {
   if (typeof value === 'string') return value.length;
   try {
     return JSON.stringify(value).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * The size on disk of a file that a hook names without sending its content.
+ * One stat, never a read; a relative, missing, unreadable or non-regular path
+ * counts as 0.
+ */
+function fileSizeOf(path: unknown): number {
+  if (typeof path !== 'string' || !isAbsolute(path)) return 0;
+  try {
+    const stats = statSync(path, { throwIfNoEntry: false });
+    return stats?.isFile() ? stats.size : 0;
   } catch {
     return 0;
   }
@@ -536,6 +551,10 @@ interface HookInput {
   file_path?: string;
   content?: string;
   edits?: { old_string?: string; new_string?: string }[];
+  // afterShellExecution's full terminal output and afterMCPExecution's tool
+  // result, per https://cursor.com/docs/agent/hooks.
+  output?: string;
+  result_json?: string;
   // Windsurf (https://docs.windsurf.com/de/windsurf/cascade/hooks) sends a
   // completely different envelope from every other platform: the event name
   // itself is `agent_action_name`, not `hook_event_name`, and all
@@ -1176,6 +1195,7 @@ function processHook(raw: string, cliEvent?: string): void {
       tool: 'Bash',
       timestamp,
       success: true,
+      outputSize: sizeOf(data.output),
     };
   } else if (eventName === 'beforemcpexecution') {
     // tool_name here is an arbitrary third-party MCP tool name, not one of
@@ -1200,6 +1220,7 @@ function processHook(raw: string, cliEvent?: string): void {
       tool: mcpTool,
       timestamp,
       success: true,
+      outputSize: sizeOf(data.result_json),
     };
     // afterMCPExecution names the server from mcp.json (https://cursor.com/docs/agent/hooks).
     selfReportCall = {
@@ -1220,6 +1241,8 @@ function processHook(raw: string, cliEvent?: string): void {
       tool: 'Read',
       timestamp,
       success: true,
+      inputSize: sizeOf(data.file_path),
+      outputSize: sizeOf(data.content),
       ...(data.file_path !== undefined && { toolInput: { file_path: data.file_path } }),
     };
     // data.content carries the actual file contents — never write it to the
@@ -1237,6 +1260,7 @@ function processHook(raw: string, cliEvent?: string): void {
       tool: 'Edit',
       timestamp,
       success: true,
+      inputSize: sizeOf(data.edits),
       ...(data.file_path !== undefined && { toolInput: { file_path: data.file_path } }),
     };
   } else if (eventName === 'pre_read_code') {
@@ -1253,24 +1277,28 @@ function processHook(raw: string, cliEvent?: string): void {
   } else if (eventName === 'post_read_code') {
     // No source documents a failure signal for this event — success: true
     // unconditionally, same convention as Cursor's afterShellExecution.
+    // tool_info names the file but carries none of its content, so the read's
+    // output is sized from disk.
     const filePath = getWindsurfToolInfo(data).file_path;
     event = {
       mode: 'post' as const,
       tool: 'Read',
       timestamp,
       success: true,
+      outputSize: fileSizeOf(filePath),
       ...(typeof filePath === 'string' && { toolInput: { file_path: filePath } }),
     };
   } else if (eventName === 'pre_write_code') {
     // Maps to 'Edit' not 'Write' — tool_info carries an edits[] array of
     // {old_string, new_string}, the same shape as Claude Code's Edit tool,
     // not a full-file Write. Mirrors Cursor's afterFileEdit -> 'Edit'.
-    const filePath = getWindsurfToolInfo(data).file_path;
+    const toolInfo = getWindsurfToolInfo(data);
+    const filePath = toolInfo.file_path;
     event = {
       mode: 'pre' as const,
       tool: 'Edit',
       timestamp,
-      inputSize: sizeOf(filePath),
+      inputSize: sizeOf(toolInfo.edits),
       inputHash: hashInput(filePath),
       ...(typeof filePath === 'string' && { toolInput: { file_path: filePath } }),
     };
@@ -1325,6 +1353,7 @@ function processHook(raw: string, cliEvent?: string): void {
       tool: mcpTool,
       timestamp,
       success: true,
+      outputSize: sizeOf(toolInfo.mcp_result),
     };
     // tool_info.mcp_server_name names the server (https://docs.windsurf.com/de/windsurf/cascade/hooks).
     selfReportCall = {
