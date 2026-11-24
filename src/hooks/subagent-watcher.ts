@@ -155,6 +155,14 @@ export interface SubagentTokenEvent {
    * sidecar. Omitted when the sidecar is absent or has no usable `agentType`.
    */
   readonly agentType?: string;
+  /** The spawning `Agent` call's toolUseId, from the same sidecar. Omitted when absent. */
+  readonly spawnToolUseId?: string;
+}
+
+/** The fields taken from an `agent-<id>.meta.json` sidecar. */
+interface SubagentSidecar {
+  readonly agentType?: string;
+  readonly spawnToolUseId?: string;
 }
 
 /**
@@ -358,10 +366,10 @@ export class SubagentWatcher {
   // Evicted alongside
   // partialByPath in evictStalePartials() — see that method's comment.
   private readonly decoderByPath = new Map<string, StringDecoder>();
-  // Transcript path -> agentType read from its `.meta.json` sidecar. Only
+  // Transcript path -> fields read from its `.meta.json` sidecar. Only
   // successful reads are cached (a sidecar that is missing now may appear
   // later); bounded by the live file set via evictStalePartials().
-  private readonly agentTypeByPath = new Map<string, string>();
+  private readonly sidecarByPath = new Map<string, SubagentSidecar>();
   // Transcript path -> bytes consumed so far, mirroring the persisted cursor so
   // readLiveTails() can compare a stat against it without reading the cursor
   // file. Absent until a read has committed, and dropped when a read fails, so
@@ -1044,7 +1052,7 @@ export class SubagentWatcher {
 
     // Health counters and schema-drift events wait until the read is committed,
     // so a read that is redone counts once.
-    const agentType = lines.length > 0 ? this.readAgentType(file.path) : undefined;
+    const sidecar = lines.length > 0 ? this.readSidecar(file.path) : {};
     const turns: Array<ParsedAssistantTurn & { readonly event: SubagentTokenEvent }> = [];
     let linesRead = 0;
     for (const line of lines) {
@@ -1075,7 +1083,7 @@ export class SubagentWatcher {
         stopReason: parsed.stopReason,
         schemaFingerprint: parsed.usageKeysFingerprint,
         toolUseIds: parsed.toolUseIds,
-        ...(agentType !== undefined ? { agentType } : {}),
+        ...sidecar,
       };
       turns.push({ ...parsed, event });
     }
@@ -1164,7 +1172,7 @@ export class SubagentWatcher {
     if (
       this.partialByPath.size === 0 &&
       this.decoderByPath.size === 0 &&
-      this.agentTypeByPath.size === 0 &&
+      this.sidecarByPath.size === 0 &&
       this.consumedBytesByPath.size === 0 &&
       this.tailKindByPath.size === 0
     ) {
@@ -1178,8 +1186,8 @@ export class SubagentWatcher {
     for (const path of this.decoderByPath.keys()) {
       if (!live.has(path)) this.decoderByPath.delete(path);
     }
-    for (const path of this.agentTypeByPath.keys()) {
-      if (!live.has(path)) this.agentTypeByPath.delete(path);
+    for (const path of this.sidecarByPath.keys()) {
+      if (!live.has(path)) this.sidecarByPath.delete(path);
     }
     for (const path of this.consumedBytesByPath.keys()) {
       if (!live.has(path)) this.consumedBytesByPath.delete(path);
@@ -1190,18 +1198,19 @@ export class SubagentWatcher {
   }
 
   /**
-   * Reads `agentType` from the transcript's `agent-<id>.meta.json` sidecar.
+   * Reads `agentType` and the spawning call's `toolUseId` from the transcript's
+   * `agent-<id>.meta.json` sidecar.
    * Claude Code writes that sidecar when it spawns the subagent (its birth
    * time matches the transcript's first line in observed 2.1.284 data), so the
    * type is available while the subagent runs, well before the parent's
-   * `Agent` PostToolUse. Only `agentType` is taken; the sidecar's other fields
+   * `Agent` PostToolUse. Only those two are taken; the sidecar's other fields
    * (`description`, `name`, ...) are never read into events.
    */
-  private readAgentType(transcriptPath: string): string | undefined {
-    const cached = this.agentTypeByPath.get(transcriptPath);
+  private readSidecar(transcriptPath: string): SubagentSidecar {
+    const cached = this.sidecarByPath.get(transcriptPath);
     if (cached !== undefined) return cached;
     const metaPath = transcriptPath.replace(/\.jsonl$/, '.meta.json');
-    let agentType: string | undefined;
+    let sidecar: SubagentSidecar = {};
     let fd: number | undefined;
     try {
       fd = openSync(metaPath, 'r');
@@ -1209,13 +1218,19 @@ export class SubagentWatcher {
       // exactly at it, without trusting a stat that could race a writer.
       const buf = Buffer.alloc(MAX_META_SIDECAR_BYTES + 1);
       const bytesRead = readSync(fd, buf, 0, buf.length, 0);
-      if (bytesRead > MAX_META_SIDECAR_BYTES) return undefined;
+      if (bytesRead > MAX_META_SIDECAR_BYTES) return {};
       const parsed: unknown = JSON.parse(buf.toString('utf-8', 0, bytesRead));
       if (parsed !== null && typeof parsed === 'object') {
-        agentType = normalizeAgentType((parsed as { agentType?: unknown }).agentType);
+        const { agentType, toolUseId } = parsed as { agentType?: unknown; toolUseId?: unknown };
+        const type = normalizeAgentType(agentType);
+        sidecar = {
+          ...(type !== undefined && { agentType: type }),
+          ...(typeof toolUseId === 'string' &&
+            toolUseId.length > 0 && { spawnToolUseId: toolUseId }),
+        };
       }
     } catch {
-      return undefined; // absent (older Claude Code or not yet written) or malformed
+      return {}; // absent (older Claude Code or not yet written) or malformed
     } finally {
       if (fd !== undefined) {
         try {
@@ -1225,8 +1240,8 @@ export class SubagentWatcher {
         }
       }
     }
-    if (agentType !== undefined) this.agentTypeByPath.set(transcriptPath, agentType);
-    return agentType;
+    if (Object.keys(sidecar).length > 0) this.sidecarByPath.set(transcriptPath, sidecar);
+    return sidecar;
   }
 
   /** How a transcript whose last complete line is `line` stands. */

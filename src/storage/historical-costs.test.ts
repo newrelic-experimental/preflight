@@ -201,6 +201,27 @@ describe('computeHistoricalCosts', () => {
     });
   });
 
+  it('counts a split session the same before and after a save folds it into its earliest file', () => {
+    const place = (start: number, estimatedCostUsd: number) => {
+      const path = resolve(tmpDir, 'sessions', `${localDateKey(start)}_split.json`);
+      const timeline = [{ timestamp: start, toolName: 'Read' }];
+      const costByDayUsd = { [localDateKey(start)]: estimatedCostUsd };
+      const fields = { sessionId: 'split', startTime: start, endTime: start + HOUR };
+      writeFileSync(path, JSON.stringify({ ...fields, estimatedCostUsd, costByDayUsd, timeline }));
+      utimesSync(path, new Date(start), new Date(start));
+    };
+    const baselines = () => computeHistoricalCosts(store, 'current', REF_TS);
+    const expected = { priorDailyCostUsd: 5, priorWeeklyCostUsd: 208 };
+    place(REF_TS - 30 * DAY, 100);
+    place(REF_TS - 7 * DAY, 3);
+    place(REF_TS - 3 * DAY, 200);
+    place(REF_TS - HOUR, 5);
+    expect(baselines()).toEqual(expected);
+    store.saveSession(store.loadSession('split') as FullSessionSummary);
+    expect(store.loadAllSessions({ since: new Date(REF_TS - 7 * DAY) })).toEqual([]);
+    expect(baselines()).toEqual(expected);
+  });
+
   describe('sessions with a per-day cost map', () => {
     interface Placed {
       readonly startTime: number;

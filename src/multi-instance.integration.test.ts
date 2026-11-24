@@ -544,6 +544,7 @@ describe('AiCodingTask emission in cloud mode', () => {
       NEW_RELIC_AI_MCP_HARVEST_EVENTS_MS: String(harvestEventsMs),
       CAPTURE_PATH: capturePath,
       NODE_OPTIONS: `--import ${preloadPath}`,
+      CLAUDE_CONFIG_DIR: resolve(root, 'claude'),
     });
   }
 
@@ -555,11 +556,11 @@ describe('AiCodingTask emission in cloud mode', () => {
     sessionId: string,
     count: number,
     tool: 'Bash' | 'Read' | 'AskUserQuestion' | 'Skill' = 'Bash',
+    base = Date.now() - 1000,
   ): void {
     const bufferPath = resolve(storage, `buffer-${sessionId}.jsonl`);
-    const base = Date.now() - 1000;
     for (let i = 0; i < count; i++) {
-      const common = { tool, sessionId, toolUseId: `toolu_${sessionId}_${tool}_${i}` };
+      const common = { tool, sessionId, toolUseId: `toolu_${sessionId}_${tool}_${base}_${i}` };
       appendToHookBuffer(
         bufferPath,
         JSON.stringify({
@@ -671,6 +672,27 @@ describe('AiCodingTask emission in cloud mode', () => {
     ]);
   }, 60_000);
 
+  it('ends a skill run an idle gap closed at its last call, not at the next run', async () => {
+    const child = startCloudEngine(3_600_000, jobDir);
+    const start = Date.now() - 120_000;
+    try {
+      await waitForBoot(child, BOOT_TIMEOUT_MS);
+      await initialize(child);
+      seedToolCalls(SESSION, 1, 'Skill', start);
+      seedToolCalls(SESSION, 1, 'Bash', start + 100);
+      seedToolCalls(SESSION, 1, 'Skill', start + 60_000);
+      await waitForStats(child, 3, TOOLS_CALL_TIMEOUT_MS);
+    } finally {
+      child.proc.stdin.end();
+      await waitExit(child, 8000);
+    }
+
+    expect(capturedEvents('AiWorkUnit')).toMatchObject([
+      { skill_name: 'lint', started_at: start, duration_ms: 101, tool_call_count: 2 },
+      { skill_name: 'lint', started_at: start + 60_000, tool_call_count: 1 },
+    ]);
+  }, 60_000);
+
   it('stamps a call recorded after a later prompt with the skill run open when it started', async () => {
     const bufferPath = resolve(storage, `buffer-${SESSION}.jsonl`);
     const at = Date.now() - 1000;
@@ -702,6 +724,99 @@ describe('AiCodingTask emission in cloud mode', () => {
       expect.objectContaining({ tool: 'Bash', skill_name: 'lint' }),
     );
   }, 60_000);
+
+  it.each(['after', 'before'])(
+    'stamps a background subagent with the skill run its Agent call started in, its transcript on disk %s that start drains',
+    async (when) => {
+      const session = '93400000-0000-4000-8000-000000000934';
+      const subagents = resolve(root, 'claude', 'projects', 'slug', session, 'subagents');
+      const turn = (agentId: string, toolUseId: string): string =>
+        JSON.stringify({
+          type: 'assistant',
+          agentId,
+          uuid: `turn-${toolUseId}`,
+          timestamp: new Date().toISOString(),
+          sessionId: session,
+          message: {
+            id: `msg-${toolUseId}`,
+            role: 'assistant',
+            model: 'claude-opus-4-7',
+            stop_reason: 'tool_use',
+            content: [{ type: 'tool_use', id: toolUseId, name: 'Read', input: {} }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        }) + '\n';
+      // An earlier subagent, so the watcher's first poll learns this directory.
+      mkdirSync(subagents, { recursive: true });
+      writeFileSync(
+        resolve(subagents, 'agent-a0000000000000001.jsonl'),
+        turn('a0000000000000001', 'toolu_old'),
+      );
+      const job = resolve(root, 'job-934');
+      mkdirSync(job, { recursive: true, mode: 0o700 });
+      writeFileSync(
+        resolve(job, 'state.json'),
+        JSON.stringify({ linkScanPath: `/fake/transcript/${session}.jsonl` }),
+        { mode: 0o600 },
+      );
+      const bufferPath = resolve(storage, `buffer-${session}.jsonl`);
+      const append = (frame: Record<string, unknown>): void =>
+        appendToHookBuffer(
+          bufferPath,
+          JSON.stringify({ sessionId: session, timestamp: Date.now(), ...frame }) + '\n',
+        );
+      const child = startCloudEngine(3_600_000, job);
+      try {
+        await waitForBoot(child, BOOT_TIMEOUT_MS);
+        await initialize(child);
+        // The watcher writes this cursor once a poll has read the earlier
+        // subagent, so by then it knows the directory.
+        const cursor = resolve(storage, `.subagent-pos-${session}-a0000000000000001`);
+        const deadline = Date.now() + TOOLS_CALL_TIMEOUT_MS;
+        while (!existsSync(cursor)) {
+          if (Date.now() > deadline) throw new Error('the subagent watcher never polled');
+          await delay(50);
+        }
+        const writeSubagent = (): void => {
+          writeFileSync(
+            resolve(subagents, 'agent-a0000000000000002.meta.json'),
+            JSON.stringify({ agentType: 'Explore', toolUseId: 'toolu_spawn' }),
+          );
+          writeFileSync(
+            resolve(subagents, 'agent-a0000000000000002.jsonl'),
+            turn('a0000000000000002', 'toolu_sub'),
+          );
+        };
+        if (when === 'before') writeSubagent();
+        seedToolCalls(session, 1, 'Skill');
+        append({
+          mode: 'pre',
+          tool: 'Agent',
+          toolUseId: 'toolu_spawn',
+          toolInput: { run_in_background: true },
+        });
+        append({ mode: 'user_prompt_submit', slashCommand: 'simplify' });
+        await waitForDrain(session);
+        if (when === 'after') writeSubagent();
+        const call = { tool: 'Read', toolUseId: 'toolu_sub', agentId: 'a0000000000000002' };
+        append({ ...call, mode: 'pre', toolInput: { file_path: '/fake/a.ts' } });
+        append({ ...call, mode: 'post', success: true });
+        await waitForStats(child, 2, TOOLS_CALL_TIMEOUT_MS);
+      } finally {
+        child.proc.stdin.end();
+        await waitExit(child, 8000);
+      }
+
+      expect(capturedEvents('AiToolCall')).toContainEqual(
+        expect.objectContaining({
+          tool: 'Read',
+          agent_id: 'a0000000000000002',
+          skill_name: 'lint',
+        }),
+      );
+    },
+    60_000,
+  );
 
   it("sends only the adopted session's tasks that closed before the session resolved", async () => {
     const OTHER = 'task-emit-other';

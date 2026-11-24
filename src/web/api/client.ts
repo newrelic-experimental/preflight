@@ -710,6 +710,24 @@ export interface LoopRow {
   readonly lastRunMs: number;
 }
 
+// Mirrors WindowSessionRow (src/metrics/usage-insights.ts): one session's
+// in-window share, with costs and tokens scaled to it.
+export interface WindowSessionRow {
+  readonly sessionId: string;
+  readonly model: string | null;
+  readonly estimatedCostUsd: number;
+  readonly costByDayUsd: Record<string, number>;
+  readonly efficiencyScore: number | null;
+  readonly toolSuccessRate: number | null;
+  readonly antiPatterns: ReadonlyArray<{ readonly type: string }>;
+  readonly toolBreakdown: Record<string, number>;
+  readonly tokensInput: number;
+  readonly tokensOutput: number;
+  readonly tokensThinking: number;
+  readonly tokensCacheRead: number;
+  readonly tokensCacheCreation: number;
+}
+
 export interface UsageInsightsReport {
   readonly windowDays: number;
   readonly sessionCount: number;
@@ -726,6 +744,7 @@ export interface UsageInsightsReport {
   readonly pluginsTotalCount: number;
   readonly loopsTotalCount: number;
   readonly attributionRatePct: number | null;
+  readonly sessions: readonly WindowSessionRow[];
 }
 
 export const fetchUsageInsights = (

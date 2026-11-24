@@ -32,13 +32,26 @@ export function breadcrumbRoot(storagePath: string, writer: string): string {
   return resolve(storagePath, BREADCRUMBS_DIR, writer);
 }
 
-export function breadcrumbWriter(env: NodeJS.ProcessEnv): string {
+/**
+ * Anything started from a Claude Code shell inherits its env signals, so a hook
+ * for a session other than the one CLAUDE_CODE_SESSION_ID names belongs to
+ * another engine. A hook with no session id has nothing to compare, so the env
+ * signals decide.
+ */
+export function isClaudeCodeHook(env: NodeJS.ProcessEnv, sessionId: unknown): boolean {
+  const claudeSessionId = env.CLAUDE_CODE_SESSION_ID;
+  if (claudeSessionId !== undefined && sessionId !== undefined && claudeSessionId !== sessionId)
+    return false;
+  return CLAUDE_CODE_ENV_SIGNALS.some((key) => env[key] !== undefined);
+}
+
+export function breadcrumbWriter(env: NodeJS.ProcessEnv, sessionId: string): string {
   for (const key of ENGINE_ENV_KEYS) {
     const name = canonicalPlatformName(env[key]);
     if (name === 'generic-mcp') return UNATTRIBUTED_BREADCRUMB_WRITER;
     if (name !== undefined) return name;
   }
-  return CLAUDE_CODE_ENV_SIGNALS.some((key) => env[key] !== undefined)
+  return isClaudeCodeHook(env, sessionId)
     ? CLAUDE_CODE_PLATFORM_NAME
     : UNATTRIBUTED_BREADCRUMB_WRITER;
 }

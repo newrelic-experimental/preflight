@@ -31,6 +31,8 @@ export interface WindowShare {
   /** Share of the session's cost in the window, in [0, 1]. Scales any total kept without a day split. */
   readonly weight: number;
   readonly costUsd: number;
+  /** The in-window part of each day in `costByDayUsd`; empty when the session has no day map. */
+  readonly costByDayUsd: Readonly<Record<string, number>>;
   /** Timeline calls in the window, or `toolCallCount * weight` when the timeline dropped calls. */
   readonly toolCalls: number;
 }
@@ -73,7 +75,7 @@ function dayStartOfKey(key: string): number {
  */
 export function windowShare(s: WindowSource, w: ActivityWindow): WindowShare {
   if (s.costByDayUsd === undefined && !hasAttributableActivity(s)) {
-    return { weight: 0, costUsd: 0, toolCalls: 0 };
+    return { weight: 0, costUsd: 0, costByDayUsd: {}, toolCalls: 0 };
   }
   const start = s.startTime;
   const last = lastActivityMs(s);
@@ -85,7 +87,12 @@ export function windowShare(s: WindowSource, w: ActivityWindow): WindowShare {
     return localEndOfDay(dayStart) > w.startMs && dayStart < w.endMs;
   });
   if (start >= w.startMs && last < w.endMs && daysInWindow) {
-    return { weight: 1, costUsd: lifetimeUsd, toolCalls: s.toolCallCount };
+    return {
+      weight: 1,
+      costUsd: lifetimeUsd,
+      costByDayUsd: s.costByDayUsd ?? {},
+      toolCalls: s.toolCallCount,
+    };
   }
 
   const timeline = s.timeline ?? [];
@@ -108,20 +115,23 @@ export function windowShare(s: WindowSource, w: ActivityWindow): WindowShare {
     return Number.isFinite(to - from) ? overlapMs(from, to, w.startMs, w.endMs) / (to - from) : 0;
   };
 
+  const costByDayUsd: Record<string, number> = {};
+  for (const [day, usd] of Object.entries(s.costByDayUsd ?? {})) {
+    const dayStart = dayStartOfKey(day);
+    const inWindowUsd = usd * shareIn(dayStart, localEndOfDay(dayStart));
+    if (inWindowUsd !== 0) costByDayUsd[day] = inWindowUsd;
+  }
   const costUsd =
     s.costByDayUsd === undefined
       ? lifetimeUsd * shareIn(-Infinity, Infinity)
-      : Object.entries(s.costByDayUsd).reduce((sum, [day, usd]) => {
-          const dayStart = dayStartOfKey(day);
-          return sum + usd * shareIn(dayStart, localEndOfDay(dayStart));
-        }, 0);
+      : Object.values(costByDayUsd).reduce((sum, usd) => sum + usd, 0);
   const weight =
     lifetimeUsd > 0 ? Math.min(1, costUsd / lifetimeUsd) : shareIn(-Infinity, Infinity);
   const toolCalls =
     timeline.length >= s.toolCallCount
       ? timeline.filter((t) => inWindow(t.timestamp)).length
       : s.toolCallCount * weight;
-  return { weight, costUsd, toolCalls };
+  return { weight, costUsd, costByDayUsd, toolCalls };
 }
 
 /**

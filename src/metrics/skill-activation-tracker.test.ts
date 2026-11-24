@@ -3,6 +3,7 @@ import { describe, it, expect } from '@jest/globals';
 import type { SkillStamp, ToolCallRecord } from '../storage/types.js';
 import { SkillActivationTracker } from './skill-activation-tracker.js';
 import type { SkillRunOpenContext } from './skill-activation-tracker.js';
+import { DEFAULT_IDLE_TIMEOUT_MS } from './task-detector.js';
 
 function makeRecord(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord {
   return {
@@ -98,6 +99,139 @@ describe('SkillActivationTracker', () => {
     );
 
     expect(stamp).toBeNull();
+  });
+
+  it('closes the main run after an idle gap and stamps later calls with nothing', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
+    t.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'other', sessionId: 's2', timestamp: 1000 }),
+    );
+
+    t.recordToolCall(makeRecord({ sessionId: 's2', toolUseId: 'u4', timestamp: 20_000 }));
+
+    const later = 1100 + DEFAULT_IDLE_TIMEOUT_MS + 1;
+    expect(t.recordToolCall(makeRecord({ toolUseId: 'u2', timestamp: later }))).toBeNull();
+    expect(
+      t.recordToolCall(makeRecord({ sessionId: 's2', toolUseId: 'u3', timestamp: later }))?.name,
+    ).toBe('other');
+  });
+
+  it('keeps the run open for a gap at or under the idle timeout', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
+
+    const stamp = t.recordToolCall(
+      makeRecord({ toolUseId: 'u2', timestamp: 1100 + DEFAULT_IDLE_TIMEOUT_MS }),
+    );
+
+    expect(stamp?.name).toBe('eslint');
+  });
+
+  it('measures the gap from the latest record of any agent, not only the main agent', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
+    t.recordToolCall(makeRecord({ agentId: 'a1', toolUseId: 'u2', timestamp: 25_000 }));
+
+    const stamp = t.recordToolCall(makeRecord({ toolUseId: 'u3', timestamp: 50_000 }));
+
+    expect(stamp?.name).toBe('eslint');
+  });
+
+  it('keeps a subagent pinned to its run across an idle gap on the main agent', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
+    t.recordToolCall(makeRecord({ agentId: 'a1', toolUseId: 'u2', timestamp: 1500 }));
+
+    const later = 1600 + DEFAULT_IDLE_TIMEOUT_MS + 1;
+    expect(t.recordToolCall(makeRecord({ toolUseId: 'u3', timestamp: later }))).toBeNull();
+    expect(
+      t.recordToolCall(makeRecord({ agentId: 'a1', toolUseId: 'u4', timestamp: later }))?.name,
+    ).toBe('eslint');
+  });
+
+  it('never closes on a gap once the session has had a prompt', () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', null);
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
+
+    const stamp = t.recordToolCall(
+      makeRecord({ toolUseId: 'u2', timestamp: 1000 + DEFAULT_IDLE_TIMEOUT_MS * 20 }),
+    );
+
+    expect(stamp?.name).toBe('eslint');
+  });
+
+  it('returns a reset session to gap mode', () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', null);
+    t.reset();
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
+
+    const stamp = t.recordToolCall(
+      makeRecord({ toolUseId: 'u2', timestamp: 1100 + DEFAULT_IDLE_TIMEOUT_MS + 1 }),
+    );
+
+    expect(stamp).toBeNull();
+  });
+
+  it('measures the gap from the end of a long call, not its start', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
+    t.recordToolCall(
+      makeRecord({ toolName: 'Bash', toolUseId: 'u2', timestamp: 2000, durationMs: 120_000 }),
+    );
+
+    const stamp = t.recordToolCall(makeRecord({ toolUseId: 'u3', timestamp: 127_000 }));
+
+    expect(stamp?.name).toBe('eslint');
+  });
+
+  it('keeps the main run open when a subagent call ends the gap', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
+    t.recordToolCall(makeRecord({ agentId: 'a1', toolUseId: 'u2', timestamp: 1500 }));
+
+    const later = 1600 + DEFAULT_IDLE_TIMEOUT_MS + 1;
+    t.recordToolCall(makeRecord({ agentId: 'a1', toolUseId: 'u3', timestamp: later }));
+
+    expect(t.openRun('s1')?.name).toBe('eslint');
+  });
+
+  it('ignores a late record with an older timestamp when measuring the gap', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
+    t.recordToolCall(makeRecord({ toolUseId: 'u2', timestamp: 26_000 }));
+    t.recordToolCall(makeRecord({ toolUseId: 'u3', timestamp: 5000 }));
+
+    const stamp = t.recordToolCall(makeRecord({ toolUseId: 'u4', timestamp: 40_000 }));
+
+    expect(stamp?.name).toBe('eslint');
+  });
+
+  it('returns an evicted prompted session to gap mode when it reappears', () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', null);
+    for (let i = 0; i < 60; i++) t.recordToolCall(makeRecord({ sessionId: `other-${i}` }));
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }));
+
+    const stamp = t.recordToolCall(
+      makeRecord({ toolUseId: 'u2', timestamp: 1100 + DEFAULT_IDLE_TIMEOUT_MS + 1 }),
+    );
+
+    expect(stamp).toBeNull();
+  });
+
+  it('does not count the wait for a prompt to produce its first tool call as an idle gap', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolCall(makeRecord({ timestamp: 1000 }));
+    t.recordPrompt('s1', 'lint');
+
+    const stamp = t.recordToolCall(
+      makeRecord({ toolUseId: 'u2', timestamp: 1000 + DEFAULT_IDLE_TIMEOUT_MS * 2 }),
+    );
+
+    expect(stamp?.name).toBe('lint');
   });
 
   it('slash prompt opens source slash', () => {
@@ -440,7 +574,7 @@ describe('SkillActivationTracker.recordToolStart', () => {
   it('stamps a call recorded after a later prompt with the run open when it started', () => {
     const t = new SkillActivationTracker();
     const review = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'review' }));
-    t.recordToolStart('s1', 'bash-1');
+    t.recordToolStart('s1', 'bash-1', 1000);
     t.recordPrompt('s1', 'simplify');
 
     expect(t.recordToolCall(makeRecord({ toolName: 'Bash', toolUseId: 'bash-1' }))).toEqual(review);
@@ -451,7 +585,7 @@ describe('SkillActivationTracker.recordToolStart', () => {
 
   it('leaves a call that started outside any run unattributed', () => {
     const t = new SkillActivationTracker();
-    t.recordToolStart('s1', 'bash-1');
+    t.recordToolStart('s1', 'bash-1', 1000);
     t.recordPrompt('s1', 'simplify');
 
     expect(t.recordToolCall(makeRecord({ toolName: 'Bash', toolUseId: 'bash-1' }))).toBeNull();
@@ -460,12 +594,27 @@ describe('SkillActivationTracker.recordToolStart', () => {
   it("does not lend one session's start to another session's call", () => {
     const t = new SkillActivationTracker();
     t.recordPrompt('s1', 'review');
-    t.recordToolStart('s1', 'bash-1');
+    t.recordToolStart('s1', 'bash-1', 1000);
     const simplify = t.recordPrompt('s2', 'simplify');
 
     expect(
       t.recordToolCall(makeRecord({ sessionId: 's2', toolName: 'Bash', toolUseId: 'bash-1' })),
     ).toEqual(simplify);
+  });
+
+  it('does not keep a run open for a call that started after an idle gap', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'review' }));
+    const later = 1100 + DEFAULT_IDLE_TIMEOUT_MS + 1;
+    t.recordToolStart('s1', 'bash-1', later);
+    t.recordToolStart('s1', 'bash-2', later);
+
+    expect(
+      t.recordToolCall(makeRecord({ toolName: 'Bash', toolUseId: 'bash-1', timestamp: later })),
+    ).toBeNull();
+    expect(
+      t.recordToolCall(makeRecord({ toolName: 'Bash', toolUseId: 'bash-2', timestamp: later })),
+    ).toBeNull();
   });
 
   it('keeps a subagent call on the run the subagent opened', () => {
@@ -474,13 +623,142 @@ describe('SkillActivationTracker.recordToolStart', () => {
     const lint = t.recordToolCall(
       makeRecord({ toolName: 'Skill', skillName: 'lint', agentId: 'agent-1' }),
     );
-    t.recordToolStart('s1', 'read-1');
+    t.recordToolStart('s1', 'read-1', 1000);
 
     expect(t.recordToolCall(makeRecord({ toolUseId: 'read-1', agentId: 'agent-1' }))).toEqual(lint);
   });
 });
 
+describe('SkillActivationTracker.pinSubagent', () => {
+  function spawnInReviewThenSimplify(t: SkillActivationTracker): SkillStamp | null {
+    const review = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'review' }));
+    t.recordToolStart('s1', 'agent-call', 1000);
+    t.recordPrompt('s1', 'simplify');
+    return review;
+  }
+
+  it('stamps a background subagent with the run open when its Agent call started', () => {
+    const t = new SkillActivationTracker();
+    const review = spawnInReviewThenSimplify(t);
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1' }))).toEqual(review);
+  });
+
+  it('pins a subagent read before its Agent call started once that start is seen', () => {
+    const t = new SkillActivationTracker();
+    const review = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'review' }));
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+    t.recordToolStart('s1', 'agent-call', 1000);
+    t.recordPrompt('s1', 'simplify');
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1' }))).toEqual(review);
+  });
+
+  it('pins a subagent read before its Agent call to no run when that start comes after an idle gap', () => {
+    const t = new SkillActivationTracker();
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'review' }));
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+    const later = 1100 + DEFAULT_IDLE_TIMEOUT_MS + 1;
+    t.recordToolStart('s1', 'agent-call', later);
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', timestamp: later + 200 }))).toBeNull();
+  });
+
+  it('replaces the run a subagent was first seen under', () => {
+    const t = new SkillActivationTracker();
+    const review = spawnInReviewThenSimplify(t);
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1' }))?.name).toBe('simplify');
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', toolUseId: 'u2' }))).toEqual(review);
+  });
+
+  it('keeps a run the subagent opened itself', () => {
+    const t = new SkillActivationTracker();
+    spawnInReviewThenSimplify(t);
+    const lint = t.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'lint', agentId: 'agent-1' }),
+    );
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', toolUseId: 'u2' }))).toEqual(lint);
+  });
+
+  it('replaces a main-agent run the subagent was first seen under', () => {
+    const t = new SkillActivationTracker();
+    const review = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'review' }));
+    t.recordToolStart('s1', 'agent-call', 1000);
+    t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'lint', toolUseId: 'u2' }));
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', toolUseId: 'u3' }))?.name).toBe(
+      'lint',
+    );
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', toolUseId: 'u4' }))).toEqual(review);
+  });
+
+  it('falls back to the run open at first sight when the Agent call start was not seen', () => {
+    const t = new SkillActivationTracker();
+    spawnInReviewThenSimplify(t);
+    t.pinSubagent('s1', 'agent-1', 'other-call');
+
+    expect(t.hasAgent('s1', 'agent-1')).toBe(false);
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1' }))?.name).toBe('simplify');
+    expect(t.hasAgent('s1', 'agent-1')).toBe(true);
+  });
+
+  it('pins a subagent spawned after an idle gap to no run, and one spawned before to its run', () => {
+    const t = new SkillActivationTracker();
+    const review = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'review' }));
+    t.recordToolStart('s1', 'agent-early', 1100);
+    const later = 1100 + DEFAULT_IDLE_TIMEOUT_MS + 1;
+    t.recordToolStart('s1', 'agent-late', later);
+    for (const agentId of ['agent-1', 'agent-2']) {
+      t.recordToolCall(makeRecord({ agentId, toolUseId: `${agentId}-first`, timestamp: later }));
+    }
+    t.pinSubagent('s1', 'agent-1', 'agent-early');
+    t.pinSubagent('s1', 'agent-2', 'agent-late');
+
+    const next = later + 200;
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1', timestamp: next }))).toEqual(review);
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-2', timestamp: next }))).toBeNull();
+  });
+});
+
 describe('SkillActivationTracker onRunOpened', () => {
+  it('fires again for a run reopened after an idle gap closed the last one', () => {
+    const opened: SkillStamp[] = [];
+    const closed: Array<{ stamp: SkillStamp; timestamp: number }> = [];
+    const tracker = new SkillActivationTracker({
+      onRunOpened: (stamp) => opened.push(stamp),
+      onRunIdleClosed: (stamp, timestamp) => closed.push({ stamp, timestamp }),
+    });
+    const first = tracker.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'lint', timestamp: 1000 }),
+    );
+    const later = 1100 + DEFAULT_IDLE_TIMEOUT_MS + 1;
+    const second = tracker.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'lint', toolUseId: 'u2', timestamp: later }),
+    );
+
+    expect(opened).toEqual([first, second]);
+    expect(second?.runId).not.toBe(first?.runId);
+    expect(second).not.toHaveProperty('parentRunId');
+    expect(closed).toEqual([{ stamp: first, timestamp: later }]);
+  });
+
+  it('reports no idle close for a gap with no run open', () => {
+    const closed: SkillStamp[] = [];
+    const tracker = new SkillActivationTracker({ onRunIdleClosed: (stamp) => closed.push(stamp) });
+    tracker.recordToolCall(makeRecord({ timestamp: 1000 }));
+    tracker.recordToolCall(
+      makeRecord({ toolUseId: 'u2', timestamp: 1100 + DEFAULT_IDLE_TIMEOUT_MS + 1 }),
+    );
+
+    expect(closed).toHaveLength(0);
+  });
+
   it('fires once for a Skill tool run with the stamp it returned and the record context', () => {
     const { tracker, opened } = makeTrackerWithOpenLog();
     const stamp = tracker.recordToolCall(

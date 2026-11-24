@@ -19,6 +19,7 @@ This document captures the security practices and invariants baked into this cod
 - [ ] Outbound requests other than New Relic ingest are opt-out, forced off by `highSecurity`, fixed-host, size-capped, and schema-validated
 - [ ] Event listeners on long-lived streams use `once` + `removeAllListeners()` after terminal events
 - [ ] Error responses to HTTP clients contain only a generic code — detail goes to the logger
+- [ ] New dashboard routes that change state use a method other than GET, so the cross-origin check in `DashboardServer` covers them
 - [ ] `randomUUID()` from `node:crypto` used for all IDs (not `Math.random()`)
 
 ---
@@ -86,7 +87,7 @@ Apply the same pattern to any user-supplied string that becomes a NR event field
 
 ### `redactSecrets()` — `src/redaction-patterns.ts`
 
-One redaction pass, called by `redactSensitive()` and `redactIdentifier()` in `src/config.ts` and by `redact()` in `collector-script.ts`. It runs `REDACTION_PATTERNS`, token patterns that each redact their whole match, and five argument rules: `NAME=value`, secret flags, mysql `-p`, curl credentials and API-key headers. An argument rule's regex only finds where the secret starts. The mysql and curl rules start at the command name, which counts when it starts a word, including right after a JSON escape or ANSI colour code (`\ncurl`, `\x1b[32mmysql`, `\u001b[32mcurl`). A scanner reads the value as one bash word, so quotes, escapes and line continuations stay in it, and an unquoted space, tab, line break, one of `; | & ( ) < >` or the backtick ends it. The scanner starts in the quote the text is in at the match, so a value inside a quoted string never reads past its closing quote. A `#` comment reads like a quote that the line break closes. The pass covers:
+One redaction pass, called by `redactSensitive()` and `redactIdentifier()` in `src/config.ts` and by `redact()` in `collector-script.ts`. It runs `REDACTION_PATTERNS`, token patterns that each redact their whole match, and eight argument rules: `NAME=value`, secret flags, mysql `-p`, curl credentials, `docker login -p`, `sshpass -p`, `redis-cli -a` and API-key headers. An argument rule's regex only finds where the secret starts. The mysql, curl, docker, sshpass and redis-cli rules start at the command name, which counts when it starts a word, including right after a JSON escape or ANSI colour code (`\ncurl`, `\x1b[32mmysql`, `\u001b[32mcurl`). A scanner reads the value as one bash word, so quotes, escapes and line continuations stay in it, and an unquoted space, tab, line break, one of `; | & ( ) < >` or the backtick ends it. The scanner starts in the quote the text is in at the match, so a value inside a quoted string never reads past its closing quote. A `#` comment reads like a quote that the line break closes. The pass covers:
 
 | Pattern                                                                         | What it catches                           |
 | ------------------------------------------------------------------------------- | ----------------------------------------- |
@@ -110,6 +111,9 @@ One redaction pass, called by `redactSensitive()` and `redactIdentifier()` in `s
 | Each `-p<password>` after `mysql`, `mysqldump`, `mysqladmin` or `mariadb`       | MySQL client passwords                    |
 | The value of `-u`, `-U`, `--user`, `--proxy-user` and `-t` after `curl`         | curl credentials                          |
 | `-H`/`--header` with `X-Api-Key`, `Api-Key`, `X-Auth-Token`, `X-Access-Token`   | API-key headers                           |
+| `-H`/`--header` with `Authorization: Basic`                                     | Basic auth credentials                    |
+| The value of `-p` after `docker login`, or after `sshpass` before its command   | docker and sshpass passwords              |
+| The value of `-a` or `--pass` after `redis-cli`                                 | Redis passwords                           |
 | `aws_secret_access_key` followed by 40 characters, bare or quoted               | AWS secret access keys                    |
 
 The secret flags are `--token`, `--password`, `--passwd`, `--secret`, `--api-key`, `--access-key`, `--secret-key` and `--private-key`, in single-dash, underscore and `=` forms, and the same flags with more words joined in front by `-` or `_`, such as `--db-password`. Flags that name a file or stdin, such as `--token-file` and `--password-stdin`, are left alone.
@@ -209,6 +213,10 @@ const isStreaming = mediaType === 'text/event-stream';
 // Bad — matches the substring anywhere in the header, including in parameter values
 const isStreaming = (res.headers['content-type'] ?? '').includes('text/event-stream');
 ```
+
+### Dashboard request checks — `src/dashboard/dashboard-server.ts`
+
+The dashboard listens on loopback by default, but any page open in the user's browser can still send it a request. A `POST` with no body or a form-style body skips the CORS preflight, so the page cannot read the answer but the route still runs. Before any route runs, `DashboardServer` checks every request other than `GET`. Page script cannot set `Sec-Fetch-Site`, so when it is present it decides alone: `same-origin` passes and any other value (`cross-site`, `same-site`, `none`) gets 403. That keeps the dashboard working behind a proxy that rewrites `Host`. Without `Sec-Fetch-Site`, an `Origin` of `null` (a sandboxed frame or document), one that does not parse, or one whose host and port differ from the request's `Host` gets 403. Requests with neither header, such as CLI and MCP clients, pass. The `Host` check that runs first rejects any non-loopback host outside server mode, which blocks DNS rebinding.
 
 ### Error responses
 
