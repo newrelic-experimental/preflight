@@ -496,6 +496,16 @@ describe('SkillActivationTracker.pinSubagent', () => {
     expect(t.recordToolCall(makeRecord({ agentId: 'agent-1' }))).toEqual(review);
   });
 
+  it('pins a subagent read before its Agent call started once that start is seen', () => {
+    const t = new SkillActivationTracker();
+    const review = t.recordToolCall(makeRecord({ toolName: 'Skill', skillName: 'review' }));
+    t.pinSubagent('s1', 'agent-1', 'agent-call');
+    t.recordToolStart('s1', 'agent-call');
+    t.recordPrompt('s1', 'simplify');
+
+    expect(t.recordToolCall(makeRecord({ agentId: 'agent-1' }))).toEqual(review);
+  });
+
   it('replaces the run a subagent was first seen under', () => {
     const t = new SkillActivationTracker();
     const review = spawnInReviewThenSimplify(t);
