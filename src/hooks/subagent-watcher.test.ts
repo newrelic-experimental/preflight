@@ -755,8 +755,19 @@ describe('SubagentWatcher', () => {
 
       expect(lines).toHaveLength(1);
       expect(lines[0].agentType).toBe('Explore');
+      expect(lines[0].spawnToolUseId).toBe('toolu_parent_1');
       expect(lines[0].description).toBeUndefined();
       expect(lines[0].name).toBeUndefined();
+    });
+
+    it('surfaces the spawning toolUseId from a sidecar with no usable type', () => {
+      writeFileSync(metaPath(), JSON.stringify({ agentType: 7, toolUseId: 'toolu_parent_1' }));
+      writeFileSync(agentJsonl, makeAssistantLine({ messageId: 'msg_1' }) + '\n');
+
+      const lines = pollTokenLines(makeWatcher());
+
+      expect(lines[0]).not.toHaveProperty('agentType');
+      expect(lines[0].spawnToolUseId).toBe('toolu_parent_1');
     });
 
     it('omits agentType when there is no sidecar', () => {

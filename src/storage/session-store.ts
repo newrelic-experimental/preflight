@@ -25,6 +25,7 @@ import {
 import { randomBytes } from 'node:crypto';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { createLogger } from '../core/index.js';
+import { renameIntoPlace } from './rename-into-place.js';
 import { redactIdentifier, redactSensitive } from '../config.js';
 import { stripRepoNameCredentials } from '../lib/git-remote.js';
 import { isSyntheticSessionId, type SessionNameSource } from '../hooks/session-resolver.js';
@@ -66,6 +67,7 @@ import type { EfficiencyScorer, EfficiencyScoreComponents } from '../metrics/eff
 import type { TranscriptMessageTracker } from '../metrics/transcript-message-tracker.js';
 import type { SessionOutcomeRecord } from '../metrics/instruction-drift-tracker.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
+import { parsePrRepo } from '../metrics/pr-ref.js';
 import {
   ToolSelectionScorer,
   toToolSelectionSummary,
@@ -199,6 +201,7 @@ export interface FullSessionSummary extends SessionSummary {
   readonly tokensThinking: number;
   readonly tokensCacheRead: number;
   readonly tokensCacheCreation: number;
+  readonly selfReportCount?: number;
   readonly cacheSavingsUsd: number;
   readonly efficiencyScore: number | null;
   /**
@@ -296,6 +299,7 @@ export interface AttributableActivity {
 }
 
 export interface RecordedUsage extends AttributableActivity {
+  readonly selfReportCount?: number;
   readonly estimatedCostUsd?: number | null;
   readonly tokensInput?: number;
   readonly tokensOutput?: number;
@@ -341,6 +345,7 @@ export function hasRecordedUsage(s: RecordedUsage): boolean {
   return (
     hasAttributableActivity(s) ||
     (s.estimatedCostUsd ?? 0) > 0 ||
+    (s.selfReportCount ?? 0) > 0 ||
     (s.tokensInput ?? 0) + (s.tokensOutput ?? 0) + (s.tokensThinking ?? 0) > 0
   );
 }
@@ -471,6 +476,8 @@ function mergeAttribution(
 // side could have produced on its own.
 const MAX_TIMELINE_ENTRIES = 10_000;
 
+const legacyTimelineKey = (e: ReplayTimelineEntry): string => `${e.timestamp}:${e.toolName}`;
+
 /**
  * Union two timelines instead of picking whichever is longer. A Claude Code
  * `--stdio` resume starts the new process with an empty in-memory timeline;
@@ -489,18 +496,30 @@ function mergeTimeline(
   incoming: readonly ReplayTimelineEntry[] | undefined,
 ): ReplayTimelineEntry[] | undefined {
   if (existing === undefined && incoming === undefined) return undefined;
-  const legacyKey = (e: ReplayTimelineEntry): string => `${e.timestamp}:${e.toolName}`;
   const all = [...(existing ?? []), ...(incoming ?? [])];
-  const legacyKeysWithId = new Set(all.filter((e) => e.toolUseId).map(legacyKey));
+  const legacyKeysWithId = new Set(all.filter((e) => e.toolUseId).map(legacyTimelineKey));
   const byKey = new Map<string, ReplayTimelineEntry>();
   for (const entry of all) {
     if (entry.toolUseId) byKey.set(`id:${entry.toolUseId}`, entry);
-    else if (!legacyKeysWithId.has(legacyKey(entry))) byKey.set(legacyKey(entry), entry);
+    else if (!legacyKeysWithId.has(legacyTimelineKey(entry))) {
+      byKey.set(legacyTimelineKey(entry), entry);
+    }
   }
   const merged = [...byKey.values()].sort((a, b) => a.timestamp - b.timestamp);
   return merged.length > MAX_TIMELINE_ENTRIES
     ? merged.slice(merged.length - MAX_TIMELINE_ENTRIES)
     : merged;
+}
+
+/** The tool name of each call a saved timeline holds with a toolUseId, keyed by that id. */
+export function savedToolNameByUseId(
+  summary: Pick<FullSessionSummary, 'timeline'> | null | undefined,
+): Map<string, string> {
+  const byId = new Map<string, string>();
+  for (const entry of summary?.timeline ?? []) {
+    if (entry.toolUseId) byId.set(entry.toolUseId, entry.toolName);
+  }
+  return byId;
 }
 
 /** Exact-only (non-byte-estimated) share of the cost and token totals. */
@@ -804,8 +823,13 @@ export function mergeSummaries(
       : existing.toolSelectionMetrics;
 
   const timeline = mergeTimeline(existing.timeline, incoming.timeline);
+  // An owner's completed yields only to an in-progress checkpoint stamped
+  // after it: the aggregator stamps last activity and an engine stamps its
+  // own wall clock, so either can pass a completion only on a real resume.
   const outcomeSource =
-    existing.outcome === 'completed' && existing.observerCompletedAt === undefined
+    existing.outcome === 'completed' &&
+    existing.observerCompletedAt === undefined &&
+    !(incoming.outcome === 'in progress' && incoming.endTime > existing.endTime)
       ? existing
       : incoming;
 
@@ -814,6 +838,7 @@ export function mergeSummaries(
     incoming.startTime || existing.startTime,
   );
   const endTime = maxNum(existing.endTime, incoming.endTime);
+  const selfReportCount = maxNum(existing.selfReportCount, incoming.selfReportCount);
 
   return {
     ...existing,
@@ -868,6 +893,7 @@ export function mergeSummaries(
     tokensInput: exactTotals.inputTokens + (mergedLedger?.inputTokens ?? 0),
     tokensOutput: exactTotals.outputTokens + (mergedLedger?.outputTokens ?? 0),
     tokensThinking: maxNum(existing.tokensThinking, incoming.tokensThinking),
+    ...(selfReportCount > 0 && { selfReportCount }),
     tokensCacheRead: maxNum(existing.tokensCacheRead, incoming.tokensCacheRead),
     tokensCacheCreation: maxNum(existing.tokensCacheCreation, incoming.tokensCacheCreation),
     cacheSavingsUsd: maxNum(existing.cacheSavingsUsd, incoming.cacheSavingsUsd),
@@ -896,6 +922,357 @@ export function mergeSummaries(
     qualityProxy,
     attribution: mergeAttribution(existing.attribution, incoming.attribution),
   };
+}
+
+/** Whether two files' timelines hold one call, by the identity `mergeTimeline` dedupes on. */
+function sharesTimelineEntry(x: FullSessionSummary, y: FullSessionSummary): boolean {
+  const [a, b] = [x.timeline ?? [], y.timeline ?? []];
+  const ids = new Set(a.flatMap((e) => (e.toolUseId ? [e.toolUseId] : [])));
+  const keys = new Set(a.map(legacyTimelineKey));
+  const keysWithoutId = new Set(a.filter((e) => !e.toolUseId).map(legacyTimelineKey));
+  return b.some((e) =>
+    e.toolUseId
+      ? ids.has(e.toolUseId) || keysWithoutId.has(legacyTimelineKey(e))
+      : keys.has(legacyTimelineKey(e)),
+  );
+}
+
+/**
+ * A file with more calls than its capped timeline shows has dropped some.
+ * Trackers keep the newest entries, and files from older builds kept the first,
+ * so the dropped ones lie before or after the kept ones. `other` may be among them if
+ * it fits in that gap, on one side of the kept entries, inside `capped`'s span.
+ */
+function mayHoldDroppedEntries(capped: FullSessionSummary, other: FullSessionSummary): boolean {
+  const kept = capped.timeline ?? [];
+  const seen = other.timeline ?? [];
+  if (kept.length < MAX_TIMELINE_ENTRIES || seen.length > capped.toolCallCount - kept.length) {
+    return false;
+  }
+  return (
+    (capped.startTime <= other.startTime && seen[seen.length - 1].timestamp < kept[0].timestamp) ||
+    (other.endTime <= capped.endTime && seen[0].timestamp > kept[kept.length - 1].timestamp)
+  );
+}
+
+/**
+ * Files connected by shared activity, directly or through another file. Split files hold separate
+ * activity and share no timeline entry; copies of one stretch share entries.
+ */
+function groupBySharedActivity(files: readonly FullSessionSummary[]): FullSessionSummary[][] {
+  const ungrouped = new Set(files);
+  const groups: FullSessionSummary[][] = [];
+  for (const seed of files) {
+    if (!ungrouped.delete(seed)) continue;
+    const group = [seed];
+    for (const member of group) {
+      for (const other of ungrouped) {
+        if (
+          sharesTimelineEntry(member, other) ||
+          mayHoldDroppedEntries(member, other) ||
+          mayHoldDroppedEntries(other, member)
+        ) {
+          ungrouped.delete(other);
+          group.push(other);
+        }
+      }
+    }
+    groups.push(group);
+  }
+  return groups;
+}
+
+/**
+ * Oldest writer first. Contents break a tie on end time so a combine cannot
+ * depend on the order files were listed.
+ */
+export function byWriteOrder(x: FullSessionSummary, y: FullSessionSummary): number {
+  return x.endTime - y.endTime || JSON.stringify(x).localeCompare(JSON.stringify(y));
+}
+
+/**
+ * Of two copies of one stretch, the one further along last. Calls and exact cost
+ * only grow, so they hold even when an older build saved a superseded copy again.
+ */
+function byProgress(x: FullSessionSummary, y: FullSessionSummary): number {
+  return (
+    x.toolCallCount - y.toolCallCount ||
+    exactTotalsOf(x).costUsd - exactTotalsOf(y).costUsd ||
+    byWriteOrder(x, y)
+  );
+}
+
+/**
+ * Combine every file for one session id, of which there must be at least one. Copies of one stretch
+ * share activity and max-merge, the copy further along last. Groups hold separate activity and add.
+ * A file without a timeline has repeated another file's spend on real installs, so it max-merges
+ * under the sum. No current writer drops a timeline it saves onto, so the sum is the latest state
+ * and its ledger is kept.
+ */
+export function combineSessionFiles(files: readonly FullSessionSummary[]): FullSessionSummary {
+  const separate = groupBySharedActivity(files.filter((f) => f.timeline?.length))
+    .map((group) => maxMerge(group.sort(byProgress)))
+    .sort(byWriteOrder);
+  const withoutTimeline = files.filter((f) => !f.timeline?.length).sort(byWriteOrder);
+  const added = separate.length > 0 ? [separate.reduce((a, b) => addSummaries(a, b))] : [];
+  return maxMerge([...withoutTimeline, ...added]);
+}
+
+/**
+ * Folds `files` with `mergeSummaries`, which keeps the last ledger. A file without a ledger cannot
+ * say which of its totals were estimated, so it is read as holding that ledger too. Its total then
+ * competes with the other files' exact share plus the ledger, not the exact share alone.
+ */
+function maxMerge(files: readonly FullSessionSummary[]): FullSessionSummary {
+  const ledger = [...files].reverse().find((f) => f.byteEstimates)?.byteEstimates;
+  return files
+    .map((f) =>
+      f.byteEstimates || !ledger ? f : { ...f, exactTotals: undefined, byteEstimates: ledger },
+    )
+    .reduce((acc, next) => mergeSummaries(acc, next));
+}
+
+type SummaryField = keyof {
+  [K in keyof FullSessionSummary as string extends K ? never : number extends K ? never : K]: 0;
+};
+
+/**
+ * What a sum of separate activity takes from `mergeSummaries`: identity, the
+ * time span and timeline, labels picked from one side, unions, the outcome, and
+ * transcript message counts, since every process reads the transcript from its
+ * first byte and so each file already counts the earlier files' messages.
+ */
+type Span = 'sessionId' | 'developer' | 'startTime' | 'endTime' | 'durationMs' | 'timeline';
+type Labels = 'sessionName' | 'sessionNameSource' | 'sessionIntent' | 'repoName' | 'model';
+type Picks = 'platform' | 'instructionPromptHash' | 'toolSelectionMetrics';
+type Unions = 'filesRead' | 'filesModified' | 'firstActivityByDayMs';
+type Outcome = 'outcome' | 'observerCompletedAt';
+type TranscriptCounts = 'userMessages' | 'assistantMessages' | 'userCorrections';
+type FromMerge = Span | Labels | Picks | Unions | Outcome | TranscriptCounts;
+
+/** Every other field. A field added to the summary must be given a sum here. */
+type AddedFields = { readonly [K in Exclude<SummaryField, FromMerge>]-?: FullSessionSummary[K] };
+
+/** Sums two files holding separate activity, `b` the newer writer. */
+export function addSummaries(a: FullSessionSummary, b: FullSessionSummary): FullSessionSummary {
+  const merged = mergeSummaries(a, b);
+  const ledger = addOptional(a.byteEstimates, b.byteEstimates, addLedgers);
+  const [exactA, exactB] = [exactTotalsOf(a), exactTotalsOf(b)];
+  const exactTotals: ExactTotals = {
+    costUsd: exactA.costUsd + exactB.costUsd,
+    inputTokens: exactA.inputTokens + exactB.inputTokens,
+    outputTokens: exactA.outputTokens + exactB.outputTokens,
+    costByDayUsd: addRecord(exactA.costByDayUsd, exactB.costByDayUsd),
+  };
+  const scores = addEfficiencyScores(a, b) ?? merged;
+  const added: AddedFields = {
+    toolCallCount: a.toolCallCount + b.toolCallCount,
+    toolBreakdown: addRecord(a.toolBreakdown, b.toolBreakdown),
+    skillBreakdown: addRecord(a.skillBreakdown, b.skillBreakdown),
+    linesAdded: a.linesAdded + b.linesAdded,
+    linesRemoved: a.linesRemoved + b.linesRemoved,
+    bashCommandCount: a.bashCommandCount + b.bashCommandCount,
+    testRunCount: a.testRunCount + b.testRunCount,
+    testPassCount: a.testPassCount + b.testPassCount,
+    buildRunCount: a.buildRunCount + b.buildRunCount,
+    buildPassCount: a.buildPassCount + b.buildPassCount,
+    estimatedCostUsd:
+      a.estimatedCostUsd === null && b.estimatedCostUsd === null
+        ? null
+        : exactTotals.costUsd + (ledger?.costUsd ?? 0),
+    subagentCostUsd: a.subagentCostUsd + b.subagentCostUsd,
+    costByDayUsd:
+      a.costByDayUsd === undefined && b.costByDayUsd === undefined
+        ? undefined
+        : addRecord(exactTotals.costByDayUsd, ledger?.costByDayUsd ?? {}),
+    subagentCostByDayUsd: addOptional(a.subagentCostByDayUsd, b.subagentCostByDayUsd, addRecord),
+    ...addCallUsageParts(a, b),
+    byteEstimates: ledger,
+    exactTotals,
+    tokensInput: exactTotals.inputTokens + (ledger?.inputTokens ?? 0),
+    tokensOutput: exactTotals.outputTokens + (ledger?.outputTokens ?? 0),
+    tokensThinking: a.tokensThinking + b.tokensThinking,
+    tokensCacheRead: a.tokensCacheRead + b.tokensCacheRead,
+    tokensCacheCreation: a.tokensCacheCreation + b.tokensCacheCreation,
+    selfReportCount: addOptional(a.selfReportCount, b.selfReportCount, (x, y) => x + y),
+    cacheSavingsUsd: a.cacheSavingsUsd + b.cacheSavingsUsd,
+    efficiencyScore: scores.efficiencyScore,
+    efficiencyScoreSampleCount: scores.efficiencyScoreSampleCount,
+    efficiencyScoreComponents: scores.efficiencyScoreComponents,
+    antiPatterns: [...a.antiPatterns, ...b.antiPatterns],
+    taskCount: a.taskCount + b.taskCount,
+    taskSuccessRate: addedTaskSuccessRate(a, b),
+    toolSuccessRate: weightedRate(
+      a.toolSuccessRate,
+      a.toolCallCount,
+      b.toolSuccessRate,
+      b.toolCallCount,
+    ),
+    contextCompressions: a.contextCompressions + b.contextCompressions,
+    agentSpawns: a.agentSpawns + b.agentSpawns,
+    costByWorkflowRunId: addEach(a.costByWorkflowRunId, b.costByWorkflowRunId, addRecord),
+    modelBreakdown: addEach(a.modelBreakdown, b.modelBreakdown, addFields),
+    qualityProxy: addFields(a.qualityProxy, b.qualityProxy),
+    attribution: addOptional(a.attribution, b.attribution, addAttribution),
+  };
+  return { ...merged, ...added };
+}
+
+function addOptional<T>(a: T | undefined, b: T | undefined, add: (x: T, y: T) => T): T | undefined {
+  return a !== undefined && b !== undefined ? add(a, b) : (a ?? b);
+}
+
+/** Per-key sum of two objects whose values are all numbers. */
+function addFields<T extends { readonly [K in keyof T]: number }>(a: T, b: T): T {
+  const out = { ...a } as Record<string, number>;
+  for (const [key, value] of Object.entries(b) as [string, number][]) {
+    out[key] = (out[key] ?? 0) + value;
+  }
+  return out as T;
+}
+
+/** Per-key `add` over the union of keys; a key on one side only is kept as it is. */
+function addEach<T>(
+  a: Readonly<Record<string, T>>,
+  b: Readonly<Record<string, T>>,
+  add: (x: T, y: T) => T,
+): Record<string, T> {
+  const out: Record<string, T> = { ...a };
+  for (const [key, value] of Object.entries(b)) {
+    out[key] = key in out ? add(out[key], value) : value;
+  }
+  return out;
+}
+
+type CallUsageField = 'unpricedByModel' | 'estimatedByModel' | 'unpricedByDay' | 'estimatedByDay';
+type CallUsageParts = Pick<ByteEstimateLedger, CallUsageField>;
+type AddedCallUsage = { readonly [K in CallUsageField]-?: CallUsageParts[K] };
+
+/** The call counts a summary or a ledger holds, per model and per day. */
+function addCallUsageParts(a: CallUsageParts, b: CallUsageParts): AddedCallUsage {
+  return {
+    unpricedByModel: addOptional(a.unpricedByModel, b.unpricedByModel, addCallUsageRecords),
+    estimatedByModel: addOptional(a.estimatedByModel, b.estimatedByModel, addCallUsageRecords),
+    unpricedByDay: addCallUsageByDay(
+      [a.unpricedByModel, a.unpricedByDay, undefined],
+      [b.unpricedByModel, b.unpricedByDay, undefined],
+    ),
+    estimatedByDay: addCallUsageByDay(
+      [a.estimatedByModel, a.estimatedByDay, undefined],
+      [b.estimatedByModel, b.estimatedByDay, undefined],
+    ),
+  };
+}
+
+/** Day buckets add, unless a file counted calls without them, which no day can be named for. */
+function addCallUsageByDay<T extends CallUsage>(
+  a: CallUsageByDaySide<T>,
+  b: CallUsageByDaySide<T>,
+): CallUsageByDay<T> | undefined {
+  if (a[1] === undefined && b[1] === undefined) return undefined;
+  if (legacySideAddsCalls(a, undefined) || legacySideAddsCalls(b, undefined)) return undefined;
+  return combineCallUsageByDay(a[1], b[1], addCallUsageRecords);
+}
+
+function addLedgers(a: ByteEstimateLedger, b: ByteEstimateLedger): ByteEstimateLedger {
+  return {
+    costUsd: a.costUsd + b.costUsd,
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    costByModel: addRecord(a.costByModel, b.costByModel),
+    costByDayUsd: addRecord(a.costByDayUsd, b.costByDayUsd),
+    ...addCallUsageParts(a, b),
+  };
+}
+
+function addAttribution(a: SessionAttribution, b: SessionAttribution): SessionAttribution {
+  const buckets: Partial<Record<AttributionFacet, Record<string, AttributionBucket>>> = {};
+  for (const facet of new Set([...Object.keys(a.buckets), ...Object.keys(b.buckets)])) {
+    const key = facet as AttributionFacet;
+    buckets[key] = addEach(a.buckets[key] ?? {}, b.buckets[key] ?? {}, addBucket);
+  }
+  return {
+    buckets,
+    highContextCostUsd: a.highContextCostUsd + b.highContextCostUsd,
+    apiDurationMs:
+      a.apiDurationMs === null && b.apiDurationMs === null
+        ? null
+        : (a.apiDurationMs ?? 0) + (b.apiDurationMs ?? 0),
+  };
+}
+
+/** A side with tokens or cost but no split would leave the summed split short of the sum. */
+function addBucket(x: AttributionBucket, y: AttributionBucket): AttributionBucket {
+  const tokensCovered = (s: AttributionBucket) => s.breakdown !== undefined || s.tokens === 0;
+  const breakdown =
+    tokensCovered(x) && tokensCovered(y)
+      ? addOptional(x.breakdown, y.breakdown, addFields)
+      : undefined;
+  const splitCoversCost = (s: AttributionBucket) => s.breakdownUsd !== undefined || s.costUsd === 0;
+  const breakdownUsd =
+    splitCoversCost(x) && splitCoversCost(y)
+      ? addOptional(x.breakdownUsd, y.breakdownUsd, addFields)
+      : undefined;
+  return {
+    costUsd: x.costUsd + y.costUsd,
+    tokens: x.tokens + y.tokens,
+    count: x.count + y.count,
+    durationMs: x.durationMs + y.durationMs,
+    ...(breakdown ? { breakdown } : {}),
+    ...(breakdownUsd ? { breakdownUsd } : {}),
+  };
+}
+
+type ScoreField = 'efficiencyScore' | 'efficiencyScoreSampleCount' | 'efficiencyScoreComponents';
+
+/**
+ * The sample-weighted average `EfficiencyScorer.seedFromPersisted()` would
+ * build, or null when either side cannot be weighted.
+ */
+function addEfficiencyScores(
+  a: FullSessionSummary,
+  b: FullSessionSummary,
+): Pick<FullSessionSummary, ScoreField> | null {
+  const [countA, countB] = [a.efficiencyScoreSampleCount ?? 0, b.efficiencyScoreSampleCount ?? 0];
+  const [partsA, partsB] = [a.efficiencyScoreComponents, b.efficiencyScoreComponents];
+  if (a.efficiencyScore === null || b.efficiencyScore === null || !partsA || !partsB) {
+    return null;
+  }
+  if (countA === 0 || countB === 0) return null;
+  const avg = (x: number, y: number): number => (x * countA + y * countB) / (countA + countB);
+  return {
+    efficiencyScore: avg(a.efficiencyScore, b.efficiencyScore),
+    efficiencyScoreSampleCount: countA + countB,
+    efficiencyScoreComponents: {
+      speed: avg(partsA.speed, partsB.speed),
+      correctness: avg(partsA.correctness, partsB.correctness),
+      autonomy: avg(partsA.autonomy, partsB.autonomy),
+      firstAttemptQuality: avg(partsA.firstAttemptQuality, partsB.firstAttemptQuality),
+    },
+  };
+}
+
+/**
+ * The rate is tests passed over tests run, rounded as `buildSessionSummary`
+ * rounds it, so those counts rebuild it when both files ran tests.
+ */
+function addedTaskSuccessRate(a: FullSessionSummary, b: FullSessionSummary): number | null {
+  if (a.testRunCount === 0 || b.testRunCount === 0) {
+    return weightedRate(a.taskSuccessRate, a.taskCount, b.taskSuccessRate, b.taskCount);
+  }
+  const rate = (a.testPassCount + b.testPassCount) / (a.testRunCount + b.testRunCount);
+  return Math.round(rate * 1000) / 1000;
+}
+
+function weightedRate(
+  rateA: number | null,
+  weightA: number,
+  rateB: number | null,
+  weightB: number,
+): number | null {
+  if (rateA === null || rateB === null) return rateA ?? rateB;
+  if (weightA + weightB === 0) return (rateA + rateB) / 2;
+  return (rateA * weightA + rateB * weightB) / (weightA + weightB);
 }
 
 export class SessionStore {
@@ -936,13 +1313,13 @@ export class SessionStore {
     // merged (inflated, since counters take the max) result to a NEW file
     // while leaving the OLD file on disk untouched — the session then
     // appeared twice in history with overlapping, double-counted totals.
-    const { existing: existingWithPath, filesRead } = this.loadSessionWithPath(summary.sessionId);
+    const { existing, filesRead } = this.loadSessionFiles(summary.sessionId);
 
     // Every MCP server process checkpoints every 30s, including windows that
     // never saw a tool call or a token. Writing those first-time files filled
     // history with model-less zero-activity rows that dragged down every
     // per-session average. An existing file is handled by the guard below.
-    if (!existingWithPath && !hasRecordedUsage(summary)) {
+    if (!existing && !hasRecordedUsage(summary)) {
       logger.debug('Skipping first write of a session with no recorded usage', {
         sessionId: summary.sessionId,
       });
@@ -961,8 +1338,7 @@ export class SessionStore {
     // non-empty one. A summary with cost or tokens but no tool calls, such as
     // a restarted dashboard's parent-only rollup, is not empty: it merges.
     let toWrite: FullSessionSummary = summary;
-    if (existingWithPath) {
-      const { summary: existing } = existingWithPath;
+    if (existing) {
       if (hasRecordedUsage(existing) && !hasRecordedUsage(summary)) {
         logger.warn('Refusing to overwrite recorded session with an empty summary', {
           sessionId: summary.sessionId,
@@ -979,6 +1355,13 @@ export class SessionStore {
       // modelBreakdown {} and a lower toolCallCount. Merge non-destructively
       // instead: counters take the max (they only ever grow, so max never
       // regresses and never double-counts overlapping views).
+      //
+      // `existing` combines every split file for this id, and every writer
+      // counts from that record: a resumed engine is seeded from it, and a
+      // rollup adds its own calls to its count. A writer that never read it,
+      // such as an older build, max-merges as it would into one file. It is
+      // not classified like a sibling file: a resumed timeline restarts empty
+      // and would look disjoint.
       toWrite = mergeSummaries(existing, summary);
     }
 
@@ -998,9 +1381,7 @@ export class SessionStore {
     }
 
     const unparsedFilesReplaced = filesRead.filter(
-      (file) =>
-        file.parsed.kind !== 'clean' &&
-        (file.filepath === filepath || file.filepath === existingWithPath?.filepath),
+      (file) => file.parsed.kind !== 'clean' && file.filepath === filepath,
     );
 
     // Write-then-rename so two processes saving the same session id can never
@@ -1020,22 +1401,28 @@ export class SessionStore {
           // Renamed into place, or never written.
         }
       }
-      // The merge landed on a different filename than where the existing
-      // record lived (a date-rollover case) — remove the now-superseded
-      // file so the session isn't left duplicated across two files.
-      if (existingWithPath && existingWithPath.filepath !== filepath) {
+      // Every other file the record was combined from is now superseded. A
+      // file rewritten since it was read holds data this write lacks, so it
+      // stays for the next save to fold in. Superseded files are renamed, not
+      // deleted: the add-vs-max choice is a heuristic, and a `*.merged` copy
+      // (which loaders ignore) keeps those files' bytes. It cannot undo a wrong
+      // combine alone, because the earliest file is overwritten by the combined
+      // record and has no copy.
+      for (const file of filesRead) {
+        if (file.parsed.kind === 'unreadable' || file.filepath === filepath) continue;
         try {
-          unlinkSync(existingWithPath.filepath);
+          if (!readFileSync(file.filepath).equals(file.bytes)) continue;
+          renameSync(file.filepath, `${file.filepath}.${Date.now()}.merged`);
         } catch (err) {
-          logger.warn('Failed to remove superseded session file after merge', {
+          logger.warn('Failed to set aside superseded session file after merge', {
             sessionId: toWrite.sessionId,
-            stalePath: existingWithPath.filepath,
+            stalePath: file.filepath,
             error: err instanceof Error ? err.message : String(err),
           });
         }
       }
       logger.debug('Session saved', { sessionId: toWrite.sessionId, filename });
-      return { previous: existingWithPath?.summary ?? null };
+      return { previous: existing };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn('Failed to save session file', {
@@ -1047,51 +1434,80 @@ export class SessionStore {
     }
   }
 
+  /** Every readable file for the id, combined into one record (see combineSessionFiles). */
   loadSession(sessionId: string): FullSessionSummary | null {
-    return this.loadSessionWithPath(sessionId).existing?.summary ?? null;
+    return this.loadSessionFiles(sessionId).existing;
   }
 
   /**
-   * Like loadSession(), but also returns the file path it was loaded from — used by saveSession() to detect and clean up a stale file after a merge relocates a session to a different filename.
+   * Like loadSession(), but also returns every file it read, so saveSession()
+   * can set aside the ones the combined record supersedes.
    *
    * An unreadable file is skipped rather than ending the search: returning null
    * there made saveSession() treat the session as new and start a fresh file
-   * on every later save. Sibling files for one id are not merged here,
-   * because files split that way hold disjoint activity that mergeSummaries'
-   * per-counter max would drop.
+   * on every later save.
    */
-  private loadSessionWithPath(sessionId: string): {
-    readonly existing: { readonly summary: FullSessionSummary; readonly filepath: string } | null;
+  private loadSessionFiles(sessionId: string): {
+    readonly existing: FullSessionSummary | null;
     readonly filesRead: readonly SessionFileRead[];
   } {
     if (!existsSync(this.sessionsDir)) return { existing: null, filesRead: [] };
 
-    const names = readdirSync(this.sessionsDir)
-      .filter((file) => parseSessionFilename(file)?.sessionId === sessionId)
-      .sort();
-    const filesRead: SessionFileRead[] = [];
-    for (const file of names) {
-      const filepath = resolve(this.sessionsDir, file);
+    const listFiles = () => this.listSessionFiles().filter((f) => f.sessionId === sessionId);
+    const filesRead = this.readListedFiles(listFiles(), listFiles);
+    const summaries = summariesIn(filesRead);
+    return {
+      existing: summaries.length > 0 ? combineSessionFiles(summaries) : null,
+      filesRead,
+    };
+  }
+
+  private listSessionFiles(): SessionFileInfo[] {
+    return readdirSync(this.sessionsDir)
+      .sort()
+      .flatMap((file) => parseSessionFilename(file) ?? []);
+  }
+
+  /**
+   * Reads the listed files. One that vanished after the listing was set aside
+   * by a concurrent save, and the file that save wrote holds its activity, so
+   * what was read so far must not be combined and saved over it. Reads a fresh
+   * listing instead. A listing that does not change names a file that can never
+   * be read, such as a dangling symlink, and that file is skipped.
+   */
+  private readListedFiles(
+    listed: readonly SessionFileInfo[],
+    relist: () => readonly SessionFileInfo[],
+  ): SessionFileRead[] {
+    const reads: SessionFileRead[] = [];
+    let vanished = false;
+    for (const { filename } of listed) {
+      const filepath = resolve(this.sessionsDir, filename);
       try {
         const bytes = readFileSync(filepath);
-        filesRead.push({
+        reads.push({
           filepath,
           bytes,
           parsed: parseSessionFile(bytes.toString('utf-8'), filepath),
         });
-      } catch {
-        logger.warn('Failed to read session file', { file });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') vanished = true;
+        else logger.warn('Failed to read session file', { file: filename });
       }
     }
+    if (!vanished) return reads;
 
-    for (const { filepath, parsed } of filesRead) {
-      const summary = usableSummary(
-        parsed,
-        () => names.length - filesRead.filter((f) => f.parsed.kind === 'unreadable').length,
-      );
-      if (summary) return { existing: { summary, filepath }, filesRead };
+    const fresh = relist();
+    if (
+      fresh.length === listed.length &&
+      fresh.every((f, i) => f.filename === listed[i].filename)
+    ) {
+      logger.warn('Skipping a listed session file that cannot be found', {
+        sessionId: listed[0].sessionId,
+      });
+      return reads;
     }
-    return { existing: null, filesRead };
+    return this.readListedFiles(fresh, relist);
   }
 
   listSessions(options?: ListSessionsOptions): SessionFileInfo[] {
@@ -1100,13 +1516,7 @@ export class SessionStore {
     const sinceDate = options?.since ? formatDate(options.since) : null;
     const results: SessionFileInfo[] = [];
 
-    const names = readdirSync(this.sessionsDir);
-    const parsingFilesForId = parsingFileCounter(
-      this.sessionsDir,
-      names.flatMap((name) => parseSessionFilename(name) ?? []),
-    );
-
-    for (const file of names) {
+    for (const file of readdirSync(this.sessionsDir)) {
       if (!file.endsWith('.json')) continue;
 
       const parsed = parseSessionFilename(file);
@@ -1116,12 +1526,8 @@ export class SessionStore {
 
       if (options?.developer) {
         try {
-          const filepath = join(this.sessionsDir, file);
-          const summary = usableSummary(
-            parseSessionFile(readFileSync(filepath, 'utf-8'), filepath),
-            () => parsingFilesForId(parsed.sessionId),
-          );
-          if (!summary || summary.developer !== options.developer) continue;
+          const summary = readSessionFile(join(this.sessionsDir, file));
+          if (summary?.developer !== options.developer) continue;
         } catch {
           continue;
         }
@@ -1142,46 +1548,48 @@ export class SessionStore {
     const modifiedSinceMs = options?.includeModifiedSince?.getTime() ?? null;
     const results: FullSessionSummary[] = [];
 
-    const sessionFiles = readdirSync(this.sessionsDir).flatMap(
-      (file) => parseSessionFilename(file) ?? [],
-    );
-    const parsingFilesForId = parsingFileCounter(this.sessionsDir, sessionFiles);
-
-    for (const parsed of sessionFiles) {
-      const file = parsed.filename;
-      if (sinceDate && parsed.date < sinceDate) {
-        if (modifiedSinceMs === null) continue;
-        try {
-          if (statSync(join(this.sessionsDir, file)).mtimeMs < modifiedSinceMs) continue;
-        } catch {
-          continue;
-        }
-      }
-
+    const modifiedSince = (file: SessionFileInfo): boolean => {
+      if (modifiedSinceMs === null) return false;
       try {
-        const filepath = join(this.sessionsDir, file);
-        const session = usableSummary(
-          parseSessionFile(readFileSync(filepath, 'utf-8'), filepath),
-          () => parsingFilesForId(parsed.sessionId),
-        );
-        if (!session) continue;
-
-        // Synthetic session IDs (`local-*`, `proxy-*`, `pending-*`) are
-        // MCP-internal bookkeeping from --local / proxy modes, never a real
-        // Claude Code session. persistSession() in src/index.ts already
-        // refuses to write new ones; any that still exist on disk are stale
-        // artifacts from before that guard shipped. Filtering them here
-        // means every consumer of this loader (and of loadTodaySessions() /
-        // loadSessionsOverlappingToday(), which both delegate to it) gets
-        // clean data without re-implementing the same check.
-        if (isSyntheticSessionId(session.sessionId)) continue;
-
-        if (options?.developer && session.developer !== options.developer) continue;
-
-        results.push(session);
+        return statSync(join(this.sessionsDir, file.filename)).mtimeMs >= modifiedSinceMs;
       } catch {
-        logger.warn('Failed to read session file', { file });
+        return false;
       }
+    };
+
+    // A `since` load combines only the files in its window. Combining the whole
+    // id would either pull a long session's lifetime totals into a recent
+    // window or drop its recent activity because its first file is old.
+    const inWindow = (file: SessionFileInfo): boolean =>
+      !sinceDate || file.date >= sinceDate || modifiedSince(file);
+
+    const filesById = new Map<string, SessionFileInfo[]>();
+    for (const file of this.listSessionFiles().filter(inWindow)) {
+      const group = filesById.get(file.sessionId);
+      if (group) group.push(file);
+      else filesById.set(file.sessionId, [file]);
+    }
+
+    for (const [sessionId, files] of filesById) {
+      const relist = () =>
+        this.listSessionFiles().filter((f) => f.sessionId === sessionId && inWindow(f));
+      const summaries = summariesIn(this.readListedFiles(files, relist)).filter(
+        (s) => !options?.developer || s.developer === options.developer,
+      );
+      if (summaries.length === 0) continue;
+      const session = combineSessionFiles(summaries);
+
+      // Synthetic session IDs (`local-*`, `proxy-*`, `pending-*`) are
+      // MCP-internal bookkeeping from --local / proxy modes, never a real
+      // Claude Code session. persistSession() in src/index.ts already
+      // refuses to write new ones; any that still exist on disk are stale
+      // artifacts from before that guard shipped. Filtering them here
+      // means every consumer of this loader (and of loadTodaySessions() /
+      // loadSessionsOverlappingToday(), which both delegate to it) gets
+      // clean data without re-implementing the same check.
+      if (isSyntheticSessionId(session.sessionId)) continue;
+
+      results.push(session);
     }
 
     return results.sort((a, b) => a.startTime - b.startTime);
@@ -1267,6 +1675,14 @@ export interface BuildSessionSummarySources {
   outcome?: string;
   platform?: string;
   instructionPromptHash?: string | null;
+  /**
+   * Re-runs the agent attribution join on each tool call before the anti-pattern
+   * and tool-selection analyses. By save time `SubagentWatcher` has tailed more
+   * transcript than at hook intake, so more calls resolve to their subagent.
+   */
+  backfillRecord?: (
+    record: import('../storage/types.js').ToolCallRecord,
+  ) => import('../storage/types.js').ToolCallRecord;
 }
 
 function skillInvocationCounts(
@@ -1357,6 +1773,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     antiPatternDetector,
     efficiencyScorer,
     developer,
+    backfillRecord,
   } = sources;
 
   const sessionMetrics = sessionTracker.getMetrics();
@@ -1396,7 +1813,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
       totalBuildsRun += task.buildRun;
       totalBuildsPassed += task.buildPassed;
       totalAgentSpawns += task.subAgentsSpawned;
-      allToolCalls.push(...task.toolCalls);
+      allToolCalls.push(...(backfillRecord ? task.toolCalls.map(backfillRecord) : task.toolCalls));
     }
 
     // Fold in pre-restart totals recovered by TaskDetector.seedFromPersisted()
@@ -1458,6 +1875,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     skillName: tc.toolName === 'Skill' && tc.skillName ? tc.skillName : undefined,
     agentType: tc.toolName === 'Agent' && tc.agentType ? tc.agentType : undefined,
     createdPrNumber: tc.createdPrNumber,
+    createdPrRepo: parsePrRepo(tc.createdPrRepo),
     mcpPrNumber: tc.mcpPrNumber,
     mcpPrRepo: tc.mcpPrRepo,
     runInBackground: tc.runInBackground === true || undefined,
@@ -1653,6 +2071,7 @@ interface SerializedFullSessionSummary {
   readonly tokensThinking?: unknown;
   readonly tokensCacheRead?: unknown;
   readonly tokensCacheCreation?: unknown;
+  readonly selfReportCount?: unknown;
   readonly cacheSavingsUsd?: unknown;
   readonly efficiencyScore?: unknown;
   readonly efficiencyScoreSampleCount?: unknown;
@@ -2093,6 +2512,8 @@ export function deserializeFullSessionSummary(
     tokensThinking: typeof obj.tokensThinking === 'number' ? obj.tokensThinking : 0,
     tokensCacheRead: typeof obj.tokensCacheRead === 'number' ? obj.tokensCacheRead : 0,
     tokensCacheCreation: typeof obj.tokensCacheCreation === 'number' ? obj.tokensCacheCreation : 0,
+    ...(typeof obj.selfReportCount === 'number' &&
+      obj.selfReportCount > 0 && { selfReportCount: obj.selfReportCount }),
     cacheSavingsUsd: typeof obj.cacheSavingsUsd === 'number' ? obj.cacheSavingsUsd : 0,
     efficiencyScore: typeof obj.efficiencyScore === 'number' ? obj.efficiencyScore : null,
     efficiencyScoreSampleCount:
@@ -2142,6 +2563,7 @@ export function deserializeFullSessionSummary(
               typeof e.createdPrNumber === 'string' && /^\d{1,9}$/.test(e.createdPrNumber)
                 ? e.createdPrNumber
                 : undefined,
+            createdPrRepo: parsePrRepo(e.createdPrRepo),
             mcpPrNumber:
               typeof e.mcpPrNumber === 'string' && /^\d{1,9}$/.test(e.mcpPrNumber)
                 ? e.mcpPrNumber
@@ -2196,52 +2618,13 @@ function parseSessionFile(raw: string, filepath: string): ParsedSessionFile {
   return { kind: 'unreadable' };
 }
 
-/**
- * A recovered document is used only when its file is the only one of its id
- * that parses. Beside a parsing sibling it may repeat activity the sibling
- * already holds, so adding the two could double count. It stays unread there,
- * as it was before recovery existed, until a session's split files are
- * combined. A sibling that parses as unreadable holds nothing to double count,
- * so it does not hide the recovered file. A sibling that cannot be read at all
- * might hold anything, so it counts as parsing. The count includes the file
- * itself and is only asked for when the file is recovered.
- */
-function usableSummary(
-  parsed: ParsedSessionFile,
-  parsingFilesForId: () => number,
-): FullSessionSummary | null {
-  if (parsed.kind === 'unreadable') return null;
-  return parsed.kind === 'clean' || parsingFilesForId() === 1 ? parsed.summary : null;
+function summariesIn(files: readonly SessionFileRead[]): FullSessionSummary[] {
+  return files.flatMap(({ parsed }) => (parsed.kind === 'unreadable' ? [] : [parsed.summary]));
 }
 
-/**
- * Counts, per session id, the files that parse as clean or recovered. A file
- * that cannot be read at all might hold anything, so it counts as parsing.
- * Reads an id's files once, on first ask.
- */
-function parsingFileCounter(
-  sessionsDir: string,
-  files: readonly SessionFileInfo[],
-): (sessionId: string) => number {
-  const filenamesById = new Map<string, string[]>();
-  for (const { sessionId, filename } of files) {
-    filenamesById.set(sessionId, [...(filenamesById.get(sessionId) ?? []), filename]);
-  }
-  const counts = new Map<string, number>();
-  return (sessionId) => {
-    const known = counts.get(sessionId);
-    if (known !== undefined) return known;
-    const count = (filenamesById.get(sessionId) ?? []).filter((filename) => {
-      const filepath = join(sessionsDir, filename);
-      try {
-        return parseSessionFile(readFileSync(filepath, 'utf-8'), filepath).kind !== 'unreadable';
-      } catch {
-        return true;
-      }
-    }).length;
-    counts.set(sessionId, count);
-    return count;
-  };
+function readSessionFile(filepath: string): FullSessionSummary | null {
+  const parsed = parseSessionFile(readFileSync(filepath, 'utf-8'), filepath);
+  return parsed.kind === 'unreadable' ? null : parsed.summary;
 }
 
 /**
@@ -2293,42 +2676,6 @@ function hasCorruptCopy(file: SessionFileRead): boolean {
     } catch {
       return false;
     }
-  });
-}
-
-const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
-const RENAME_BACKOFF_MS = [10, 20, 40, 80];
-const SLEEP_CELL = new Int32Array(new SharedArrayBuffer(4));
-
-/**
- * Windows refuses to rename over a file another process has open, which
- * antivirus scanners do briefly after each write. Retry with backoff, then
- * write the target directly so saves never silently stop.
- */
-function renameIntoPlace(tmpPath: string, filepath: string, content: string): void {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      renameSync(tmpPath, filepath);
-      return;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code ?? '';
-      if (!RENAME_RETRY_CODES.has(code)) throw err;
-      if (process.platform !== 'win32' || attempt === RENAME_BACKOFF_MS.length) break;
-      Atomics.wait(SLEEP_CELL, 0, 0, RENAME_BACKOFF_MS[attempt]);
-    }
-  }
-  try {
-    writeFileSync(filepath, content, { mode: 0o600 });
-  } catch (err) {
-    warnOnce(
-      `rename-failed:${filepath}`,
-      'Could not rename session file into place and the direct write failed too',
-      { file: basename(filepath), error: err instanceof Error ? err.message : String(err) },
-    );
-    throw err;
-  }
-  warnOnce(`rename:${filepath}`, 'Could not rename session file into place; wrote it directly', {
-    file: basename(filepath),
   });
 }
 

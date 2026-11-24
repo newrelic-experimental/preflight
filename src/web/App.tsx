@@ -13,6 +13,7 @@ import { Today } from './views/Today';
 import { Sessions } from './views/Sessions';
 import { History } from './views/History';
 import { Audit } from './views/Audit';
+import { Artifacts } from './views/Artifacts';
 import { GitEfficiency } from './views/GitEfficiency';
 import { Settings } from './views/Settings';
 import { Alerts } from './views/Alerts';
@@ -47,6 +48,7 @@ export function App(): JSX.Element {
                 <Route path="/sessions" component={Sessions} />
                 <Route path="/history" component={History} />
                 <Route path="/audit" component={Audit} />
+                <Route path="/artifacts" component={Artifacts} />
                 <Route path="/git" component={GitEfficiency} />
                 <Route path="/settings" component={Settings} />
                 <Route path="/alerts" component={Alerts} />

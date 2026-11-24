@@ -2,10 +2,18 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import type { McpServerConfig } from '../../config.js';
 import {
+  MAX_REPORTED_SPEND_USD,
+  isPeriodKind,
+  isValidReportedAmountUsd,
+  parseStoredReportedSpend,
+  type ReportedSpend,
+} from '../../lib/reported-spend.js';
+import {
   digestWebhookUrlOverrideSource,
   digestWebhookUrlOverride,
   normalizeDeveloperName,
   redactSensitive,
+  MAX_RETAIN_SESSIONS_DAYS,
 } from '../../config.js';
 import {
   isSyntheticSessionId,
@@ -33,6 +41,7 @@ import {
   GitActivityRecorder,
   type GitActivityRecord,
 } from '../../metrics/git-activity-recorder.js';
+import type { PrRef } from '../../metrics/pr-ref.js';
 import { ActivityStore } from '../../metrics/git-activity-store.js';
 import type { GitEfficiencyMetrics } from '../../metrics/git-efficiency-tracker.js';
 import { resolveScopeParam, resolveWindowParam } from '../../metrics/git-window-params.js';
@@ -49,6 +58,7 @@ import type { LatencyMetrics } from '../../metrics/latency-tracker.js';
 import { DEFAULT_STALE_THRESHOLD_MS } from '../../metrics/live-session-registry.js';
 import type { ModelBreakdownEntry, ModelUsageMetrics } from '../../metrics/model-usage-tracker.js';
 import type { PersonalInsightsResult } from '../../metrics/personal-coach.js';
+import type { TaskCompletionMetrics } from '../../metrics/task-completion-tracker.js';
 import type {
   QualityEvent,
   QualityProxyMetrics,
@@ -76,13 +86,23 @@ import type {
   SkillCostEntry,
   ToolTypeCostEntry,
 } from '../../metrics/turn-cost-attributor.js';
-import { computeUsageInsights } from '../../metrics/usage-insights.js';
+import {
+  computeUsageInsights,
+  usageInsightsWindow,
+  type UsageInsightsOptions,
+} from '../../metrics/usage-insights.js';
+import type { ArtifactEntry, ArtifactGroup } from '../../artifacts/artifact-index.js';
 import type { AuditRecord } from '../../security/audit-trail.js';
 import type {
   FullSessionSummary,
   PersistedAntiPattern,
   SessionFileInfo,
 } from '../../storage/session-store.js';
+import {
+  lastDaysWindow,
+  loadSessionsActiveIn,
+  type WindowedSession,
+} from '../../storage/session-window.js';
 import {
   hasRecordedUsage,
   toPersistedAntiPatterns,
@@ -98,6 +118,7 @@ import type { WeeklySummaryGenerator } from '../../storage/weekly-summary.js';
 import { getIsoWeekId } from '../../storage/weekly-summary.js';
 import {
   digestWebhookUrlShadowedBy,
+  handleGetDigestPreview,
   handleSendDigest,
   isDigestWebhookCommandConfigured,
 } from '../../tools/cross-session-tools.js';
@@ -115,6 +136,7 @@ import { computeLatencyPercentiles } from './latency-percentiles.js';
 import type { AntiPatternSegment } from './replay-analyzer.js';
 import { analyzeReplayTimeline } from './replay-analyzer.js';
 import { pairToolCallsFromBufferEvents } from './tool-selection-aggregate.js';
+import { primaryTierName, summarizeTiers } from '../../transport/tier-types.js';
 interface RawAuditRecord {
   readonly id: string;
   readonly timestamp: number;
@@ -508,9 +530,15 @@ export interface ApiHandlerDeps {
   readonly decisionTracker?: { getMetrics: (sessionId?: string) => DecisionTreeMetrics };
   readonly turnCostAttributor?: { getMetrics: (sessionId?: string) => CostAttributionMetrics };
   readonly auditTrailManager?: { getAuditLog: (limit?: number) => readonly AuditRecord[] };
+  /** Present only when `experimentalArtifacts` is on. `find` must return only indexed entries. */
+  readonly artifactIndex?: {
+    list: () => readonly ArtifactGroup[];
+    find: (path: string) => ArtifactEntry | null;
+  };
   readonly weeklySummaryGenerator?: WeeklySummaryGenerator;
   readonly budgetTracker?: { getStatus: () => BudgetStatus };
   readonly latencyTracker?: { getMetrics: () => LatencyMetrics };
+  readonly taskCompletionTracker?: { getMetrics: () => TaskCompletionMetrics };
   readonly personalCoach?: { generate: () => PersonalInsightsResult };
   readonly trendAnalyzer?: {
     computeTrends: () => {
@@ -605,6 +633,7 @@ export interface ApiHandlerDeps {
       breakdowns: ReadonlyArray<Readonly<Record<string, ModelBreakdownEntry>>>,
     ) => ModelUsageMetrics;
   };
+  readonly modelUsageTrackerHoldsOnlyOwnSession?: boolean;
   readonly toolCallBuffer?: { getRecords: () => readonly ToolCallRecord[] };
   readonly liveSessionRegistry?: {
     getLiveSessions: () => string[];
@@ -658,6 +687,15 @@ function jsonOk(res: ServerResponse, body: unknown): void {
 function unavailable(res: ServerResponse, what: string): void {
   const payload = JSON.stringify({ error: 'unavailable', what });
   res.writeHead(503, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': String(Buffer.byteLength(payload)),
+  });
+  res.end(payload);
+}
+
+function jsonError(res: ServerResponse, status: number, error: string): void {
+  const payload = JSON.stringify({ error });
+  res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'content-length': String(Buffer.byteLength(payload)),
   });
@@ -720,28 +758,64 @@ function mergeSkillCostEntry(
   };
 }
 
+function scaled<T extends { readonly [K in keyof T]: number }>(values: T, weight: number): T {
+  const entries = Object.entries(values) as Array<[string, number]>;
+  return Object.fromEntries(entries.map(([k, v]) => [k, v * weight])) as T;
+}
+
+// A bucket keeps no day split, so a window's share of it scales every number.
+// Counts stay fractional until the window's sum is rounded once.
+function scaleBucket(bucket: AttributionBucket, weight: number): AttributionBucket {
+  if (weight === 1) return bucket;
+  const { breakdown, breakdownUsd, ...totals } = bucket;
+  return {
+    ...scaled(totals, weight),
+    ...(breakdown && { breakdown: scaled(breakdown, weight) }),
+    ...(breakdownUsd && { breakdownUsd: scaled(breakdownUsd, weight) }),
+  };
+}
+
 /**
  * Folds one session's persisted tool/skill attribution buckets into the
  * given accumulators (mutated in place) — shared by both GET
  * /api/cost-per-tool paths that merge persisted sessions: the unwindowed
  * (today, live-tracker-merged) path and the windowed (persisted-only,
  * multi-day) path. Returns the cost attributed to this session's tool
- * buckets, for callers tracking a running total.
+ * buckets, for callers tracking a running total. `weight` is the window's
+ * share of the session.
  */
 function foldSessionAttributionBuckets(
   costByToolType: Record<string, ToolTypeCostEntry>,
   costBySkill: Record<string, SkillCostEntry>,
   session: FullSessionSummary,
+  weight = 1,
 ): number {
   let attributedCost = 0;
-  for (const [tool, bucket] of Object.entries(session.attribution?.buckets.tool ?? {})) {
+  for (const [tool, raw] of Object.entries(session.attribution?.buckets.tool ?? {})) {
+    const bucket = scaleBucket(raw, weight);
     costByToolType[tool] = mergeToolTypeCostEntry(costByToolType[tool], bucket);
     attributedCost += bucket.costUsd;
   }
-  for (const [skill, bucket] of Object.entries(session.attribution?.buckets.skill ?? {})) {
-    costBySkill[skill] = mergeSkillCostEntry(costBySkill[skill], bucket);
+  for (const [skill, raw] of Object.entries(session.attribution?.buckets.skill ?? {})) {
+    costBySkill[skill] = mergeSkillCostEntry(costBySkill[skill], scaleBucket(raw, weight));
   }
   return attributedCost;
+}
+
+function roundCounts<T extends ToolTypeCostEntry & { readonly totalDurationMs?: number }>(
+  entries: Record<string, T>,
+): Record<string, T> {
+  const round = (e: T): T => ({
+    ...e,
+    callCount: Math.round(e.callCount),
+    inputTokens: Math.round(e.inputTokens),
+    outputTokens: Math.round(e.outputTokens),
+    cacheReadTokens: Math.round(e.cacheReadTokens),
+    cacheCreationTokens: Math.round(e.cacheCreationTokens),
+    tokens: Math.round(e.tokens),
+    ...(e.totalDurationMs !== undefined && { totalDurationMs: Math.round(e.totalDurationMs) }),
+  });
+  return Object.fromEntries(Object.entries(entries).map(([key, e]) => [key, round(e)]));
 }
 
 interface WindowedCostPerToolResponse {
@@ -764,23 +838,28 @@ interface WindowedCostPerToolResponse {
  * the window reaches back further than the attribution data does.
  */
 function buildWindowedCostPerTool(
-  sessions: readonly FullSessionSummary[],
+  sessions: readonly WindowedSession[],
 ): WindowedCostPerToolResponse {
   const costByToolType: Record<string, ToolTypeCostEntry> = {};
   const costBySkill: Record<string, SkillCostEntry> = {};
   let totalAttributedCost = 0;
   let totalCost = 0;
   let attributedSessionCount = 0;
-  for (const session of sessions) {
-    totalCost += session.estimatedCostUsd ?? 0;
+  for (const { session, share } of sessions) {
+    totalCost += share.costUsd;
     if (!session.attribution) continue;
     attributedSessionCount++;
-    totalAttributedCost += foldSessionAttributionBuckets(costByToolType, costBySkill, session);
+    totalAttributedCost += foldSessionAttributionBuckets(
+      costByToolType,
+      costBySkill,
+      session,
+      share.weight,
+    );
   }
   return {
     turns: [],
-    costByToolType,
-    costBySkill,
+    costByToolType: roundCounts(costByToolType),
+    costBySkill: roundCounts(costBySkill),
     totalAttributedCost,
     attributionRate: totalCost > 0 ? totalAttributedCost / totalCost : 0,
     attributedSessionCount,
@@ -807,6 +886,7 @@ function retryAlertsBySession(
 }
 
 const MAX_BODY_BYTES = 64 * 1024; // 64 KB — generous for any settings payload
+const ARTIFACT_VIEW_MAX_BYTES = 20 * 1024 * 1024;
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -1387,38 +1467,69 @@ function isPrRecord(
 
 type PrRecord = Extract<GitActivityRecord, { kind: 'pr' }>;
 
-// Identifies the PR a numbered record refers to: the repo (the git common dir,
-// shared by every worktree of one clone) plus the number. A merge run from
-// another session or worktree of the same repo matches; the same number in
-// another repo does not. A record with no resolvable repo matches only within
-// its own session.
-function prMatchKey(record: PrRecord, repoKeyByWorkspace: ReadonlyMap<string, string>): string {
+// The repo (the git common dir, shared by every worktree of one clone) plus
+// number of a numbered record, or null for a record with no number. A
+// record with no resolvable repo matches only within its own session.
+function prRepoKey(
+  record: PrRecord,
+  repoKeyByWorkspace: ReadonlyMap<string, string>,
+): string | null {
+  if (record.prEvent.prNumber === null) return null;
   const repo =
     record.workspaceKey === UNATTRIBUTED_WORKSPACE_KEY
       ? `${UNATTRIBUTED_WORKSPACE_KEY}:${record.sessionId}`
       : (repoKeyByWorkspace.get(record.workspaceKey) ?? record.workspaceKey);
-  return `${repo}#${record.prEvent.prNumber ?? ''}`;
+  return `${repo}#${record.prEvent.prNumber}`;
 }
 
-// A 'create' whose number was never captured (no PR URL in its output, or a
-// session persisted before createdPrNumber existed) can't be matched, so it
-// always counts as open. `mergeTimesByKey` spans every session in the window.
-function countOpenPrs(
-  records: readonly PrRecord[],
-  mergeTimesByKey: ReadonlyMap<string, readonly number[]>,
-  repoKeyByWorkspace: ReadonlyMap<string, string>,
-): number {
-  let open = 0;
-  for (const record of records) {
-    if (record.prEvent.action !== 'create') continue;
-    if (record.prEvent.prNumber === null) {
-      open++;
-      continue;
+interface PrMergeTime {
+  readonly timestamp: number;
+  readonly hasRef: boolean;
+}
+
+/**
+ * Every merge in the window, indexed both ways a create can match one. A
+ * create and a merge that both carry a `prRef` (`owner/repo#N`) match on it
+ * alone, so a merge from another clone of the same GitHub repo clears the
+ * create and the same number in another repo doesn't. Otherwise they match
+ * on `prRepoKey`, so a merge from any worktree of the create's clone clears
+ * it. A create with neither (no number captured, or a session persisted
+ * before createdPrNumber existed) can't be matched and always counts as open.
+ */
+class PrMergeIndex {
+  private readonly byRef = new Map<PrRef, number[]>();
+  private readonly byRepoKey = new Map<string, PrMergeTime[]>();
+
+  constructor(private readonly repoKeyByWorkspace: ReadonlyMap<string, string>) {}
+
+  add(merge: PrRecord): void {
+    if (merge.prRef !== null) {
+      const times = this.byRef.get(merge.prRef);
+      if (times) times.push(merge.timestamp);
+      else this.byRef.set(merge.prRef, [merge.timestamp]);
     }
-    const merges = mergeTimesByKey.get(prMatchKey(record, repoKeyByWorkspace)) ?? [];
-    if (!merges.some((ts) => ts >= record.timestamp)) open++;
+    const key = prRepoKey(merge, this.repoKeyByWorkspace);
+    if (key === null) return;
+    const time = { timestamp: merge.timestamp, hasRef: merge.prRef !== null };
+    const times = this.byRepoKey.get(key);
+    if (times) times.push(time);
+    else this.byRepoKey.set(key, [time]);
   }
-  return open;
+
+  isMerged(create: PrRecord): boolean {
+    const after = (ts: number): boolean => ts >= create.timestamp;
+    if (create.prRef !== null && (this.byRef.get(create.prRef) ?? []).some(after)) return true;
+    const key = prRepoKey(create, this.repoKeyByWorkspace);
+    if (key === null) return false;
+    return (this.byRepoKey.get(key) ?? []).some(
+      (merge) => after(merge.timestamp) && !(merge.hasRef && create.prRef !== null),
+    );
+  }
+}
+
+function countOpenPrs(records: readonly PrRecord[], merges: PrMergeIndex): number {
+  return records.filter((record) => record.prEvent.action === 'create' && !merges.isMerged(record))
+    .length;
 }
 
 interface SessionStatusAggregateInput {
@@ -1429,7 +1540,9 @@ interface SessionStatusAggregateInput {
   readonly startMs: number;
   readonly now: number;
   readonly peeked: readonly { readonly [key: string]: unknown }[];
-  readonly todaySessions: readonly FullSessionSummary[];
+  /** Every persisted session with activity today, including one that started
+   *  on an earlier day, so its creates and merges today are seen. */
+  readonly sessions: readonly FullSessionSummary[];
 }
 
 // Per-session lifecycle status for today's Sessions today KPI.
@@ -1442,7 +1555,7 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
   counts: Record<SessionStatus, number>;
   sessionIds: Record<SessionStatus, readonly string[]>;
 } {
-  const { sessionIds, liveSet, startMs, now, peeked, todaySessions } = input;
+  const { sessionIds, liveSet, startMs, now, peeked, sessions } = input;
 
   const lastToolBySession = new Map<string, { toolName: string; ts: number }>();
   const trackLatestTool = (sessionId: string, toolName: string, ts: number): void => {
@@ -1457,7 +1570,7 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
     if (typeof sid !== 'string' || sid.length === 0) continue;
     trackLatestTool(sid, typeof ev.tool === 'string' ? ev.tool : 'Unknown', ts);
   }
-  for (const session of todaySessions) {
+  for (const session of sessions) {
     if (!session.timeline) continue;
     for (const entry of session.timeline) {
       if (entry.timestamp < startMs) continue;
@@ -1477,24 +1590,20 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
   // 'unattributed' and matches within its own session until the periodic
   // session checkpoint persists it with a cwd.
   const repoKeyByWorkspace = new Map<string, string>();
-  for (const session of todaySessions) {
+  for (const session of sessions) {
     const replayed = input.replayCache.replay(session, identityResolver);
     for (const record of replayed.records) activityStore.ingest(record);
     for (const [key, identity] of replayed.identities)
       repoKeyByWorkspace.set(key, identity.repoKey);
   }
   const prRecordsBySession = new Map<string, PrRecord[]>();
-  const mergeTimesByKey = new Map<string, number[]>();
+  const merges = new PrMergeIndex(repoKeyByWorkspace);
   for (const record of activityStore.query({ since: startMs, until: now })) {
     if (!isPrRecord(record)) continue;
     const list = prRecordsBySession.get(record.sessionId);
     if (list) list.push(record);
     else prRecordsBySession.set(record.sessionId, [record]);
-    if (record.prEvent.action !== 'merge' || record.prEvent.prNumber === null) continue;
-    const key = prMatchKey(record, repoKeyByWorkspace);
-    const times = mergeTimesByKey.get(key);
-    if (times) times.push(record.timestamp);
-    else mergeTimesByKey.set(key, [record.timestamp]);
+    if (record.prEvent.action === 'merge') merges.add(record);
   }
 
   const counts = Object.fromEntries(SESSION_STATUSES.map((s) => [s, 0])) as Record<
@@ -1508,11 +1617,7 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
     const status = deriveSessionStatus({
       live: liveSet.has(sessionId),
       lastToolName: lastToolBySession.get(sessionId)?.toolName ?? null,
-      openPrCount: countOpenPrs(
-        prRecordsBySession.get(sessionId) ?? [],
-        mergeTimesByKey,
-        repoKeyByWorkspace,
-      ),
+      openPrCount: countOpenPrs(prRecordsBySession.get(sessionId) ?? [], merges),
     });
     counts[status]++;
     idsByStatus[status].push(sessionId);
@@ -1609,7 +1714,17 @@ export function createApiHandler(
     // otherwise appear as confusing "duplicate" rows next to real Claude
     // Code sessions.
     const withActivity = (allSessions as readonly SessionIdentityLike[]).filter(hasRecordedUsage);
-    const sliced = withActivity.slice(-limit);
+    const requestedIds = new Set(
+      (url.searchParams.get('ids') ?? '')
+        .split(',')
+        .map((id) => id.trim())
+        .filter((id) => id.length > 0 && id.length <= 256)
+        .slice(0, 500),
+    );
+    const byIds = requestedIds.size > 0;
+    const sliced = byIds
+      ? withActivity.filter((s) => requestedIds.has((s as { sessionId?: string }).sessionId ?? ''))
+      : withActivity.slice(-limit);
 
     // Append the current live session so it appears in the list before
     // shutdown. Unlike `allSessions` above, `live.sessionId` comes straight
@@ -1630,7 +1745,13 @@ export function createApiHandler(
         toolCallCount: live.toolCallCount,
         estimatedCostUsd: liveCostUsd,
       });
-      if (!alreadyPersisted && liveHasUsage && !isSyntheticSessionId(live.sessionId)) {
+      const liveRequested = !byIds || requestedIds.has(live.sessionId);
+      if (
+        !alreadyPersisted &&
+        liveRequested &&
+        liveHasUsage &&
+        !isSyntheticSessionId(live.sessionId)
+      ) {
         sliced.push({
           sessionId: live.sessionId,
           sessionName: live.sessionName ?? null,
@@ -1672,7 +1793,7 @@ export function createApiHandler(
       // Today-scoped (not 3-min live-scoped): an idle-but-still-open window
       // must keep its stub row here — see computeCrossProcessTodaySessionIds().
       for (const id of computeCrossProcessTodaySessionIds(deps)) {
-        if (!knownIds.has(id)) {
+        if (!knownIds.has(id) && (!byIds || requestedIds.has(id))) {
           const stats = perSession.get(id);
           // getLastActivity is registry-maintained and survives buffer drains,
           // so use it as the stable upper bound for durationMs. Without this,
@@ -1708,7 +1829,7 @@ export function createApiHandler(
       }
       return out;
     });
-    jsonOk(res, slimmed.length > limit ? slimmed.slice(-limit) : slimmed);
+    jsonOk(res, !byIds && slimmed.length > limit ? slimmed.slice(-limit) : slimmed);
   });
 
   // Currently-live session list with metadata. Sourced from LiveSessionRegistry
@@ -2073,7 +2194,7 @@ export function createApiHandler(
       startMs,
       now,
       peeked,
-      todaySessions,
+      sessions: overlappingTodaySessions,
     });
 
     // (3) include this MCP's live session today-portion. Per-day attribution
@@ -2457,6 +2578,39 @@ export function createApiHandler(
     jsonOk(res, log.map(toAuditEntry));
   });
 
+  routes.set('GET /api/artifacts', (_req, res) => {
+    if (!deps.artifactIndex) return unavailable(res, 'artifactIndex');
+    jsonOk(res, { groups: deps.artifactIndex.list() });
+  });
+
+  routes.set('GET /api/artifacts/view', (req, res) => {
+    if (!deps.artifactIndex) return unavailable(res, 'artifactIndex');
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const path = url.searchParams.get('path');
+    if (!path) return jsonError(res, 400, 'bad_request');
+    // Security boundary: only paths the index returns are ever read.
+    const entry = deps.artifactIndex.find(path);
+    if (entry === null) return jsonError(res, 404, 'not_found');
+    if (entry.sizeBytes > ARTIFACT_VIEW_MAX_BYTES) return jsonError(res, 413, 'too_large');
+    let body: Buffer;
+    try {
+      body = readFileSync(entry.path);
+    } catch {
+      return jsonError(res, 404, 'not_found');
+    }
+    res.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'content-length': String(body.length),
+      // No allow-same-origin: the report runs in an opaque origin, so its
+      // scripts cannot read this server's /api/* responses.
+      'content-security-policy':
+        'sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads',
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'no-referrer',
+    });
+    res.end(body);
+  });
+
   routes.set('GET /api/weekly', (req, res) => {
     if (!deps.weeklySummaryGenerator) return unavailable(res, 'weeklySummaryGenerator');
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -2494,13 +2648,22 @@ export function createApiHandler(
     });
   });
 
+  routes.set('GET /api/task-completion', (_req, res) => {
+    if (!deps.taskCompletionTracker) return unavailable(res, 'taskCompletionTracker');
+    jsonOk(res, deps.taskCompletionTracker.getMetrics());
+  });
+
   routes.set('GET /api/model-usage', (_req, res) => {
     if (!deps.modelUsageTracker) return unavailable(res, 'modelUsageTracker');
     // Same own-live + persisted-today, excluding-sessions-already-held-live
     // pattern as GET /api/tool-selection-score below: this process's live
     // breakdown is always included, and every today session NOT already held
     // by this process's live trackers is added on top.
-    const held = sessionIdsHeldByLiveTrackers(deps);
+    // A --stdio engine's tracker holds only its own session's usage, even for
+    // the sessions it drained while pending, so every other session reads from its file.
+    const held: ReadonlySet<string | undefined> = deps.modelUsageTrackerHoldsOnlyOwnSession
+      ? new Set([deps.sessionTracker?.getMetrics().sessionId])
+      : sessionIdsHeldByLiveTrackers(deps);
     const persistedBreakdowns = (deps.sessionStore?.loadTodaySessions() ?? [])
       .filter((s) => !held.has(s.sessionId))
       .map((s) => s.modelBreakdown ?? {});
@@ -2571,26 +2734,20 @@ export function createApiHandler(
       return;
     }
 
-    // ?days= scopes to a multi-day historical window instead of today —
-    // same widen-the-fetch-by-one-day pattern as GET /api/usage-insights
-    // below (loadAllSessions() filters by the session file's date prefix,
-    // coarse day granularity, not the session's real startTime, so a
-    // boundary-day session could otherwise be excluded before the exact
-    // cutoff filter below applies). Takes precedence over the unwindowed
-    // merge path below, which stays exactly as it was for callers that omit
-    // `days` (Today.tsx's unscoped call).
+    // ?days= scopes to the last N days instead of today, counting each
+    // session active in them by its in-window share. Takes precedence over the
+    // unwindowed merge path below, which stays exactly as it was for callers
+    // that omit `days` (Today.tsx's unscoped call).
     const daysParam = url.searchParams.get('days');
     if (daysParam !== null) {
-      if (!deps.sessionStore?.loadAllSessions)
-        return unavailable(res, 'sessionStore.loadAllSessions');
-      const nowMs = Date.now();
+      const store = deps.sessionStore;
+      if (!store?.loadAllSessions) return unavailable(res, 'sessionStore.loadAllSessions');
       const parsedDays = parseInt(daysParam, 10);
       const windowDays = Number.isNaN(parsedDays) ? 7 : Math.min(Math.max(parsedDays, 1), 90);
-      const cutoffMs = nowMs - windowDays * 86_400_000;
-      const since = new Date(nowMs - (windowDays + 1) * 86_400_000);
-      const sessions = deps.sessionStore
-        .loadAllSessions({ since })
-        .filter((s) => s.startTime >= cutoffMs);
+      const sessions = loadSessionsActiveIn(
+        (o) => store.loadAllSessions?.(o) ?? [],
+        lastDaysWindow(Date.now(), windowDays),
+      );
       jsonOk(res, buildWindowedCostPerTool(sessions));
       return;
     }
@@ -2639,27 +2796,20 @@ export function createApiHandler(
       return unavailable(res, 'sessionStore.loadAllSessions');
     const url = new URL(req.url ?? '/', 'http://localhost');
     const nowMs = Date.now();
-    if (url.searchParams.get('window') === 'today') {
-      const cutoffMs = localStartOfDay(nowMs);
-      // loadAllSessions() filters by the session file's date prefix (coarse,
-      // day granularity), not the session's real startTime, so go back two
-      // days to guarantee a session that started just before local midnight
-      // isn't excluded before computeUsageInsights applies the exact cutoff.
-      const since = new Date(nowMs - 2 * 86_400_000);
-      const sessions = deps.sessionStore.loadAllSessions({ since });
-      jsonOk(res, computeUsageInsights(sessions, { nowMs, windowDays: 1, cutoffMs }));
-      return;
-    }
     const parsedDays = parseInt(url.searchParams.get('days') ?? '', 10);
-    const windowDays = Number.isNaN(parsedDays) ? 7 : Math.min(Math.max(parsedDays, 1), 90);
-    // Widen the fetch by one extra day past the precise window — same
-    // reasoning as GET /api/cost-per-outcome above: loadAllSessions() filters
-    // by the session file's date prefix (coarse, day granularity), not the
-    // session's real startTime, so a boundary-day session could otherwise be
-    // excluded before computeUsageInsights applies the exact cutoff itself.
-    const since = new Date(nowMs - (windowDays + 1) * 86_400_000);
-    const sessions = deps.sessionStore.loadAllSessions({ since });
-    jsonOk(res, computeUsageInsights(sessions, { nowMs, windowDays }));
+    const options: UsageInsightsOptions =
+      url.searchParams.get('window') === 'today'
+        ? { selection: 'today', nowMs }
+        : {
+            nowMs,
+            windowDays: Number.isNaN(parsedDays) ? 7 : Math.min(Math.max(parsedDays, 1), 90),
+          };
+    const store = deps.sessionStore;
+    const sessions = loadSessionsActiveIn(
+      (o) => store.loadAllSessions?.(o) ?? [],
+      usageInsightsWindow(options),
+    ).map((w) => w.session);
+    jsonOk(res, computeUsageInsights(sessions, options));
   });
 
   routes.set('GET /api/cost-per-outcome', (req, res) => {
@@ -3215,12 +3365,11 @@ export function createApiHandler(
         'retainSessionsDays' in disk
           ? (disk.retainSessionsDays as number | null)
           : c.retainSessionsDays,
+      reportedSpend: parseStoredReportedSpend(disk.reportedSpend),
       digestWebhookUrl: fileWebhookUrl,
       // Where sends actually read the URL from. The value above is only the
       // file's; env or a command outranks it, and its value is never returned.
       digestWebhookUrlSource: overrideSource ?? (fileWebhookUrl ? 'file' : 'unset'),
-      digestSchedule:
-        typeof disk.digestSchedule === 'string' ? disk.digestSchedule : c.digestSchedule,
       alerts: {
         personal: {
           dailyCostUsd:
@@ -3251,7 +3400,10 @@ export function createApiHandler(
       mode: c.mode,
       storagePath: c.storagePath,
       highSecurity: c.highSecurity,
+      experimentalArtifacts: c.experimentalArtifacts,
       licenseKey: c.licenseKey ? '••••' + c.licenseKey.slice(-4) : null,
+      tiers: summarizeTiers(c.tiers),
+      primaryTier: primaryTierName(c.tiers),
     });
   });
 
@@ -3325,14 +3477,42 @@ export function createApiHandler(
         digestUrlOnly = false;
       }
     }
+    if ('reportedSpend' in body) {
+      const rs = body.reportedSpend as Record<string, unknown> | null;
+      const unknownKeys =
+        typeof rs === 'object' && rs !== null
+          ? Object.keys(rs).filter((k) => k !== 'periodKind' && k !== 'amountUsd')
+          : [];
+      if (typeof rs !== 'object' || rs === null || Array.isArray(rs)) {
+        errors.push('reportedSpend must be an object');
+      } else if (unknownKeys.length > 0) {
+        errors.push(`reportedSpend.${unknownKeys[0]} is set by the server and cannot be sent`);
+      } else if (!isPeriodKind(rs.periodKind)) {
+        errors.push("reportedSpend.periodKind must be 'daily' or 'weekly'");
+      } else if (rs.amountUsd !== null && !isValidReportedAmountUsd(rs.amountUsd)) {
+        errors.push(
+          `reportedSpend.amountUsd must be a number from 0 to ${MAX_REPORTED_SPEND_USD}, or null to clear`,
+        );
+      } else {
+        const periodKind = rs.periodKind;
+        const kept = parseStoredReportedSpend(existing.reportedSpend).filter(
+          (e) => e.periodKind !== periodKind,
+        );
+        const next: ReportedSpend[] =
+          rs.amountUsd === null
+            ? kept
+            : [...kept, { periodKind, amountUsd: rs.amountUsd, asOf: new Date().toISOString() }];
+        existing.reportedSpend = next;
+      }
+    }
     if ('retainSessionsDays' in body) {
       if (
         body.retainSessionsDays !== null &&
         (!Number.isInteger(body.retainSessionsDays) ||
           (body.retainSessionsDays as number) < 1 ||
-          (body.retainSessionsDays as number) > 365)
+          (body.retainSessionsDays as number) > MAX_RETAIN_SESSIONS_DAYS)
       ) {
-        errors.push('retainSessionsDays must be integer 1-365 or null');
+        errors.push(`retainSessionsDays must be integer 1-${MAX_RETAIN_SESSIONS_DAYS} or null`);
       } else {
         existing.retainSessionsDays = body.retainSessionsDays;
         digestUrlOnly = false;
@@ -3357,14 +3537,6 @@ export function createApiHandler(
         } else {
           existing.digestWebhookUrl = body.digestWebhookUrl;
         }
-      }
-    }
-    if ('digestSchedule' in body) {
-      if (typeof body.digestSchedule !== 'string') {
-        errors.push('digestSchedule must be a string');
-      } else {
-        existing.digestSchedule = body.digestSchedule;
-        digestUrlOnly = false;
       }
     }
     if ('alerts' in body) {
@@ -3432,6 +3604,11 @@ export function createApiHandler(
 
     writeFileSync(deps.configFilePath, JSON.stringify(existing, null, 2), { mode: 0o600 });
     jsonOk(res, { ok: true, restartRequired: !digestUrlOnly });
+  });
+
+  routes.set('GET /api/digest/preview', (_req, res) => {
+    if (!deps.weeklySummaryGenerator) return unavailable(res, 'digest');
+    jsonOk(res, handleGetDigestPreview(deps.weeklySummaryGenerator));
   });
 
   routes.set('POST /api/digest/send', async (_req, res) => {

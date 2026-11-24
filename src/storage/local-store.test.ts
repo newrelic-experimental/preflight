@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { appendToHookBuffer } from './hook-buffer.js';
 import { LocalStore } from './local-store.js';
 import { mintToolUseId, takeMintedToolUseId } from '../hooks/minted-tool-use-ids.js';
 import type { HookEvent, PostHookEvent, AuditEntry } from './types.js';
@@ -741,6 +742,22 @@ describe('LocalStore', () => {
       const all = drainAll.drainAllBuffers();
       expect(all.map((e) => e.tool)).toEqual(['dead-owner']);
     });
+
+    it('leaves buffer-unknown.jsonl while its own id is pending, stop included, and drains it once the id is known', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const line = (tool: string): string => JSON.stringify(makeEvent({ tool })) + '\n';
+      appendToHookBuffer(resolve(tmpDir, 'buffer-unknown.jsonl'), line('no-session'));
+      appendToHookBuffer(resolve(tmpDir, 'buffer-sess-1.jsonl'), line('one'));
+
+      const pending = new LocalStore(tmpDir);
+      pending.setOwnIdPending(true);
+      expect(pending.drainAllBuffers().map((e) => e.tool)).toEqual(['one']);
+      pending.giveUpHeldOrder();
+      expect(pending.drainAllBuffers()).toEqual([]);
+
+      pending.setOwnIdPending(false);
+      expect(pending.drainAllBuffers().map((e) => e.tool)).toEqual(['no-session']);
+    });
   });
 
   describe('migrateLegacyBuffer()', () => {
@@ -1086,6 +1103,33 @@ describe('LocalStore', () => {
       }
       return path;
     }
+
+    it('leaves buffer-unknown.jsonl to a live pending engine until it removes its marker', () => {
+      mkdirSync(tmpDir, { recursive: true });
+      const pending = new LocalStore(tmpDir);
+      pending.setOwnIdPending(true);
+      pending.writePendingMarker();
+      makeBufferFile('buffer-unknown.jsonl', Date.now() - 6 * 60 * 1000);
+      makeBufferFile('buffer-sess-idle.jsonl', Date.now() - 6 * 60 * 1000);
+      const gc = new LocalStore(tmpDir);
+
+      expect(gc.gcOrphanBuffers(new Set()).archived).toBe(1);
+      expect(existsSync(resolve(tmpDir, 'buffer-unknown.jsonl'))).toBe(true);
+
+      pending.setOwnIdPending(false);
+      pending.removePendingMarker();
+      expect(gc.gcOrphanBuffers(new Set()).archived).toBe(1);
+    });
+
+    it("archives buffer-unknown.jsonl when no live engine is pending, and removes a dead PID's marker", () => {
+      mkdirSync(tmpDir, { recursive: true });
+      makeBufferFile('buffer-unknown.jsonl', Date.now() - 6 * 60 * 1000);
+      const marker = resolve(tmpDir, `pending-${DEAD_PID}.pid`);
+      writeFileSync(marker, String(DEAD_PID));
+
+      expect(new LocalStore(tmpDir).gcOrphanBuffers(new Set()).archived).toBe(1);
+      expect(existsSync(marker)).toBe(false);
+    });
 
     it('archives a buffer whose heartbeat PID is dead', () => {
       mkdirSync(tmpDir, { recursive: true });
@@ -1807,6 +1851,18 @@ describe('LocalStore', () => {
         expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(1);
         expect(existsSync(inside)).toBe(true);
         expect(existsSync(outside)).toBe(false);
+      });
+
+      it("collects a writer's session id crumb by the same window and live ppid rule", () => {
+        const root = roots()[1]!;
+        crumb(root, 'session-by-ppid', `${process.pid}.txt`, 'sess-live', 60_000);
+        const live = crumb(root, 'session-by-id', 'sess-live.txt', 'sess-live', 30 * DAY_MS);
+        const recent = crumb(root, 'session-by-id', 'sess-recent.txt', 'sess-recent', 6.9 * DAY_MS);
+        const idle = crumb(root, 'session-by-id', 'sess-idle.txt', 'sess-idle', 7.1 * DAY_MS);
+        expect(new LocalStore(tmpDir).gcStaleBreadcrumbs()).toBe(1);
+        expect(existsSync(live)).toBe(true);
+        expect(existsSync(recent)).toBe(true);
+        expect(existsSync(idle)).toBe(false);
       });
     });
 

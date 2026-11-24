@@ -35,6 +35,7 @@ import {
 } from '../hooks/session-breadcrumbs.js';
 import { countMintedToolUseId, MINTED_IDS_DIR_PREFIX } from '../hooks/minted-tool-use-ids.js';
 import { appendToHookBuffer, readSealed, sealHookBuffer, textBeforeSeal } from './hook-buffer.js';
+import { renameIntoPlace } from './rename-into-place.js';
 import type { HookEvent, AuditEntry } from './types.js';
 import type { ResolvedCompanionMode } from '../config.js';
 
@@ -72,6 +73,8 @@ const MINTED_IDS_DIR_RE = new RegExp(`^${MINTED_IDS_DIR_PREFIX}buffer-(.+)$`);
 const ORPHAN_BUFFER_MTIME_MS = 5 * 60 * 1000;
 
 const COUNTED_IDS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+const PENDING_MARKER_RE = /^pending-(\d+)\.pid$/;
 
 function readCountedToolUseIds(path: string): string[] {
   if (!existsSync(path)) return [];
@@ -119,7 +122,7 @@ function parseHookEvents(raw: string): HookEvent[] {
  * we have rights to signal. ESRCH = dead, EPERM = alive (different uid),
  * anything else (e.g. EINVAL on a malformed PID) = treat as dead.
  */
-function isPidAlive(pid: number): boolean {
+export function isPidAlive(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -178,6 +181,7 @@ export class LocalStore {
   private readonly ownCountedIds = new Map<string, Set<string>>();
   private readonly holds = new Map<string, DrainHold>();
   private giveUpOrder = false;
+  private ownIdPending = false;
 
   /**
    * @param storagePath The base storage directory (e.g. ~/.newrelic-preflight).
@@ -288,6 +292,53 @@ export class LocalStore {
   }
 
   /**
+   * While this engine's own session id is pending, `buffer-unknown.jsonl` is
+   * left to an engine that can save its calls: a pending engine saves no
+   * tracker counts, so a call it drained and then exited with would be lost.
+   */
+  setOwnIdPending(pending: boolean): void {
+    this.ownIdPending = pending;
+  }
+
+  writePendingMarker(): void {
+    try {
+      writeFileSync(this.pendingMarkerPath(), '', { mode: 0o600 });
+    } catch (err) {
+      logger.warn('Failed to write pending engine marker', { error: String(err) });
+    }
+  }
+
+  removePendingMarker(): void {
+    try {
+      rmSync(this.pendingMarkerPath(), { force: true });
+    } catch (err) {
+      logger.debug('Failed to remove pending engine marker', { error: String(err) });
+    }
+  }
+
+  private pendingMarkerPath(): string {
+    return resolve(this.storagePath, `pending-${process.pid}.pid`);
+  }
+
+  private sweepPendingMarkers(entries: readonly string[]): boolean {
+    let live = false;
+    for (const name of entries) {
+      const pid = PENDING_MARKER_RE.exec(name)?.[1];
+      if (pid === undefined) continue;
+      if (isPidAlive(Number(pid))) {
+        live = true;
+        continue;
+      }
+      try {
+        rmSync(resolve(this.storagePath, name), { force: true });
+      } catch (err) {
+        logger.debug('Failed to remove dead pending engine marker', { error: String(err) });
+      }
+    }
+    return live;
+  }
+
+  /**
    * Drain every per-session buffer file under the storage path. Used by
    * `--local` standalone mode where the dashboard owner sees all live
    * sessions' events. Each file is drained atomically (rename-then-read) so a
@@ -309,6 +360,7 @@ export class LocalStore {
     }
     const drains = this.bufferDrains(entries);
     for (const [name, drain] of drains) {
+      if (this.ownIdPending && name === 'buffer-unknown.jsonl') continue;
       const ownerLive = (): boolean => name !== 'buffer.jsonl' && this.hasLiveOwner(name);
       for (const event of this.drainPath(resolve(this.storagePath, name), drain, ownerLive)) {
         all.push(event);
@@ -508,7 +560,15 @@ export class LocalStore {
       if (!existsSync(this.storagePath)) {
         mkdirSync(this.storagePath, { recursive: true, mode: 0o700 });
       }
-      writeFileSync(heartbeatPath, String(pid), { mode: 0o600 });
+      // Rename into place: a sibling engine reading a half-written heartbeat
+      // sees no live owner, then archives this session's buffer as an orphan.
+      const tmpPath = `${heartbeatPath}.${process.pid}.tmp`;
+      try {
+        writeFileSync(tmpPath, String(pid), { mode: 0o600 });
+        renameIntoPlace(tmpPath, heartbeatPath, String(pid));
+      } finally {
+        rmSync(tmpPath, { force: true });
+      }
       // Sidecar metadata for listActiveStdioInstances() — kept separate from
       // the heartbeat's own bare-PID content so hasLiveOwner(),
       // getActiveSessionIdsFromHeartbeats(), and gcOrphanBuffers() (which all
@@ -794,6 +854,11 @@ export class LocalStore {
    * there is considered live regardless of heartbeat/mtime, which protects
    * against heartbeat write delays on slow disks.
    *
+   * `buffer-unknown.jsonl` has no heartbeat of its own. It is kept while any
+   * `pending-<pid>.pid` marker names a live process, since a pending engine
+   * leaves it to its adoption's final drain. Markers of dead processes are
+   * deleted.
+   *
    * Orphan buffers are renamed to `buffer-<sessionId>.jsonl.archived-<ts>`
    * (preserved on disk for forensics, no longer scanned by the aggregator).
    *
@@ -817,6 +882,7 @@ export class LocalStore {
     let archived = 0;
     let staleHeartbeats = 0;
     const now = Date.now();
+    const pendingEngineLive = this.sweepPendingMarkers(entries);
 
     for (const name of entries) {
       // Match `buffer-<sessionId>.jsonl` exactly. Skip `.drain` companions and
@@ -853,6 +919,7 @@ export class LocalStore {
       // known to be live (via tool-call activity / LiveSessionRegistry). If
       // present here, the buffer is owned even if no heartbeat is on disk yet.
       if (activeSessionIds.has(sessionId)) ownerAlive = true;
+      if (sessionId === 'unknown' && pendingEngineLive) ownerAlive = true;
 
       if (ownerAlive) continue;
 
@@ -1186,7 +1253,8 @@ export class LocalStore {
    * `session-by-cwd/<cwd>.txt` names no process, so it is stale when it and
    * every same-root ppid breadcrumb naming its session are older than
    * `STALE_CWD_BREADCRUMB_MS`. A collector that never refreshes an unchanged
-   * cwd breadcrumb still touches the ppid one on each event.
+   * cwd breadcrumb still touches the ppid one on each event. A writer's
+   * `session-by-id/<session>.txt` goes by the same rule.
    *
    * @returns the number of breadcrumb files deleted
    */
@@ -1200,7 +1268,10 @@ export class LocalStore {
     const breadcrumbDirs = roots.map((root) => resolve(root, 'session-by-ppid'));
 
     let deleted = 0;
-    for (const root of roots) deleted += this.gcStaleCwdBreadcrumbs(root);
+    for (const root of roots) {
+      for (const kind of ['session-by-cwd', 'session-by-id'])
+        deleted += this.gcIdleBreadcrumbs(resolve(root, kind), resolve(root, 'session-by-ppid'));
+    }
     for (const breadcrumbDir of breadcrumbDirs) {
       let entries: string[];
       try {
@@ -1231,15 +1302,14 @@ export class LocalStore {
     return deleted;
   }
 
-  private gcStaleCwdBreadcrumbs(root: string): number {
+  private gcIdleBreadcrumbs(dir: string, ppidDir: string): number {
     const cutoff = Date.now() - STALE_CWD_BREADCRUMB_MS;
-    const cwdDir = resolve(root, 'session-by-cwd');
     let names: string[];
     try {
-      names = readdirSync(cwdDir).filter((name) => name.endsWith('.txt'));
+      names = readdirSync(dir).filter((name) => name.endsWith('.txt'));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        logger.warn('Failed to enumerate cwd breadcrumb dir', { error: String(err) });
+        logger.warn('Failed to enumerate breadcrumb dir', { error: String(err) });
       }
       return 0;
     }
@@ -1250,7 +1320,6 @@ export class LocalStore {
         return null;
       }
     };
-    const ppidDir = resolve(root, 'session-by-ppid');
     let liveSessions: Set<string> | undefined;
     const liveSessionIds = () => {
       if (liveSessions) return liveSessions;
@@ -1267,14 +1336,14 @@ export class LocalStore {
     };
     let deleted = 0;
     for (const name of names) {
-      const path = resolve(cwdDir, name);
+      const path = resolve(dir, name);
       try {
         if (statSync(path).mtimeMs >= cutoff) continue;
         if (liveSessionIds().has(readFileSync(path, 'utf-8').trim())) continue;
         unlinkSync(path);
         deleted++;
       } catch (err) {
-        logger.debug('Failed to delete stale cwd breadcrumb', { name, error: String(err) });
+        logger.debug('Failed to delete idle breadcrumb', { name, error: String(err) });
       }
     }
     return deleted;

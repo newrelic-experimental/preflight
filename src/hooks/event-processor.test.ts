@@ -7,6 +7,7 @@ import { appendToHookBuffer } from '../storage/hook-buffer.js';
 import { LocalStore } from '../storage/local-store.js';
 import { HookEventProcessor } from './event-processor.js';
 import { SkillActivationTracker } from '../metrics/skill-activation-tracker.js';
+import { DEFAULT_IDLE_TIMEOUT_MS } from '../metrics/task-detector.js';
 import { AntigravityAdapter } from '../platforms/antigravity-adapter.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import {
@@ -438,6 +439,7 @@ describe('HookEventProcessor', () => {
       expect(records).toHaveLength(1);
       const record = records[0]!;
       expect(record.toolUseId).toBe('toolu_orphan');
+      expect(record.timestamp).toBe(2000);
       expect(record.durationMs).toBeNull();
       expect(record.success).toBe(true);
       expect(record.outputSizeBytes).toBe(512);
@@ -461,7 +463,7 @@ describe('HookEventProcessor', () => {
       expect(record.agentType).toBe('general-purpose');
     });
 
-    it('still reports durationMs from nativeDurationMs even with no matching pre-event', () => {
+    it('reports durationMs from nativeDurationMs and starts the call that long before the post', () => {
       const processor = new HookEventProcessor({ store, onRecord });
 
       processor.processEvents([
@@ -474,6 +476,7 @@ describe('HookEventProcessor', () => {
 
       const record = records[0]!;
       expect(record.durationMs).toBe(75);
+      expect(record.timestamp).toBe(1925);
     });
   });
 
@@ -1771,6 +1774,82 @@ describe('HookEventProcessor', () => {
       expect(tokenEvents[0].platform).toBe(expected);
     });
 
+    const selfReport = {
+      mode: 'self_report',
+      tool: 'nr_observe_report_tokens',
+      timestamp: Date.now(),
+      sessionId: 'conv-1',
+      reportId: 'r-12345678',
+      model: 'claude-sonnet-4-6',
+      inputTokens: 10,
+      outputTokens: 20,
+      thinkingTokens: 30,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      platform: 'cursor',
+    } as const;
+
+    it('hands a self-report to onSelfReport once and never to onTokenEvent', () => {
+      const onTokenEvent = jest.fn();
+      const onSelfReport = jest.fn();
+      const processor = new HookEventProcessor({ store, onRecord, onTokenEvent, onSelfReport });
+      const reusedId = { ...selfReport, inputTokens: 11 };
+
+      processor.processEvents([selfReport, selfReport, reusedId]);
+
+      expect(onTokenEvent).not.toHaveBeenCalled();
+      expect(onSelfReport.mock.calls).toEqual([[selfReport], [reusedId]]);
+    });
+
+    it('drops a self-report with a bad model, keeps a plausible timestamp and dates the rest at drain time', () => {
+      const now = 1_800_000_000_000;
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
+      const minute = 60_000;
+      const day = 24 * 60 * minute;
+      const onSelfReport = jest.fn<(e: { reportId: string; timestamp: number }) => void>();
+      const processor = new HookEventProcessor({ store, onRecord, onSelfReport });
+      const at = (reportId: string, timestamp: unknown, model: string = selfReport.model) => ({
+        ...selfReport,
+        reportId,
+        model,
+        timestamp: timestamp as number,
+      });
+
+      try {
+        processor.processEvents([
+          at('r-bad-model', now, 'bad model!'),
+          at('r-old-kept', now - 29 * day),
+          at('r-too-old1', now - 31 * day),
+          at('r-ahead-ok', now + 4 * minute),
+          at('r-too-late', now + 6 * minute),
+          at('r-not-num1', 'soon'),
+        ]);
+      } finally {
+        nowSpy.mockRestore();
+      }
+
+      const timestamps = onSelfReport.mock.calls.map(([e]) => [e.reportId, e.timestamp]);
+      expect(timestamps).toEqual([
+        ['r-old-kept', now - 29 * day],
+        ['r-too-old1', now],
+        ['r-ahead-ok', now + 4 * minute],
+        ['r-too-late', now],
+        ['r-not-num1', now],
+      ]);
+    });
+
+    it('hands a self-report on once even when its callback threw partway, with counts clamped', () => {
+      const onSelfReport = jest.fn().mockImplementationOnce(() => {
+        throw new Error('disk full');
+      });
+      const processor = new HookEventProcessor({ store, onRecord, onSelfReport });
+      const oversized = { ...selfReport, inputTokens: 1e12 };
+
+      processor.processEvents([oversized, oversized]);
+
+      expect(onSelfReport.mock.calls).toEqual([[{ ...oversized, inputTokens: 10_000_000 }]]);
+    });
+
     it('does not error when onTokenEvent is not provided', () => {
       const processor = new HookEventProcessor({
         store,
@@ -1943,6 +2022,93 @@ describe('HookEventProcessor', () => {
       ]);
       expect(records.filter((r) => r.sessionId === 'sess-a')).toHaveLength(1);
       expect(records.filter((r) => r.sessionId === 'sess-b')).toHaveLength(1);
+    });
+  });
+
+  describe('admitRecord and replayRecord', () => {
+    const agentCall = (toolUseId: string, sessionId: string): HookEvent[] => [
+      makePreEvent({ tool: 'Agent', toolUseId, sessionId }),
+      makePostEvent({ tool: 'Agent', toolUseId, sessionId }),
+    ];
+
+    it('keeps a record admitRecord refuses from onRecord and onWorkflowAgent', () => {
+      const workflowRecords: ToolCallRecord[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onWorkflowAgent: (record) => workflowRecords.push(record),
+        admitRecord: (record) => (record.sessionId === 'sess-own' ? record : null),
+      });
+
+      processor.processEvents([
+        ...agentCall('tu_other', 'sess-other'),
+        ...agentCall('tu_own', 'sess-own'),
+      ]);
+
+      expect(records.map((r) => r.toolUseId)).toEqual(['tu_own']);
+      expect(workflowRecords.map((r) => r.toolUseId)).toEqual(['tu_own']);
+    });
+
+    it('hands on the record admitRecord returns', () => {
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        admitRecord: (record) => ({ ...record, agentType: 'reviewer' }),
+      });
+
+      processor.processEvents(agentCall('tu_1', 'sess-own'));
+
+      expect(records[0]!.agentType).toBe('reviewer');
+    });
+
+    it('replays a record to onRecord and onWorkflowAgent without asking admitRecord again', () => {
+      const workflowRecords: ToolCallRecord[] = [];
+      const admitted: ToolCallRecord[] = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onWorkflowAgent: (record) => workflowRecords.push(record),
+        admitRecord: (record) => {
+          admitted.push(record);
+          return null;
+        },
+      });
+      processor.processEvents(agentCall('tu_held', 'sess-own'));
+
+      processor.replayRecord(admitted[0]!);
+
+      expect(admitted).toHaveLength(1);
+      expect(records.map((r) => r.toolUseId)).toEqual(['tu_held']);
+      expect(workflowRecords.map((r) => r.toolUseId)).toEqual(['tu_held']);
+    });
+
+    it('keeps the late post of a timed-out call admitRecord refused from onWorkflowAgent', () => {
+      const workflowRecords: ToolCallRecord[] = [];
+      const onRecordAmend = jest.fn();
+      const processor = new HookEventProcessor({
+        store,
+        onRecord,
+        onRecordAmend,
+        drainAllSessions: true,
+        onWorkflowAgent: (record) => workflowRecords.push(record),
+        admitRecord: (record) => (record.sessionId === 'sess-001' ? record : null),
+      });
+      processor.processEvents([
+        makePreEvent({ tool: 'Agent', toolUseId: 'tu_other', sessionId: 'sess-other' }),
+        makePreEvent({ tool: 'Agent', toolUseId: 'tu_own', sessionId: 'sess-001' }),
+      ]);
+      processor.stop();
+
+      processor.processEvents([
+        makePostEvent({ tool: 'Agent', toolUseId: 'tu_other', sessionId: 'sess-other' }),
+        makePostEvent({ tool: 'Agent', toolUseId: 'tu_own', sessionId: 'sess-001' }),
+      ]);
+
+      expect(onRecordAmend).toHaveBeenCalledTimes(2);
+      expect(workflowRecords.map((r) => [r.toolUseId, r.errorType ?? null])).toEqual([
+        ['tu_own', 'timeout'],
+        ['tu_own', null],
+      ]);
     });
   });
 
@@ -2814,6 +2980,114 @@ describe('HookEventProcessor', () => {
         { tool: 'Read', skill: 'simplify' },
         { tool: 'Bash', skill: undefined },
       ]);
+    });
+
+    describe('idle gap between tool calls', () => {
+      const t0 = 1700000000000;
+      type Stamp = { tool: string; skill: string | undefined };
+
+      function stampsFor(gapMs: number, opts: { promptFirst?: boolean; promptAfter?: boolean }) {
+        const tracker = new SkillActivationTracker();
+        const stamped: Stamp[] = [];
+        const processor = new HookEventProcessor({
+          store,
+          onRecord: (record) => {
+            stamped.push({ tool: record.toolName, skill: tracker.recordToolCall(record)?.name });
+          },
+          onPreToolUse: (e) => tracker.recordToolStart(e.sessionId, e.toolUseId!, e.timestamp),
+          onUserPromptSubmit: (f) => tracker.recordPrompt(f.sessionId, f.slashCommand ?? null),
+        });
+        const prompt = (timestamp: number): UserPromptSubmitHookEvent =>
+          ({
+            mode: 'user_prompt_submit',
+            tool: 'user_prompt_submit',
+            timestamp,
+            sessionId: 's1',
+          }) as UserPromptSubmitHookEvent;
+        const pair = (tool: string, id: string, at: number, extra?: Partial<PreHookEvent>) => [
+          makePreEvent({ tool, toolUseId: id, sessionId: 's1', timestamp: at, ...extra }),
+          makePostEvent({ tool, toolUseId: id, sessionId: 's1', timestamp: at + 50 }),
+        ];
+        processor.processEvents([
+          ...(opts.promptFirst ? [prompt(t0 - 500)] : []),
+          ...pair('Skill', 'k1', t0, { toolInput: { skill: 'review' } }),
+          ...pair('Read', 'r1', t0 + 1000),
+          ...(opts.promptAfter ? [prompt(t0 + 1000 + gapMs - 500)] : []),
+          ...pair('Bash', 'b1', t0 + 1000 + gapMs),
+        ]);
+        return stamped;
+      }
+
+      describe('in a session that has sent no prompt', () => {
+        it('closes the skill run once the session has been idle past the task idle timeout', () => {
+          expect(stampsFor(DEFAULT_IDLE_TIMEOUT_MS + 1000, {})).toEqual([
+            { tool: 'Skill', skill: 'review' },
+            { tool: 'Read', skill: 'review' },
+            { tool: 'Bash', skill: undefined },
+          ]);
+        });
+
+        it('keeps the run open across a gap under the idle timeout', () => {
+          expect(stampsFor(DEFAULT_IDLE_TIMEOUT_MS - 5000, {}).map((s) => s.skill)).toEqual([
+            'review',
+            'review',
+            'review',
+          ]);
+        });
+      });
+
+      describe('in a session that has sent a prompt', () => {
+        it.each([
+          ['just past the idle timeout', DEFAULT_IDLE_TIMEOUT_MS + 1000],
+          ['ten minutes', 10 * 60_000],
+        ])('keeps the run open across a gap of %s', (_label, gapMs) => {
+          expect(stampsFor(gapMs, { promptFirst: true }).map((s) => s.skill)).toEqual([
+            'review',
+            'review',
+            'review',
+          ]);
+        });
+
+        it('still closes the run on the next prompt', () => {
+          expect(stampsFor(5000, { promptFirst: true, promptAfter: true })).toEqual([
+            { tool: 'Skill', skill: 'review' },
+            { tool: 'Read', skill: 'review' },
+            { tool: 'Bash', skill: undefined },
+          ]);
+        });
+      });
+    });
+
+    it('reports each pre as it is processed, so a call keeps the run open when it started', () => {
+      const tracker = new SkillActivationTracker();
+      const stamped: Array<string | undefined> = [];
+      const processor = new HookEventProcessor({
+        store,
+        onRecord: (record) => stamped.push(tracker.recordToolCall(record)?.name),
+        onPreToolUse: (e) => tracker.recordToolStart(e.sessionId, e.toolUseId!, e.timestamp),
+        onUserPromptSubmit: (f) => tracker.recordPrompt(f.sessionId, f.slashCommand ?? null),
+      });
+
+      processor.processEvents([
+        {
+          mode: 'user_prompt_submit',
+          tool: 'user_prompt_submit',
+          timestamp: 1,
+          sessionId: 's1',
+          slashCommand: 'review',
+        } as UserPromptSubmitHookEvent,
+        makePreEvent({ tool: 'Bash', toolUseId: 'b1', sessionId: 's1' }),
+        {
+          mode: 'user_prompt_submit',
+          tool: 'user_prompt_submit',
+          timestamp: 2,
+          sessionId: 's1',
+          slashCommand: 'simplify',
+        } as UserPromptSubmitHookEvent,
+        makePostEvent({ tool: 'Bash', toolUseId: 'b1', sessionId: 's1' }),
+      ]);
+
+      expect(stamped).toEqual(['review']);
     });
 
     it('omits slashCommand from onUserPromptSubmit frame when absent', () => {

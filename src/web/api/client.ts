@@ -1,3 +1,5 @@
+import type { ReportedSpend, ReportedSpendPeriod } from '../../lib/reported-spend.js';
+
 // Distinct error class for 404 responses so callers can treat
 // "feature unavailable" differently from a real server error. Used by the
 // recent-alerts panel: in cloud mode the alert engine is not constructed,
@@ -10,9 +12,21 @@ export class NotFoundError extends Error {
   }
 }
 
+// Distinct error class for 503 responses: the server has the route but not its
+// backing feature wired (e.g. the experimental artifact index while it is off).
+export class UnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnavailableError';
+  }
+}
+
 async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(path, { signal });
   if (res.status === 404) throw new NotFoundError(path);
+  if (res.status === 503) {
+    throw new UnavailableError(`${res.status} ${res.statusText} for ${path}`);
+  }
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${path}`);
   return (await res.json()) as T;
 }
@@ -201,6 +215,7 @@ export interface SessionListEntry {
     readonly agentCount?: number;
   }>;
   readonly model?: string | null;
+  readonly modelBreakdown?: Readonly<Record<string, { readonly requestCount?: number }>>;
   readonly toolSuccessRate?: number | null;
   readonly efficiencyScore?: number | null;
   readonly tokensInput?: number;
@@ -271,6 +286,11 @@ export const fetchSessionCurrent = (signal?: AbortSignal): Promise<SessionCurren
   getJson<SessionCurrentResponse>('/api/session/current', signal);
 export const fetchSessionsList = (limit = 50, signal?: AbortSignal): Promise<SessionListEntry[]> =>
   getJson<SessionListEntry[]>(`/api/sessions?limit=${limit}`, signal);
+export const fetchSessionsByIds = (
+  ids: readonly string[],
+  signal?: AbortSignal,
+): Promise<SessionListEntry[]> =>
+  getJson<SessionListEntry[]>(`/api/sessions?ids=${ids.map(encodeURIComponent).join(',')}`, signal);
 // Cross-session aggregate KPIs for the Today view.
 export const fetchTodayAggregate = (signal?: AbortSignal): Promise<TodayAggregateResponse> =>
   getJson<TodayAggregateResponse>('/api/sessions/today/aggregate', signal);
@@ -544,6 +564,38 @@ export interface AuditEntry {
 export const fetchAuditLog = (signal?: AbortSignal): Promise<AuditEntry[]> =>
   getJson<AuditEntry[]>('/api/audit', signal);
 
+// Mirrors src/artifacts/artifact-index.ts (not importable — tsconfig.web.json
+// excludes server source).
+export interface ArtifactEntry {
+  readonly path: string;
+  readonly name: string;
+  readonly relativePath: string;
+  readonly worktreeLabel: string | null;
+  readonly sessionIds: readonly string[];
+  readonly firstWrittenAt: number;
+  readonly lastWrittenAt: number;
+  readonly writeCount: number;
+  readonly sizeBytes: number;
+}
+
+export interface ArtifactGroup {
+  readonly key: string;
+  readonly kind: 'repo' | 'directory';
+  readonly label: string;
+  readonly lastWrittenAt: number;
+  readonly artifacts: readonly ArtifactEntry[];
+}
+
+export interface ArtifactsResponse {
+  readonly groups: readonly ArtifactGroup[];
+}
+
+export const fetchArtifacts = (signal?: AbortSignal): Promise<ArtifactsResponse> =>
+  getJson<ArtifactsResponse>('/api/artifacts', signal);
+
+export const artifactViewUrl = (path: string): string =>
+  `/api/artifacts/view?path=${encodeURIComponent(path)}`;
+
 // Mirrors WeeklySummary in src/storage/weekly-summary.ts (not importable —
 // tsconfig.web.json excludes server source). Only the fields the History
 // view actually reads: the real field is `week`, not `weekStart`, and
@@ -658,6 +710,24 @@ export interface LoopRow {
   readonly lastRunMs: number;
 }
 
+// Mirrors WindowSessionRow (src/metrics/usage-insights.ts): one session's
+// in-window share, with costs and tokens scaled to it.
+export interface WindowSessionRow {
+  readonly sessionId: string;
+  readonly model: string | null;
+  readonly estimatedCostUsd: number;
+  readonly costByDayUsd: Record<string, number>;
+  readonly efficiencyScore: number | null;
+  readonly toolSuccessRate: number | null;
+  readonly antiPatterns: ReadonlyArray<{ readonly type: string }>;
+  readonly toolBreakdown: Record<string, number>;
+  readonly tokensInput: number;
+  readonly tokensOutput: number;
+  readonly tokensThinking: number;
+  readonly tokensCacheRead: number;
+  readonly tokensCacheCreation: number;
+}
+
 export interface UsageInsightsReport {
   readonly windowDays: number;
   readonly sessionCount: number;
@@ -674,6 +744,7 @@ export interface UsageInsightsReport {
   readonly pluginsTotalCount: number;
   readonly loopsTotalCount: number;
   readonly attributionRatePct: number | null;
+  readonly sessions: readonly WindowSessionRow[];
 }
 
 export const fetchUsageInsights = (
@@ -1079,6 +1150,12 @@ export interface ModelStats {
   readonly avgOutputTokensPerRequest: number | null;
 }
 
+export interface TaskCompletionMetrics {
+  readonly completedTasks: number;
+  readonly avgTaskDurationMs: number | null;
+  readonly avgToolCallsPerTask: number | null;
+}
+
 export interface ModelUsageMetrics {
   readonly byModel: Readonly<Record<string, ModelStats>>;
   readonly mostUsedModel: string | null;
@@ -1274,8 +1351,8 @@ export interface SettingsPatch {
   dailyBudgetUsd?: number | null;
   weeklyBudgetUsd?: number | null;
   retainSessionsDays?: number | null;
+  reportedSpend?: { periodKind: ReportedSpendPeriod; amountUsd: number | null };
   digestWebhookUrl?: string | null;
-  digestSchedule?: string;
   alerts?: {
     personal?: {
       dailyCostUsd?: number;
@@ -1287,6 +1364,8 @@ export interface SettingsPatch {
   };
 }
 
+export const fetchTaskCompletion = (signal?: AbortSignal): Promise<TaskCompletionMetrics> =>
+  getJson<TaskCompletionMetrics>('/api/task-completion', signal);
 export const fetchModelUsage = (signal?: AbortSignal): Promise<ModelUsageMetrics> =>
   getJson<ModelUsageMetrics>('/api/model-usage', signal);
 export const fetchCacheHealth = (signal?: AbortSignal): Promise<CacheHealthResponse> =>
@@ -1325,14 +1404,24 @@ export interface SettingsResponse {
   readonly mode: string;
   readonly storagePath: string;
   readonly highSecurity: boolean;
+  readonly experimentalArtifacts: boolean;
   readonly licenseKey: string | null;
+  readonly tiers: readonly {
+    readonly name: string;
+    readonly type: 'nr' | 'local';
+    readonly accountId?: string;
+    readonly path?: string;
+    readonly primary: boolean;
+    readonly eventTypes: readonly string[];
+  }[];
+  readonly primaryTier: string | null;
   readonly sessionBudgetUsd: number | null;
   readonly dailyBudgetUsd: number | null;
   readonly weeklyBudgetUsd: number | null;
   readonly retainSessionsDays: number | null;
+  readonly reportedSpend: readonly ReportedSpend[];
   readonly digestWebhookUrl: string | null;
   readonly digestWebhookUrlSource: 'env' | 'command' | 'file' | 'unset';
-  readonly digestSchedule: string;
   readonly alerts: {
     readonly personal: {
       readonly dailyCostUsd: number;
@@ -1383,6 +1472,18 @@ export const postDigestSend = (): Promise<DigestSendResponse> =>
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     return (await r.json()) as DigestSendResponse;
   });
+
+export function digestSendStatus(result: DigestSendResponse): string {
+  try {
+    const parsed = JSON.parse(result.content[0]?.text ?? '') as { ok?: boolean; error?: string };
+    return parsed.ok ? 'Digest sent.' : (parsed.error ?? 'Failed to send.');
+  } catch {
+    return 'Done.';
+  }
+}
+
+export const fetchDigestPreview = (): Promise<DigestSendResponse> =>
+  getJson<DigestSendResponse>('/api/digest/preview');
 
 export interface ObservabilityHealthResponse {
   readonly watcherActive?: boolean;
@@ -1578,12 +1679,14 @@ export const fetchApiFailures = (signal?: AbortSignal): Promise<ApiFailureMetric
 export const qk = {
   sessionCurrent: ['session', 'current'] as const,
   sessionsList: (limit: number) => ['sessions', 'list', limit] as const,
+  sessionsByIds: (ids: readonly string[]) => ['sessions', 'byIds', ...[...ids].sort()] as const,
   sessionDetail: (id: string) => ['session', id] as const,
   cost: ['cost'] as const,
   antiPatterns: ['anti-patterns'] as const,
   computeWaste: ['compute-waste'] as const,
   audit: ['audit'] as const,
   weekly: ['weekly'] as const,
+  digestPreview: ['digest-preview'] as const,
   budget: ['budget'] as const,
   costPerOutcome: (days: number) => ['cost-per-outcome', days] as const,
   usageInsights: (window: number | 'today') => ['usage-insights', window] as const,
@@ -1606,9 +1709,11 @@ export const qk = {
   activityHeatmap: (view: string) => ['activity-heatmap', view] as const,
   context: ['context'] as const,
   modelUsage: ['model-usage'] as const,
+  taskCompletion: ['task-completion'] as const,
   cacheHealth: ['cache-health'] as const,
   costPerTool: (days?: number) => ['cost-per-tool', days] as const,
   settings: ['settings'] as const,
+  artifacts: ['artifacts'] as const,
   sessionsLive: ['sessions', 'live'] as const,
   sessionsTodayAggregate: ['sessions', 'today', 'aggregate'] as const,
   workflows: ['workflows'] as const,

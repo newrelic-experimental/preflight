@@ -38,7 +38,7 @@ import {
 export const RETRY_ALERTS_TOOL = {
   name: 'nr_observe_get_retry_alerts',
   description:
-    'Get thrashing/retry detection alerts: repeated failures or highly similar inputs within a sliding window. Identifies when the agent is stuck in a loop.',
+    'Get thrashing/retry detection alerts: repeated failures, or a failed call repeated exactly, within a sliding window. Identifies when the agent is stuck in a loop.',
   inputSchema: { type: 'object' as const, properties: {} },
   annotations: { readOnlyHint: true },
 };

@@ -14,6 +14,7 @@ import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { appendToHookBuffer } from './storage/hook-buffer.js';
 
 // ---------------------------------------------------------------------------
 // Multi-instance integration test (proposal task #11)
@@ -433,6 +434,420 @@ describe('multi-instance integration (proposal #11)', () => {
       }
     }
   }, 30_000);
+
+  it('a call with no session id outlives a pending engine that exits, and the engine that adopts a session saves it once', async () => {
+    const store = mkdtempSync(join(tmpdir(), 'nr-mi-unknown-'));
+    const sessionId = 'unknown-adopter';
+    const ts = Date.now() - 1000;
+    const id = 'toolu_no_session';
+    for (const line of [
+      { mode: 'pre', tool: 'Grep', timestamp: ts, toolUseId: id, inputSize: 4 },
+      {
+        mode: 'post',
+        tool: 'Grep',
+        timestamp: ts + 1,
+        toolUseId: id,
+        success: true,
+        outputSize: 4,
+      },
+    ]) {
+      appendToHookBuffer(resolve(store, 'buffer-unknown.jsonl'), JSON.stringify(line) + '\n');
+    }
+    try {
+      const exiting = spawnChild('pending-exit', store, undefined, distIndex, await getFreePort());
+      children.push(exiting);
+      await initialize(exiting);
+      await waitForStderr(exiting, 'Awaiting session_id resolution', BOOT_TIMEOUT_MS);
+      exiting.proc.stdin.end();
+      await waitExit(exiting, 6000);
+
+      const adopter = spawnChild(sessionId, store, undefined, distIndex, await getFreePort());
+      children.push(adopter);
+      await initialize(adopter);
+      await waitForStderr(adopter, 'Awaiting session_id resolution', BOOT_TIMEOUT_MS);
+      mkdirSync(resolve(store, 'session-by-ppid'), { recursive: true, mode: 0o700 });
+      writeFileSync(resolve(store, 'session-by-ppid', `${process.pid}.txt`), sessionId, {
+        mode: 0o600,
+      });
+      await waitForStderr(adopter, 'Session ID resolved', 8000);
+      adopter.proc.stdin.end();
+      await waitExit(adopter, 6000);
+
+      const saved = readdirSync(resolve(store, 'sessions')).find((f) =>
+        f.endsWith(`_${sessionId}.json`),
+      );
+      expect(saved).toBeDefined();
+      const session = JSON.parse(readFileSync(resolve(store, 'sessions', saved!), 'utf-8')) as {
+        toolCallCount?: number;
+      };
+      expect(session.toolCallCount).toBe(1);
+    } finally {
+      rmSync(store, { recursive: true, force: true });
+    }
+  }, 40_000);
+});
+
+describe('AiCodingTask emission in cloud mode', () => {
+  const SESSION = 'task-emit-test';
+  let root: string;
+  let storage: string;
+  let capturePath: string;
+  let preloadPath: string;
+  let jobDir: string;
+  let port: number;
+
+  beforeEach(async () => {
+    root = mkdtempSync(join(tmpdir(), 'nr-task-emit-'));
+    storage = resolve(root, 'storage');
+    mkdirSync(resolve(storage, 'session-by-ppid'), { recursive: true, mode: 0o700 });
+    capturePath = resolve(root, 'captured.jsonl');
+    preloadPath = resolve(root, 'preload.mjs');
+    // Captures the events ingest would send to New Relic.
+    writeFileSync(
+      preloadPath,
+      [
+        "import { gunzipSync } from 'node:zlib';",
+        "import { appendFileSync } from 'node:fs';",
+        'const real = globalThis.fetch;',
+        'globalThis.fetch = async (url, init) => {',
+        "  if (!String(url).includes('insights-collector')) return real(url, init);",
+        "  for (const e of JSON.parse(gunzipSync(init.body).toString('utf8'))) {",
+        "    appendFileSync(process.env.CAPTURE_PATH, JSON.stringify(e) + '\\n');",
+        '  }',
+        '  return new Response(\'{"success":true}\', { status: 200 });',
+        '};',
+      ].join('\n'),
+    );
+    jobDir = resolve(root, 'job');
+    mkdirSync(jobDir, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      resolve(jobDir, 'state.json'),
+      JSON.stringify({ linkScanPath: `/fake/transcript/${SESSION}.jsonl` }),
+      { mode: 0o600 },
+    );
+    port = await getFreePort();
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /** With no job dir the engine starts on a provisional id and has no ingest until it resolves. */
+  function startCloudEngine(
+    harvestEventsMs: number,
+    engineJobDir: string | undefined,
+  ): ChildHandle {
+    return spawnChild(SESSION, storage, engineJobDir, distIndex, port, {
+      NR_AI_MODE: 'cloud',
+      NEW_RELIC_LICENSE_KEY: 'a'.repeat(40),
+      NEW_RELIC_ACCOUNT_ID: '1',
+      NEW_RELIC_AI_MCP_HARVEST_EVENTS_MS: String(harvestEventsMs),
+      CAPTURE_PATH: capturePath,
+      NODE_OPTIONS: `--import ${preloadPath}`,
+      CLAUDE_CONFIG_DIR: resolve(root, 'claude'),
+    });
+  }
+
+  /**
+   * `Read` calls all read one file, so four of them form a repeated-read anti-pattern.
+   * An `AskUserQuestion` call closes the task it joins.
+   */
+  function seedToolCalls(
+    sessionId: string,
+    count: number,
+    tool: 'Bash' | 'Read' | 'AskUserQuestion' | 'Skill' = 'Bash',
+    base = Date.now() - 1000,
+  ): void {
+    const bufferPath = resolve(storage, `buffer-${sessionId}.jsonl`);
+    for (let i = 0; i < count; i++) {
+      const common = { tool, sessionId, toolUseId: `toolu_${sessionId}_${tool}_${base}_${i}` };
+      appendToHookBuffer(
+        bufferPath,
+        JSON.stringify({
+          ...common,
+          mode: 'pre',
+          timestamp: base + 2 * i,
+          inputSize: 16,
+          toolInput:
+            tool === 'Read'
+              ? { file_path: '/fake/same.ts' }
+              : tool === 'Skill'
+                ? { skill: 'lint' }
+                : { command: `echo ${i}` },
+        }) + '\n',
+      );
+      appendToHookBuffer(
+        bufferPath,
+        JSON.stringify({
+          ...common,
+          mode: 'post',
+          timestamp: base + 2 * i + 1,
+          success: true,
+          outputSize: 8,
+        }) + '\n',
+      );
+    }
+  }
+
+  /** A `Stop` hook frame, which closes the session's open task. */
+  function seedStop(sessionId: string): void {
+    appendToHookBuffer(
+      resolve(storage, `buffer-${sessionId}.jsonl`),
+      JSON.stringify({ mode: 'stop', sessionId, timestamp: Date.now() }) + '\n',
+    );
+  }
+
+  async function waitForDrain(sessionId: string): Promise<void> {
+    const bufferPath = resolve(storage, `buffer-${sessionId}.jsonl`);
+    const deadline = Date.now() + TOOLS_CALL_TIMEOUT_MS;
+    while (existsSync(bufferPath)) {
+      if (Date.now() > deadline) throw new Error(`${bufferPath} was not drained`);
+      await delay(50);
+    }
+  }
+
+  function capturedEvents(eventType: string): Array<Record<string, unknown>> {
+    if (!existsSync(capturePath)) return [];
+    return readFileSync(capturePath, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((event) => event.eventType === eventType);
+  }
+
+  const capturedTasks = () => capturedEvents('AiCodingTask');
+
+  it('sends a task closed by a Stop hook while the engine keeps running', async () => {
+    const child = startCloudEngine(200, jobDir);
+    try {
+      await waitForBoot(child, BOOT_TIMEOUT_MS);
+      await initialize(child);
+      seedToolCalls(SESSION, 1);
+      seedStop(SESSION);
+
+      const deadline = Date.now() + TOOLS_CALL_TIMEOUT_MS;
+      while (capturedTasks().length === 0 && Date.now() < deadline) await delay(100);
+
+      expect(child.proc.exitCode).toBeNull();
+      const tasks = capturedTasks();
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0]?.session_id).toBe(SESSION);
+    } finally {
+      child.proc.stdin.end();
+      await waitExit(child, 4000);
+    }
+  }, 60_000);
+
+  it('sends a task that is still open when the engine shuts down', async () => {
+    const child = startCloudEngine(3_600_000, jobDir);
+    try {
+      await waitForBoot(child, BOOT_TIMEOUT_MS);
+      await initialize(child);
+      seedToolCalls(SESSION, 1);
+      await waitForStats(child, 1, TOOLS_CALL_TIMEOUT_MS);
+      expect(capturedTasks()).toHaveLength(0);
+    } finally {
+      child.proc.stdin.end();
+      await waitExit(child, 8000);
+    }
+
+    expect(capturedTasks()).toHaveLength(1);
+  }, 60_000);
+
+  it('sends a skill run still open at shutdown as one AiWorkUnit', async () => {
+    const child = startCloudEngine(3_600_000, jobDir);
+    try {
+      await waitForBoot(child, BOOT_TIMEOUT_MS);
+      await initialize(child);
+      seedToolCalls(SESSION, 1, 'Skill');
+      seedToolCalls(SESSION, 1);
+      await waitForStats(child, 2, TOOLS_CALL_TIMEOUT_MS);
+    } finally {
+      child.proc.stdin.end();
+      await waitExit(child, 8000);
+    }
+
+    expect(capturedEvents('AiWorkUnit')).toMatchObject([
+      { skill_name: 'lint', tool_call_count: 2 },
+    ]);
+  }, 60_000);
+
+  it('ends a skill run an idle gap closed at its last call, not at the next run', async () => {
+    const child = startCloudEngine(3_600_000, jobDir);
+    const start = Date.now() - 120_000;
+    try {
+      await waitForBoot(child, BOOT_TIMEOUT_MS);
+      await initialize(child);
+      seedToolCalls(SESSION, 1, 'Skill', start);
+      seedToolCalls(SESSION, 1, 'Bash', start + 100);
+      seedToolCalls(SESSION, 1, 'Skill', start + 60_000);
+      await waitForStats(child, 3, TOOLS_CALL_TIMEOUT_MS);
+    } finally {
+      child.proc.stdin.end();
+      await waitExit(child, 8000);
+    }
+
+    expect(capturedEvents('AiWorkUnit')).toMatchObject([
+      { skill_name: 'lint', started_at: start, duration_ms: 101, tool_call_count: 2 },
+      { skill_name: 'lint', started_at: start + 60_000, tool_call_count: 1 },
+    ]);
+  }, 60_000);
+
+  it('stamps a call recorded after a later prompt with the skill run open when it started', async () => {
+    const bufferPath = resolve(storage, `buffer-${SESSION}.jsonl`);
+    const at = Date.now() - 1000;
+    const bash = { tool: 'Bash', sessionId: SESSION, toolUseId: 'toolu_late_bash' };
+    const child = startCloudEngine(3_600_000, jobDir);
+    try {
+      await waitForBoot(child, BOOT_TIMEOUT_MS);
+      await initialize(child);
+      seedToolCalls(SESSION, 1, 'Skill');
+      for (const frame of [
+        { ...bash, mode: 'pre', timestamp: at, toolInput: { command: 'sleep 9' } },
+        {
+          mode: 'user_prompt_submit',
+          sessionId: SESSION,
+          timestamp: at + 1,
+          slashCommand: 'simplify',
+        },
+        { ...bash, mode: 'post', timestamp: at + 2, success: true },
+      ]) {
+        appendToHookBuffer(bufferPath, JSON.stringify(frame) + '\n');
+      }
+      await waitForStats(child, 2, TOOLS_CALL_TIMEOUT_MS);
+    } finally {
+      child.proc.stdin.end();
+      await waitExit(child, 8000);
+    }
+
+    expect(capturedEvents('AiToolCall')).toContainEqual(
+      expect.objectContaining({ tool: 'Bash', skill_name: 'lint' }),
+    );
+  }, 60_000);
+
+  it.each(['after', 'before'])(
+    'stamps a background subagent with the skill run its Agent call started in, its transcript on disk %s that start drains',
+    async (when) => {
+      const session = '93400000-0000-4000-8000-000000000934';
+      const subagents = resolve(root, 'claude', 'projects', 'slug', session, 'subagents');
+      const turn = (agentId: string, toolUseId: string): string =>
+        JSON.stringify({
+          type: 'assistant',
+          agentId,
+          uuid: `turn-${toolUseId}`,
+          timestamp: new Date().toISOString(),
+          sessionId: session,
+          message: {
+            id: `msg-${toolUseId}`,
+            role: 'assistant',
+            model: 'claude-opus-4-7',
+            stop_reason: 'tool_use',
+            content: [{ type: 'tool_use', id: toolUseId, name: 'Read', input: {} }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        }) + '\n';
+      // An earlier subagent, so the watcher's first poll learns this directory.
+      mkdirSync(subagents, { recursive: true });
+      writeFileSync(
+        resolve(subagents, 'agent-a0000000000000001.jsonl'),
+        turn('a0000000000000001', 'toolu_old'),
+      );
+      const job = resolve(root, 'job-934');
+      mkdirSync(job, { recursive: true, mode: 0o700 });
+      writeFileSync(
+        resolve(job, 'state.json'),
+        JSON.stringify({ linkScanPath: `/fake/transcript/${session}.jsonl` }),
+        { mode: 0o600 },
+      );
+      const bufferPath = resolve(storage, `buffer-${session}.jsonl`);
+      const append = (frame: Record<string, unknown>): void =>
+        appendToHookBuffer(
+          bufferPath,
+          JSON.stringify({ sessionId: session, timestamp: Date.now(), ...frame }) + '\n',
+        );
+      const child = startCloudEngine(3_600_000, job);
+      try {
+        await waitForBoot(child, BOOT_TIMEOUT_MS);
+        await initialize(child);
+        // The watcher writes this cursor once a poll has read the earlier
+        // subagent, so by then it knows the directory.
+        const cursor = resolve(storage, `.subagent-pos-${session}-a0000000000000001`);
+        const deadline = Date.now() + TOOLS_CALL_TIMEOUT_MS;
+        while (!existsSync(cursor)) {
+          if (Date.now() > deadline) throw new Error('the subagent watcher never polled');
+          await delay(50);
+        }
+        const writeSubagent = (): void => {
+          writeFileSync(
+            resolve(subagents, 'agent-a0000000000000002.meta.json'),
+            JSON.stringify({ agentType: 'Explore', toolUseId: 'toolu_spawn' }),
+          );
+          writeFileSync(
+            resolve(subagents, 'agent-a0000000000000002.jsonl'),
+            turn('a0000000000000002', 'toolu_sub'),
+          );
+        };
+        if (when === 'before') writeSubagent();
+        seedToolCalls(session, 1, 'Skill');
+        append({
+          mode: 'pre',
+          tool: 'Agent',
+          toolUseId: 'toolu_spawn',
+          toolInput: { run_in_background: true },
+        });
+        append({ mode: 'user_prompt_submit', slashCommand: 'simplify' });
+        await waitForDrain(session);
+        if (when === 'after') writeSubagent();
+        const call = { tool: 'Read', toolUseId: 'toolu_sub', agentId: 'a0000000000000002' };
+        append({ ...call, mode: 'pre', toolInput: { file_path: '/fake/a.ts' } });
+        append({ ...call, mode: 'post', success: true });
+        await waitForStats(child, 2, TOOLS_CALL_TIMEOUT_MS);
+      } finally {
+        child.proc.stdin.end();
+        await waitExit(child, 8000);
+      }
+
+      expect(capturedEvents('AiToolCall')).toContainEqual(
+        expect.objectContaining({
+          tool: 'Read',
+          agent_id: 'a0000000000000002',
+          skill_name: 'lint',
+        }),
+      );
+    },
+    60_000,
+  );
+
+  it("sends only the adopted session's tasks that closed before the session resolved", async () => {
+    const OTHER = 'task-emit-other';
+    const child = startCloudEngine(200, undefined);
+    try {
+      await waitForStderr(child, 'Awaiting session_id resolution', BOOT_TIMEOUT_MS);
+      await initialize(child);
+      seedToolCalls(SESSION, 4, 'Read');
+      seedToolCalls(SESSION, 1, 'AskUserQuestion');
+      await waitForDrain(SESSION);
+      seedToolCalls(OTHER, 2);
+      seedToolCalls(OTHER, 1, 'AskUserQuestion');
+      await waitForDrain(OTHER);
+      expect(capturedTasks()).toHaveLength(0);
+
+      writeFileSync(resolve(storage, 'session-by-ppid', `${process.pid}.txt`), SESSION, {
+        mode: 0o600,
+      });
+      await waitForStderr(child, 'Session ID resolved, full initialization complete', 15_000);
+    } finally {
+      child.proc.stdin.end();
+      await waitExit(child, 8000);
+    }
+
+    const tasks = capturedTasks();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({ session_id: SESSION, tool_call_count: 5 });
+    const antiPatterns = capturedEvents('AiAntiPattern');
+    expect(antiPatterns.length).toBeGreaterThan(0);
+    expect(antiPatterns.every((event) => event.session_id === SESSION)).toBe(true);
+  }, 60_000);
 });
 
 // ---------------------------------------------------------------------------
@@ -519,6 +934,7 @@ function spawnChild(
       // Disable the local alerts engine so the test isn't sensitive to
       // periodic alert evaluation noise on stderr.
       NR_AI_ALERTS_ENABLED: 'false',
+      ...extraEnv,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   }) as ChildProcessWithoutNullStreams;

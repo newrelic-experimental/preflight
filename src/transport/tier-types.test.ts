@@ -7,11 +7,13 @@ import {
   DEFAULT_TIER_NAME,
   WILDCARD_EVENT_TYPE,
   validateTiers,
+  summarizeTiers,
+  primaryTierName,
 } from './tier-types.js';
 import { resolve } from 'node:path';
 
 describe('KNOWN_EVENT_TYPES', () => {
-  it('enumerates exactly the 15 event types NrIngestManager emits', () => {
+  it('enumerates exactly the 14 event types NrIngestManager emits', () => {
     expect([...KNOWN_EVENT_TYPES].sort()).toEqual(
       [
         'AiAntiPattern',
@@ -28,7 +30,7 @@ describe('KNOWN_EVENT_TYPES', () => {
         'AiToolCall',
         'AiTurnCost',
         'AiWorkflowRun',
-        'SecurityAlert',
+        'AiWorkUnit',
       ].sort(),
     );
   });
@@ -55,6 +57,7 @@ describe('EVENT_TYPE_SENSITIVITY', () => {
         'AiRetryAlert',
         'AiTurnCost',
         'AiSkillRun',
+        'AiWorkUnit',
         'AiContextSnapshot',
         'AiBudgetWarning',
         'AiObservabilityHealth',
@@ -64,14 +67,7 @@ describe('EVENT_TYPE_SENSITIVITY', () => {
 
   it('marks raw-detail-bearing event types personal-only (spec categorization table)', () => {
     expect([...PERSONAL_ONLY_EVENT_TYPES].sort()).toEqual(
-      [
-        'AiToolCall',
-        'AiMcpToolCall',
-        'AiWorkflowRun',
-        'AiAntiPattern',
-        'AiAuditEvent',
-        'SecurityAlert',
-      ].sort(),
+      ['AiToolCall', 'AiMcpToolCall', 'AiWorkflowRun', 'AiAntiPattern', 'AiAuditEvent'].sort(),
     );
   });
 
@@ -181,6 +177,49 @@ describe('validateTiers()', () => {
     );
   });
 
+  it('drops a retired SecurityAlert name with a warning instead of throwing', () => {
+    const resolved = validateTiers([
+      makeNrTier({ name: 'team', eventTypes: ['SecurityAlert', 'AiCodingTask'] }),
+    ]);
+
+    expect(resolved[0].eventTypes).toEqual(['AiCodingTask']);
+    const calls = stderrSpy.mock.calls.map((call: unknown[]) => JSON.stringify(call[0]));
+    const warning = calls.find((c: string) => c.includes('SecurityAlert'));
+    expect(warning).toBeDefined();
+    expect(warning).toContain('team');
+    expect(warning).toContain('AiAuditEvent');
+    expect(warning).toContain('personal-only');
+  });
+
+  it('does not add AiAuditEvent when it drops SecurityAlert', () => {
+    const resolved = validateTiers([
+      makeNrTier({ name: 'team', eventTypes: ['SecurityAlert', 'AiCodingTask'] }),
+    ]);
+    expect(resolved[0].eventTypes).not.toContain('AiAuditEvent');
+  });
+
+  it('still throws on a typo near a retired name', () => {
+    expect(() =>
+      validateTiers([makeNrTier({ eventTypes: ['SecurityAlrt', 'AiCodingTask'] })]),
+    ).toThrow(/lists unknown event type "SecurityAlrt"/);
+  });
+
+  it('names the tier and the retired event when SecurityAlert is the only entry', () => {
+    let message = '';
+    try {
+      validateTiers([makeNrTier({ name: 'team', eventTypes: ['SecurityAlert'] })]);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toContain('Tier "team"');
+    expect(message).toContain('SecurityAlert');
+    expect(message).toContain('no longer exists');
+    expect(message).toContain('List AiAuditEvent in this tier');
+    expect(message).toContain('personal-only');
+    expect(message).not.toContain('non-empty eventTypes');
+    expect(message).not.toContain('["*"]');
+  });
+
   it('throws on an empty eventTypes array', () => {
     expect(() => validateTiers([makeNrTier({ eventTypes: [] })])).toThrow(
       /requires a non-empty eventTypes array/,
@@ -191,6 +230,17 @@ describe('validateTiers()', () => {
     expect(() =>
       validateTiers([makeNrTier({ destination: { type: 'nr', accountId: '12345' } })]),
     ).toThrow(/requires a non-empty licenseKey/);
+  });
+
+  it('accepts an nr tier without an accountId', () => {
+    const [tier] = validateTiers([makeNrTier({ destination: { type: 'nr', licenseKey: 'lk' } })]);
+    expect(tier.destination).toEqual({ type: 'nr', licenseKey: 'lk' });
+    expect(summarizeTiers([tier])[0]).toEqual({
+      name: tier.name,
+      type: 'nr',
+      primary: true,
+      eventTypes: tier.eventTypes,
+    });
   });
 
   it('throws when an nr tier accountId is not 1-12 digits', () => {
@@ -335,5 +385,49 @@ describe('validateTiers()', () => {
         knownEventTypes: ['AiCodingTask'],
       }),
     ).toThrow(/lists unknown event type "AiToolCall"/);
+  });
+});
+
+describe('summarizeTiers', () => {
+  const tiers = [
+    {
+      name: 'org',
+      destination: { type: 'local' as const, path: '/data/org' },
+      eventTypes: ['AiCodingTask'],
+    },
+    {
+      name: 'personal',
+      destination: { type: 'nr' as const, licenseKey: 'SECRET-KEY', accountId: '111' },
+      eventTypes: ['*'],
+    },
+    {
+      name: 'team',
+      destination: { type: 'nr' as const, licenseKey: 'SECRET-KEY-2', accountId: '222' },
+      eventTypes: ['AiToolCall'],
+    },
+  ];
+
+  it('describes each tier and marks the first nr tier primary even when a local tier is first', () => {
+    expect(summarizeTiers(tiers)).toEqual([
+      {
+        name: 'org',
+        type: 'local',
+        path: '/data/org',
+        primary: false,
+        eventTypes: ['AiCodingTask'],
+      },
+      { name: 'personal', type: 'nr', accountId: '111', primary: true, eventTypes: ['*'] },
+      { name: 'team', type: 'nr', accountId: '222', primary: false, eventTypes: ['AiToolCall'] },
+    ]);
+    expect(primaryTierName(tiers)).toBe('personal');
+  });
+
+  it('never includes a license key', () => {
+    expect(JSON.stringify(summarizeTiers(tiers))).not.toContain('SECRET');
+  });
+
+  it('has no primary when there are no nr tiers', () => {
+    expect(primaryTierName([])).toBeNull();
+    expect(summarizeTiers([])).toEqual([]);
   });
 });

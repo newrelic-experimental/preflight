@@ -13,6 +13,7 @@ import {
   validateConfigFile,
   resolveCompanionMode,
   findReceiverDoubleCount,
+  resolveStartupLogLevel,
 } from './config.js';
 import type { CompanionModeSource, McpServerConfig } from './config.js';
 
@@ -38,6 +39,7 @@ beforeEach(() => {
   delete process.env.NEW_RELIC_AI_MCP_BUFFER_PATH;
   delete process.env.NEW_RELIC_AI_MCP_PORT;
   delete process.env.NEW_RELIC_AI_MCP_LOG_LEVEL;
+  delete process.env.NEW_RELIC_AI_LOG_LEVEL;
   delete process.env.NEW_RELIC_AI_MCP_HARVEST_EVENTS_MS;
   delete process.env.NEW_RELIC_AI_MCP_HARVEST_METRICS_MS;
   delete process.env.NEW_RELIC_HOST;
@@ -64,6 +66,7 @@ beforeEach(() => {
   delete process.env.NR_AI_DASHBOARD_HOST;
   delete process.env.NR_AI_DASHBOARD_OPEN;
   delete process.env.NEW_RELIC_AI_RETAIN_SESSIONS_DAYS;
+  delete process.env.NEW_RELIC_AI_RETENTION_POLICY;
   delete process.env.NR_AI_COMPANION_MODE;
   delete process.env.NEW_RELIC_AI_HOMELAB_URL;
   delete process.env.NEW_RELIC_AI_HOMELAB_TOKEN;
@@ -91,12 +94,17 @@ describe('loadMcpConfig()', () => {
     );
   });
 
-  it('throws with descriptive error when accountId is missing', () => {
+  it('loads without an accountId and leaves it undefined', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
-    const configPath = writeConfigFile({});
-    expect(() => loadMcpConfig({ config: configPath })).toThrow(
-      /Missing required configuration: accountId/,
-    );
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.accountId).toBeUndefined();
+    expect(config.tiers).toEqual([
+      {
+        name: 'default',
+        destination: { type: 'nr', licenseKey: 'test-key-1234567890' },
+        eventTypes: ['*'],
+      },
+    ]);
   });
 
   // accountId format validation
@@ -216,6 +224,37 @@ describe('loadMcpConfig()', () => {
     });
     expect(config.port).toBe(7777);
     expect(config.logLevel).toBe('error');
+  });
+
+  it('uses NEW_RELIC_AI_LOG_LEVEL when no flag or NEW_RELIC_AI_MCP_LOG_LEVEL is set', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_LOG_LEVEL = 'error';
+    const configPath = writeConfigFile({ logLevel: 'warn' });
+
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.logLevel).toBe('error');
+  });
+
+  it('prefers NEW_RELIC_AI_MCP_LOG_LEVEL over NEW_RELIC_AI_LOG_LEVEL', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_MCP_LOG_LEVEL = 'debug';
+    process.env.NEW_RELIC_AI_LOG_LEVEL = 'error';
+    const configPath = writeConfigFile({});
+
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.logLevel).toBe('debug');
+  });
+
+  it('uses the config file logLevel only when no flag or environment variable sets it', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ logLevel: 'warn' });
+    expect(loadMcpConfig({ config: configPath }).logLevel).toBe('warn');
+
+    process.env.NEW_RELIC_AI_MCP_LOG_LEVEL = 'debug';
+    expect(loadMcpConfig({ config: configPath }).logLevel).toBe('debug');
   });
 
   it('uses correct default values', () => {
@@ -428,6 +467,68 @@ describe('loadMcpConfig()', () => {
     expect(stderrOutput).not.toMatch(/Unknown keys in config file/);
   });
 
+  it('does not warn about a saved reportedSpend as an unknown config-file key', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const path = resolve(tmpDir, 'reported-spend.json');
+    writeFileSync(
+      path,
+      JSON.stringify({
+        reportedSpend: [
+          { periodKind: 'daily', amountUsd: 42.5, asOf: '2026-11-07T10:00:00.000Z' },
+          { periodKind: 'weekly', amountUsd: 0, asOf: '2026-11-07T10:00:00.000Z' },
+        ],
+      }),
+    );
+    loadMcpConfig({ config: path });
+    const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    expect(stderrOutput).not.toMatch(/Unknown keys in config file/);
+  });
+
+  it('loads the same config, budgets included, with or without a saved reportedSpend', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const path = resolve(tmpDir, 'budget-with-reported.json');
+    const budgets = { sessionBudgetUsd: 2, dailyBudgetUsd: 10, weeklyBudgetUsd: 50 };
+    writeFileSync(path, JSON.stringify(budgets));
+    const without = loadMcpConfig({ config: path });
+    writeFileSync(
+      path,
+      JSON.stringify({
+        ...budgets,
+        reportedSpend: [
+          { periodKind: 'daily', amountUsd: 500, asOf: '2026-11-07T10:00:00.000Z' },
+          { periodKind: 'weekly', amountUsd: 900, asOf: '2026-11-07T10:00:00.000Z' },
+        ],
+      }),
+    );
+    const withReported = loadMcpConfig({ config: path });
+
+    expect(withReported).toEqual(without);
+    expect(withReported).toMatchObject(budgets);
+  });
+
+  it.each([
+    ['a negative amount', { periodKind: 'daily', amountUsd: -1, asOf: '2026-11-07T10:00:00Z' }],
+    [
+      'an amount over the limit',
+      { periodKind: 'daily', amountUsd: 2e9, asOf: '2026-11-07T10:00:00Z' },
+    ],
+    ['an unknown period', { periodKind: 'monthly', amountUsd: 1, asOf: '2026-11-07T10:00:00Z' }],
+    ['a bad timestamp', { periodKind: 'daily', amountUsd: 1, asOf: 'yesterday' }],
+  ])(
+    'rejects a reportedSpend entry with %s like any other invalid config field',
+    (_name, entry) => {
+      process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+      process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+      const path = resolve(tmpDir, 'bad-reported-spend.json');
+      writeFileSync(path, JSON.stringify({ reportedSpend: [entry] }));
+      expect(() => loadMcpConfig({ config: path })).toThrow(
+        /Config file validation failed.*reportedSpend/,
+      );
+    },
+  );
+
   it('does not warn for recognized keys in config file (task #22)', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
     process.env.NEW_RELIC_ACCOUNT_ID = '12345';
@@ -632,6 +733,37 @@ describe('loadMcpConfig()', () => {
     process.env.NEW_RELIC_AI_PRICING_REFRESH = 'true';
     const config = loadMcpConfig({ config: writeConfigFile({ pricingRefresh: true }) });
     expect(config.pricingRefresh).toBe(false);
+  });
+
+  it('experimentalArtifacts defaults to false', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.experimentalArtifacts).toBe(false);
+  });
+
+  it('experimentalArtifacts env var true enables it', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_EXPERIMENTAL_ARTIFACTS = 'true';
+    const config = loadMcpConfig({ config: writeConfigFile({}) });
+    expect(config.experimentalArtifacts).toBe(true);
+  });
+
+  it('experimentalArtifacts config-file key enables it', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const config = loadMcpConfig({ config: writeConfigFile({ experimentalArtifacts: true }) });
+    expect(config.experimentalArtifacts).toBe(true);
+  });
+
+  it('highSecurity forces experimentalArtifacts off even when env var and file say true', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    process.env.NEW_RELIC_AI_HIGH_SECURITY = 'true';
+    process.env.NEW_RELIC_AI_EXPERIMENTAL_ARTIFACTS = 'true';
+    const config = loadMcpConfig({ config: writeConfigFile({ experimentalArtifacts: true }) });
+    expect(config.experimentalArtifacts).toBe(false);
   });
 
   it('highSecurity=true set via env var', () => {
@@ -1401,6 +1533,25 @@ describe('costRateMultiplier / dataResidencyPremium', () => {
   });
 });
 
+describe('removed digestSchedule key', () => {
+  it('loads a config file that still contains digestSchedule, without the field', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ digestSchedule: '0 8 * * 2', retainSessionsDays: 30 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.retainSessionsDays).toBe(30);
+    expect(config).not.toHaveProperty('digestSchedule');
+  });
+
+  it('still loads when the removed digestSchedule key holds a non-string value', () => {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    const configPath = writeConfigFile({ digestSchedule: 42, retainSessionsDays: 30 });
+    const config = loadMcpConfig({ config: configPath });
+    expect(config.retainSessionsDays).toBe(30);
+  });
+});
+
 describe('retainSessionsDays', () => {
   it('defaults to 90 when neither env var nor config file key is set', () => {
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
@@ -1454,6 +1605,105 @@ describe('retainSessionsDays', () => {
     expect(config.retainSessionsDays).toBeNull();
     const stderrOutput = stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
     expect(stderrOutput).not.toMatch(/retainSessionsDays/);
+  });
+});
+
+describe('retentionPolicy presets', () => {
+  function loadRetention(
+    file: Record<string, unknown>,
+    env: Record<string, string> = {},
+  ): number | null {
+    process.env.NEW_RELIC_LICENSE_KEY = 'test-key';
+    process.env.NEW_RELIC_ACCOUNT_ID = '12345';
+    for (const [key, value] of Object.entries(env)) process.env[key] = value;
+    const configPath = writeConfigFile(file);
+    return loadMcpConfig({ config: configPath }).retainSessionsDays;
+  }
+
+  function stderrText(): string {
+    return stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+  }
+
+  it.each([
+    ['default', 90],
+    ['gdpr-minimisation', 30],
+    ['soc2-audit', 365],
+    ['hipaa-audit', 2190],
+    ['minimal', 7],
+  ])('file retentionPolicy "%s" resolves to %i days', (policy, days) => {
+    expect(loadRetention({ retentionPolicy: policy })).toBe(days);
+  });
+
+  it('matches preset names ignoring case and surrounding spaces', () => {
+    expect(loadRetention({ retentionPolicy: 'Hipaa-Audit' })).toBe(2190);
+    expect(loadRetention({}, { NEW_RELIC_AI_RETENTION_POLICY: ' HIPAA-audit ' })).toBe(2190);
+  });
+
+  it('env NEW_RELIC_AI_RETENTION_POLICY resolves a preset when no days are set', () => {
+    expect(loadRetention({}, { NEW_RELIC_AI_RETENTION_POLICY: 'minimal' })).toBe(7);
+  });
+
+  it('env days beat an env policy', () => {
+    expect(
+      loadRetention(
+        {},
+        { NEW_RELIC_AI_RETAIN_SESSIONS_DAYS: '14', NEW_RELIC_AI_RETENTION_POLICY: 'minimal' },
+      ),
+    ).toBe(14);
+  });
+
+  it('env policy beats file days', () => {
+    expect(
+      loadRetention({ retainSessionsDays: 30 }, { NEW_RELIC_AI_RETENTION_POLICY: 'minimal' }),
+    ).toBe(7);
+  });
+
+  it('env policy beats a file null (env outranks file at every level)', () => {
+    expect(
+      loadRetention({ retainSessionsDays: null }, { NEW_RELIC_AI_RETENTION_POLICY: 'minimal' }),
+    ).toBe(7);
+  });
+
+  it('file days beat a file policy at the same level', () => {
+    expect(loadRetention({ retainSessionsDays: 30, retentionPolicy: 'soc2-audit' })).toBe(30);
+  });
+
+  it('file null beats a file policy and keeps retention disabled', () => {
+    expect(loadRetention({ retainSessionsDays: null, retentionPolicy: 'soc2-audit' })).toBeNull();
+  });
+
+  it('an invalid file day count falls through to the file policy', () => {
+    expect(loadRetention({ retainSessionsDays: -30, retentionPolicy: 'minimal' })).toBe(7);
+  });
+
+  it('an unknown env policy logs a warning and falls through to the file policy', () => {
+    const days = loadRetention(
+      { retentionPolicy: 'minimal' },
+      { NEW_RELIC_AI_RETENTION_POLICY: 'soc2' },
+    );
+    expect(days).toBe(7);
+    expect(stderrText()).toMatch(/Unknown retention policy/);
+    expect(stderrText()).toMatch(/"source":"NEW_RELIC_AI_RETENTION_POLICY"/);
+    expect(stderrText()).toMatch(/"value":"soc2"/);
+  });
+
+  it('an unknown file policy logs a warning and falls through to the default', () => {
+    expect(loadRetention({ retentionPolicy: 'gdpr' })).toBe(90);
+    expect(stderrText()).toMatch(/"source":"retentionPolicy"/);
+    expect(stderrText()).toMatch(/"value":"gdpr"/);
+  });
+
+  it('an unknown env policy with no file policy falls through to the default without throwing', () => {
+    expect(loadRetention({}, { NEW_RELIC_AI_RETENTION_POLICY: 'bogus' })).toBe(90);
+  });
+
+  it('an Object.prototype key is not a preset name', () => {
+    expect(loadRetention({ retentionPolicy: 'constructor' })).toBe(90);
+    expect(stderrText()).toMatch(/"value":"constructor"/);
+  });
+
+  it('the default is unchanged when no level sets retention', () => {
+    expect(loadRetention({})).toBe(90);
   });
 });
 
@@ -1960,21 +2210,10 @@ describe('licenseKey gating', () => {
     expect(() => loadMcpConfig({ config: configPath })).not.toThrow();
   });
 
-  it("throws when mode='cloud' and accountId missing", () => {
+  it.each(['cloud', 'both'])("does NOT throw when mode='%s' and accountId missing", (mode) => {
+    process.env.NR_AI_MODE = mode;
     process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
-    const configPath = writeConfigFile({});
-    expect(() => loadMcpConfig({ config: configPath })).toThrow(
-      /Missing required configuration: accountId/,
-    );
-  });
-
-  it("throws when mode='both' and accountId missing", () => {
-    process.env.NR_AI_MODE = 'both';
-    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
-    const configPath = writeConfigFile({});
-    expect(() => loadMcpConfig({ config: configPath })).toThrow(
-      /Missing required configuration: accountId/,
-    );
+    expect(() => loadMcpConfig({ config: writeConfigFile({}) })).not.toThrow();
   });
 
   // --local falls back to local mode on this type, not on the message (#479).
@@ -1992,12 +2231,6 @@ describe('licenseKey gating', () => {
     const noKey = thrown(() => loadMcpConfig({ config: writeConfigFile({ accountId: '12345' }) }));
     expect(noKey).toBeInstanceOf(MissingCloudCredentialError);
     expect(noKey).toMatchObject({ missingField: 'licenseKey', mode: 'both' });
-
-    process.env.NR_AI_MODE = 'cloud';
-    process.env.NEW_RELIC_LICENSE_KEY = 'test-key-1234567890';
-    const noAccount = thrown(() => loadMcpConfig({ config: writeConfigFile({}) }));
-    expect(noAccount).toBeInstanceOf(MissingCloudCredentialError);
-    expect(noAccount).toMatchObject({ missingField: 'accountId', mode: 'cloud' });
   });
 
   it('throws when NR_AI_MODE is set to an invalid value', () => {
@@ -3078,6 +3311,47 @@ describe('resolveCompanionMode()', () => {
     ['nothing set', {}, undefined, false, 'default'],
   ])('%s', (_name, env, fileValue, value, source) => {
     expect(resolveCompanionMode(env, fileValue)).toEqual({ value, source });
+  });
+});
+
+describe('resolveStartupLogLevel()', () => {
+  it('prefers the CLI level over every environment variable and the config file', () => {
+    process.env.NEW_RELIC_AI_MCP_LOG_LEVEL = 'debug';
+    process.env.NEW_RELIC_AI_LOG_LEVEL = 'error';
+    const configPath = writeConfigFile({ logLevel: 'info' });
+    expect(resolveStartupLogLevel('warn', configPath)).toBe('warn');
+  });
+
+  it('prefers NEW_RELIC_AI_MCP_LOG_LEVEL, then NEW_RELIC_AI_LOG_LEVEL, then the config file', () => {
+    const configPath = writeConfigFile({ logLevel: 'info' });
+    process.env.NEW_RELIC_AI_LOG_LEVEL = 'error';
+    process.env.NEW_RELIC_AI_MCP_LOG_LEVEL = 'debug';
+    expect(resolveStartupLogLevel(undefined, configPath)).toBe('debug');
+    delete process.env.NEW_RELIC_AI_MCP_LOG_LEVEL;
+    expect(resolveStartupLogLevel(undefined, configPath)).toBe('error');
+    delete process.env.NEW_RELIC_AI_LOG_LEVEL;
+    expect(resolveStartupLogLevel(undefined, configPath)).toBe('info');
+  });
+
+  it('reads logLevel from the config file when no flag or variable sets it', () => {
+    expect(resolveStartupLogLevel(undefined, writeConfigFile({ logLevel: 'warn' }))).toBe('warn');
+  });
+
+  it('ignores an invalid environment value and falls through to the next source', () => {
+    process.env.NEW_RELIC_AI_MCP_LOG_LEVEL = 'verbose';
+    process.env.NEW_RELIC_AI_LOG_LEVEL = 'Error';
+    expect(resolveStartupLogLevel(undefined, writeConfigFile({ logLevel: 'warn' }))).toBe('error');
+    process.env.NEW_RELIC_AI_LOG_LEVEL = 'loud';
+    expect(resolveStartupLogLevel(undefined, writeConfigFile({ logLevel: 'warn' }))).toBe('warn');
+  });
+
+  it('treats a config file that fails to load as empty instead of throwing', () => {
+    const configPath = resolve(tmpDir, 'broken.json');
+    writeFileSync(configPath, '{ not json');
+    process.env.NEW_RELIC_AI_LOG_LEVEL = 'error';
+    expect(resolveStartupLogLevel(undefined, configPath)).toBe('error');
+    delete process.env.NEW_RELIC_AI_LOG_LEVEL;
+    expect(resolveStartupLogLevel(undefined, configPath)).toBe('info');
   });
 });
 
