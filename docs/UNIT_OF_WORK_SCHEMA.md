@@ -13,11 +13,11 @@ This schema is a view over existing events. A skill run or slash command has one
 
 ## One unit is a skill run, a slash command, or a subagent invocation
 
-| Unit                | Key                         | Starts                                 | Ends                                                                                                                  |
-| ------------------- | --------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| Skill run           | `skill_run_id`              | A successful, named `Skill` tool call  | The next prompt or the next skill in the same agent, or a main-agent gap over 30 seconds in a session with no prompts |
-| Slash command       | `skill_run_id`              | A prompt that starts with `/<name>`    | The next prompt, or the next skill with another name                                                                  |
-| Subagent invocation | `agent_id` (AiSubagentTurn) | The subagent's first transcript record | The subagent's last transcript record                                                                                 |
+| Unit                | Key                         | Starts                                 | Ends                                                                                                                                                    |
+| ------------------- | --------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Skill run           | `skill_run_id`              | A successful, named `Skill` tool call  | The next prompt or the next skill in the same agent, or a main-agent call after more than 30 seconds with no call running, in a session with no prompts |
+| Slash command       | `skill_run_id`              | A prompt that starts with `/<name>`    | The next prompt, or the next skill with another name                                                                                                    |
+| Subagent invocation | `agent_id` (AiSubagentTurn) | The subagent's first transcript record | The subagent's last transcript record                                                                                                                   |
 
 `skill_source` separates the first two units. Its value is `tool` for a skill run and `slash` for a slash command. A `Skill` call that names the open slash command's skill stays in the same run. A failed or unrun `Skill` call outside any run carries `skill_name` and `skill_source = 'tool'` with no `skill_run_id`. Inside an open run it carries that run's `skill_name`, `skill_source` and `skill_run_id`, so the failed skill's own name does not appear. To keep only rows inside a run, filter on `skill_run_id IS NOT NULL`.
 
