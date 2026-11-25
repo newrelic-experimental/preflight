@@ -1,4 +1,4 @@
-import { rmSync, statSync, unlinkSync } from 'node:fs';
+import { rmSync, statSync, unlinkSync, utimesSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createLogger } from '../core/index.js';
 import { parseSessionFilename } from './session-store.js';
@@ -79,13 +79,22 @@ export function purgeOldSessions(storagePath: string, retainDays: number): numbe
     const dir = join(writersDir, sessionId);
     for (const path of [dir, ...listDirOrEmpty(dir).map((name) => join(dir, name))])
       seen(sessionId, path);
-    deleted += purgeOldFiles(
+    const dirMtime = new Date(mtimeOf(dir));
+    const swept = purgeOldFiles(
       storagePath,
       join('sessions', WRITERS_DIR, sessionId),
       STALE_WRITER_TMP_DAYS,
       'writer temp',
       (file) => !file.endsWith('.tmp'),
     );
+    if (swept > 0) {
+      try {
+        utimesSync(dir, dirMtime, dirMtime);
+      } catch (err) {
+        logger.warn('Failed to restore a writer directory time', { sessionId, error: String(err) });
+      }
+    }
+    deleted += swept;
   }
   const isLiveWriterSession = (sessionId: string | undefined) =>
     sessionId !== undefined &&
