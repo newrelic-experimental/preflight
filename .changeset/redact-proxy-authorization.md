@@ -1,0 +1,5 @@
+---
+'@newrelic/preflight': patch
+---
+
+**More credential headers in commands are now redacted before they reach New Relic, local storage or the dashboard.** A `Proxy-Authorization: Basic` header is redacted like an `Authorization: Basic` one, and curl's `--proxy-header` is read like `-H` and `--header`. A header written as one quoted `Name:value` word, as httpie takes it, is redacted too, for `Authorization`, `Proxy-Authorization` and the API-key headers: `http x Authorization:"Basic …"`, `http x 'Proxy-Authorization: Basic …'` and `http x 'X-Api-Key: …'` keep the header name and hide the value. That covers `curl -H Authorization:"Basic …"` as well. The value must be quoted, so an unquoted word such as `npm run api-key:rotate` or `http x X-Api-Key:abc` is left as it is, and so is free text such as `echo X-Api-Key: abc`. A quoted string that starts with one of these names and a colon reads the same as a header, so `git commit -m "api-key: rotate"` is redacted too. `Authorization: Digest` and a short `Bearer` value are left as they are, as before. It applies to the stored command and to recorded content alike.
