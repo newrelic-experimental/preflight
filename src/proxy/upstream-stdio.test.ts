@@ -260,6 +260,81 @@ describe('StdioUpstream.forward() with mock client', () => {
     expect(parsed.result.contents[0].text).toBe('content here');
   });
 
+  it('reports tool_error for a tools/call result with isError true and keeps HTTP 200', async () => {
+    const mockResult = { content: [{ type: 'text', text: 'no such file' }], isError: true };
+    const upstream = makeUpstreamWithMockClient({
+      callTool: jest.fn<() => Promise<typeof mockResult>>().mockResolvedValue(mockResult),
+    });
+
+    const { res, getBody } = makeFakeResponse();
+    const body = Buffer.from(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'read_file' },
+      }),
+    );
+
+    const result = await upstream.forward(makeFakeRequest(), res, body);
+
+    expect(result.statusCode).toBe(200);
+    expect(result.rpcOutcome).toBe('tool_error');
+    expect(JSON.parse(getBody()).result.isError).toBe(true);
+  });
+
+  it('reports ok for a tools/call result without isError', async () => {
+    const mockResult = { content: [{ type: 'text', text: 'hello' }] };
+    const upstream = makeUpstreamWithMockClient({
+      callTool: jest.fn<() => Promise<typeof mockResult>>().mockResolvedValue(mockResult),
+    });
+
+    const { res } = makeFakeResponse();
+    const body = Buffer.from(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'tools/call',
+        params: { name: 'test_tool' },
+      }),
+    );
+
+    const result = await upstream.forward(makeFakeRequest(), res, body);
+
+    expect(result.rpcOutcome).toBe('ok');
+  });
+
+  it('leaves rpcOutcome unset for non-tools/call methods', async () => {
+    const mockTools = { tools: [] };
+    const upstream = makeUpstreamWithMockClient({
+      listTools: jest.fn<() => Promise<typeof mockTools>>().mockResolvedValue(mockTools),
+    });
+
+    const { res } = makeFakeResponse();
+    const body = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }));
+
+    const result = await upstream.forward(makeFakeRequest(), res, body);
+
+    expect(result.rpcOutcome).toBeUndefined();
+  });
+
+  it('leaves rpcOutcome unset when the tools/call client method throws (HTTP 500)', async () => {
+    const upstream = makeUpstreamWithMockClient({
+      callTool: jest.fn<() => Promise<never>>().mockRejectedValue(new Error('Process crashed')),
+    });
+
+    const { res, getStatus } = makeFakeResponse();
+    const body = Buffer.from(
+      JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'bad' } }),
+    );
+
+    const result = await upstream.forward(makeFakeRequest(), res, body);
+
+    expect(getStatus()).toBe(500);
+    expect(result.statusCode).toBe(500);
+    expect(result.rpcOutcome).toBeUndefined();
+  });
+
   it('returns JSON-RPC error when client method throws', async () => {
     const upstream = makeUpstreamWithMockClient({
       listTools: jest.fn<() => Promise<never>>().mockRejectedValue(new Error('Process crashed')),

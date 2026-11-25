@@ -14,6 +14,7 @@ import { performance } from 'node:perf_hooks';
 import { createLogger } from '../core/index.js';
 import type { ForwardResult, ProxyUpstream, UpstreamConfig } from './types.js';
 import { shouldForwardHeader } from './types.js';
+import { classifyToolCallResponse, isToolsCallRequest } from './rpc-outcome.js';
 import { validateSsrfUrl, createSsrfSafeLookup } from '../security/ssrf.js';
 
 const logger = createLogger('proxy-http');
@@ -219,11 +220,20 @@ export class HttpUpstream implements ProxyUpstream {
               res.setHeader('content-length', responseBody.length);
               res.writeHead(statusCode);
               res.end(responseBody);
+              // Classified after the write, so the client never waits on the parse.
+              const rpcOutcome =
+                statusCode >= 200 &&
+                statusCode < 300 &&
+                mediaType === 'application/json' &&
+                isToolsCallRequest(body)
+                  ? classifyToolCallResponse(responseBody)
+                  : undefined;
               resolve({
                 statusCode,
                 isStreaming: false,
                 responseSizeBytes: responseBody.length,
                 upstreamLatencyMs,
+                ...(rpcOutcome !== undefined && { rpcOutcome }),
               });
             });
             upstreamRes.on('error', (err) => {
