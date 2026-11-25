@@ -8,7 +8,6 @@ import {
   cdSegmentTarget,
   classifyGitSegments,
   ghPrMergeTogglesAuto,
-  ghSegmentOverridesRepo,
   processGhCommand,
   segmentAssignsGhRepo,
   segmentSuccessFollowsCommand,
@@ -16,7 +15,7 @@ import {
 } from './git-event-classifier.js';
 import { UNATTRIBUTED_WORKSPACE_KEY, WorktreeIdentityResolver } from './git-workspace-identity.js';
 import { mcpPrEvent } from './mcp-pr-tools.js';
-import { ghSegmentRepo, prRefOf, type PrRef } from './pr-ref.js';
+import { ghSegmentNamesRepo, ghSegmentRepo, prRefOf, type PrRef } from './pr-ref.js';
 import { readShell } from './shell-lexer.js';
 import type { PrEvent } from './git-efficiency-tracker.js';
 
@@ -173,7 +172,7 @@ export class GitActivityRecorder {
       const number = parsed.prNumber ?? captured ?? null;
       const inCwdRepo =
         number !== null &&
-        !ghSegmentOverridesRepo(segment) &&
+        !ghSegmentNamesRepo(segment) &&
         !segments.slice(0, i).some((earlier) => this.mayLeaveCwdRepo(earlier.trim(), cwd));
       const prEvent = { ...parsed, prNumber: inCwdRepo ? number : null };
       this.ingestActivity({

@@ -594,6 +594,57 @@ describe('GitActivityRecorder', () => {
       });
     });
 
+    it('keeps a GitHub Enterprise remote apart from github.com in a merge ref', () => {
+      addRemote('origin', 'git@ghe.example.com:Acme/App.git');
+      expect(refsOf(makeRecord({ command: 'gh pr merge 42', cwd: repoDir }))).toEqual([
+        ['merge', '42', 'ghe.example.com/acme/app#42'],
+      ]);
+    });
+
+    it('takes a merge ref with the host -R names', () => {
+      expect(
+        refsOf(
+          makeRecord({ command: 'gh pr merge 42 -R ghe.example.com/acme/app', cwd: repoDir }),
+          makeRecord({
+            toolUseId: 'tool-2',
+            command: 'gh pr merge 42 -R github.com/acme/app',
+            cwd: repoDir,
+          }),
+        ),
+      ).toEqual([
+        ['merge', null, 'ghe.example.com/acme/app#42'],
+        ['merge', null, 'acme/app#42'],
+      ]);
+    });
+
+    it('does not read a -R quoted into the merge body as the target repo', () => {
+      addRemote('origin', 'https://github.com/acme/app.git');
+      expect(
+        refsOf(
+          makeRecord({
+            command: 'gh pr merge 42 --squash --body "see -R acme/other for details"',
+            cwd: repoDir,
+          }),
+        ),
+      ).toEqual([['merge', '42', 'acme/app#42']]);
+    });
+
+    it('reads an attached -R and a quoted GH_REPO as the target repo', () => {
+      expect(
+        refsOf(
+          makeRecord({ command: 'gh pr merge 42 -Racme/app', cwd: repoDir }),
+          makeRecord({
+            toolUseId: 'tool-2',
+            command: 'GH_REPO="acme/other" gh pr merge 43',
+            cwd: repoDir,
+          }),
+        ),
+      ).toEqual([
+        ['merge', null, 'acme/app#42'],
+        ['merge', null, 'acme/other#43'],
+      ]);
+    });
+
     it('gives a merge no ref when an earlier segment assigns GH_REPO', () => {
       addRemote('origin', 'https://github.com/acme/app.git');
       expect(

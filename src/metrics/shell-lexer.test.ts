@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 
-import { readShell } from './shell-lexer.js';
+import { readShell, shellWords } from './shell-lexer.js';
 
 describe('readShell heredoc text', () => {
   it.each([
@@ -223,6 +223,52 @@ describe('readShell segments', () => {
   });
 });
 
+describe('readShell groups inside "$( … )"', () => {
+  const merge = 'z && gh pr merge 2 && y';
+
+  it.each([
+    ['an array assignment', 'echo "$(arr=(a b); echo "%")"'],
+    ['an appended array', 'echo "$(arr+=(a b); echo "%")"'],
+    ['an extglob', 'echo "$(shopt -s extglob; [[ x == @(a|b) ]]; echo "%")"'],
+    ['a case pattern', 'echo "$(case x in a) echo "%";; esac)"'],
+    ['a case pattern with a leading (', 'echo "$(case x in (a) echo "%";; esac)"'],
+    ['a case with several patterns', 'echo "$(case x in a|b) echo hi;; c) echo "%";; esac)"'],
+    ['a nested case', 'echo "$(case x in a) case y in b) echo "%";; esac;; esac)"'],
+    ['a ")" inside ${ }', 'echo "$(echo ${x//)/}; echo "%")"'],
+    ['a "(" inside ${ }', 'echo "$(echo ${x//(/}; echo "%")"'],
+    ['a case inside a group', 'echo "$( (case x in a) echo hi;; esac); echo "%")"'],
+  ])('keeps a quoted operator quoted after %s', (_name, template) => {
+    const command = template.replace('%', merge);
+    expect(readShell(command)).toMatchObject({
+      segments: [command],
+      operators: [],
+      balanced: true,
+    });
+  });
+
+  it('still splits on a real operator after a case closes', () => {
+    expect(readShell('case x in a) echo hi;; esac && gh pr merge 2')).toMatchObject({
+      segments: ['case x in a) echo hi', '', ' esac ', ' gh pr merge 2'],
+      operators: [';', ';', '&&'],
+      balanced: true,
+    });
+  });
+
+  it('does not take `case` or `in` in an argument for a case clause', () => {
+    expect(readShell('echo case x in a) && echo b')).toMatchObject({
+      segments: ['echo case x in a) ', ' echo b'],
+      balanced: true,
+    });
+  });
+
+  it('keeps `${x//(/}` balanced with no matching )', () => {
+    expect(readShell('echo ${x//(/} && echo done')).toMatchObject({
+      segments: ['echo ${x//(/} ', ' echo done'],
+      balanced: true,
+    });
+  });
+});
+
 // Shapes that the old heredoc scanner and the old chain splitter read
 // differently, so the text they classified and the segments they split did
 // not agree.
@@ -284,5 +330,38 @@ describe('readShell where two scans used to disagree', () => {
       readingsDiffer: false,
       balanced: true,
     });
+  });
+});
+
+describe('shellWords', () => {
+  it('splits on unquoted whitespace and removes quotes', () => {
+    expect(shellWords(`gh pr merge 5 --body "see -R x" --subject 'a  b'`)).toEqual([
+      { text: 'gh', bare: 'gh' },
+      { text: 'pr', bare: 'pr' },
+      { text: 'merge', bare: 'merge' },
+      { text: '5', bare: '5' },
+      { text: '--body', bare: '--body' },
+      { text: 'see -R x', bare: '' },
+      { text: '--subject', bare: '--subject' },
+      { text: 'a  b', bare: '' },
+    ]);
+  });
+
+  it('reports the unquoted run of a word that is partly quoted or escaped', () => {
+    expect(shellWords('GH_REPO="acme/app" -R\\ x')).toEqual([
+      { text: 'GH_REPO=acme/app', bare: 'GH_REPO=' },
+      { text: '-R x', bare: '-R' },
+    ]);
+  });
+
+  it('keeps whitespace inside a $( … ) in its word', () => {
+    expect(shellWords('echo $(a  b) c').map((word) => word.text)).toEqual(['echo', '$(a  b)', 'c']);
+  });
+
+  it('reads an empty quoted word', () => {
+    expect(shellWords('echo ""')).toEqual([
+      { text: 'echo', bare: 'echo' },
+      { text: '', bare: '' },
+    ]);
   });
 });

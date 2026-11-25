@@ -2,8 +2,8 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { basename, dirname, resolve as resolvePath } from 'node:path';
 
-import { repoNameFromRemote } from '../lib/git-remote.js';
-import { parseGhRepoName } from './pr-ref.js';
+import { parseGitRemote, repoNameFromRemote, type ParsedGitRemote } from '../lib/git-remote.js';
+import { parsePrRepo } from './pr-ref.js';
 
 /** Workspace key for activity whose cwd was never recorded and whose session
  *  has no `repoName` to fall back on. */
@@ -49,6 +49,17 @@ export interface WorktreeIdentity {
   /** Current branch, e.g. `main`. Null if detached HEAD or unresolvable.
    *  Has a short TTL and is re-resolved on each call. */
   readonly branch: string | null;
+}
+
+/** The repo a parsed remote names as `gh` does, `owner/name`, or
+ *  `host/owner/name` off github.com, so a repo on a GitHub Enterprise host is
+ *  not mistaken for the same owner and name on github.com. */
+function prRepoNameOf(parsed: ParsedGitRemote): string | null {
+  // A one-segment path takes its host as owner, so `ownerRepo` already holds it.
+  const ownerIsHost = parsed.host !== null && !parsed.path.includes('/');
+  const name =
+    parsed.host === null || ownerIsHost ? parsed.ownerRepo : `${parsed.host}/${parsed.ownerRepo}`;
+  return parsePrRepo(name) ?? null;
 }
 
 const GIT_OPTS = {
@@ -129,8 +140,8 @@ export class WorktreeIdentityResolver {
   }
 
   /**
-   * The lowercased `owner/name` a bare `gh` command run in `dir` targets, or
-   * null when that isn't certain. gh takes the repo `gh repo set-default`
+   * The lowercased `owner/name` (`host/owner/name` off github.com) a bare
+   * `gh` command run in `dir` targets, or null when that isn't certain. gh takes the repo `gh repo set-default`
    * saved as a remote's `gh-resolved` config (`base` for the remote's own
    * repo, else an `owner/name`), and otherwise, with one remote, that
    * remote's repo. With several remotes and no default it may prompt or
@@ -159,7 +170,7 @@ export class WorktreeIdentityResolver {
         if (!match) continue;
         const [, remote, resolved] = match;
         defaults.add(
-          resolved === 'base' ? (fetchNames.get(remote) ?? null) : parseGhRepoName(resolved),
+          resolved === 'base' ? (fetchNames.get(remote) ?? null) : (parsePrRepo(resolved) ?? null),
         );
       }
       const sole = fetchNames.size === 1 ? [...fetchNames.values()][0] : null;
@@ -187,10 +198,11 @@ export class WorktreeIdentityResolver {
       if (result.status === 0) {
         for (const line of result.stdout.split('\n')) {
           const [remote, url, direction] = line.split(/\s+/);
-          const name = url ? repoNameFromRemote(url)?.toLowerCase() : undefined;
-          if (!name) continue;
-          names.add(name);
-          if (direction === '(fetch)') fetchNameByRemote.set(remote, name);
+          const parsed = parseGitRemote(url);
+          if (!parsed?.ownerRepo) continue;
+          names.add(parsed.ownerRepo.toLowerCase());
+          const prName = prRepoNameOf(parsed);
+          if (direction === '(fetch)' && prName) fetchNameByRemote.set(remote, prName);
         }
       }
       const remotes = { names: [...names], fetchNameByRemote };
