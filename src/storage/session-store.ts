@@ -18,20 +18,31 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { createLogger } from '../core/index.js';
 import { renameIntoPlace } from './rename-into-place.js';
 import {
+  captureLegacyIndex,
+  createOnce,
   foldSessionFiles,
+  LEGACY_PREFIX,
   listDirOrEmpty,
+  newWriterId,
   readWriterFiles,
+  writeAtomic,
+  writerFileBody,
   WRITERS_DIR,
   type IndexFile,
+  type Producer,
+  type SaveResult,
+  type SessionWriter,
+  type WriterContribution,
 } from './session-writers.js';
 import { redactIdentifier, redactSensitive } from '../config.js';
 import { stripRepoNameCredentials } from '../lib/git-remote.js';
@@ -1548,7 +1559,7 @@ export class SessionStore {
   saveSession(
     summary: FullSessionSummary,
   ): { readonly previous: FullSessionSummary | null } | null {
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(summary.sessionId) || summary.sessionId === 'unknown') {
+    if (!isValidSessionId(summary.sessionId)) {
       logger.warn('Rejecting invalid sessionId for file path', { sessionId: summary.sessionId });
       return null;
     }
@@ -1624,17 +1635,26 @@ export class SessionStore {
     // incoming write's own — mergeSummaries() takes Math.min() of the two,
     // so this is normally the existing file's own date; recomputing here
     // keeps the filename consistent with what's actually written.
-    const startDate = new Date(toWrite.startTime);
-    if (!isFinite(startDate.getTime())) {
-      throw new Error(`Invalid startTime for session ${toWrite.sessionId}: ${toWrite.startTime}`);
-    }
-    const date = startDate.toISOString().slice(0, 10);
-    const filename = `${date}_${toWrite.sessionId}.json`;
-    const filepath = resolve(this.sessionsDir, filename);
-    if (!filepath.startsWith(this.sessionsDir + sep)) {
-      throw new Error(`Session path escaped storage directory: ${filepath}`);
-    }
+    const filepath = this.indexPath(toWrite);
+    const content = JSON.stringify(toWrite, null, 2) + '\n';
+    return this.replaceIndex(toWrite.sessionId, filepath, content, filesRead)
+      ? { previous: existing }
+      : null;
+  }
 
+  /**
+   * Writes `content` to `filepath` and sets aside every other file in
+   * `filesRead`. Returns false, writing nothing, when an unparsed file at
+   * `filepath` changed since it was read or cannot be copied aside, or when
+   * the write fails.
+   */
+  private replaceIndex(
+    sessionId: string,
+    filepath: string,
+    content: string,
+    filesRead: readonly SessionFileRead[],
+  ): boolean {
+    const filename = basename(filepath);
     const unparsedFilesReplaced = filesRead.filter(
       (file) => file.parsed.kind !== 'clean' && file.filepath === filepath,
     );
@@ -1642,12 +1662,11 @@ export class SessionStore {
     // Write-then-rename so two processes saving the same session id can never
     // interleave bytes in the target file (the temp name does not end in .json,
     // so loaders never see it).
-    const content = JSON.stringify(toWrite, null, 2) + '\n';
     const tmpPath = `${filepath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     try {
       try {
         writeFileSync(tmpPath, content, { mode: 0o600 });
-        if (!unparsedFilesReplaced.every(copiedAsideUnchanged)) return null;
+        if (!unparsedFilesReplaced.every(copiedAsideUnchanged)) return false;
         renameIntoPlace(tmpPath, filepath, content);
       } finally {
         try {
@@ -1670,23 +1689,122 @@ export class SessionStore {
           renameSync(file.filepath, `${file.filepath}.${Date.now()}.merged`);
         } catch (err) {
           logger.warn('Failed to set aside superseded session file after merge', {
-            sessionId: toWrite.sessionId,
+            sessionId,
             stalePath: file.filepath,
             error: err instanceof Error ? err.message : String(err),
           });
         }
       }
-      logger.debug('Session saved', { sessionId: toWrite.sessionId, filename });
-      return { previous: existing };
+      logger.debug('Session saved', { sessionId, filename });
+      return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn('Failed to save session file', {
-        sessionId: toWrite.sessionId,
+        sessionId,
         filename,
         error: message,
       });
-      return null;
+      return false;
     }
+  }
+
+  /** One per process and producer. Each session it saves gets one file of its own. */
+  writer(producer: Producer): SessionWriter {
+    const id = newWriterId(producer);
+    return {
+      id,
+      save: (contribution) => this.saveContribution(id, contribution),
+      retire: (sessionId) => this.retireContribution(id, sessionId),
+    };
+  }
+
+  private saveContribution(writerId: string, contribution: WriterContribution): SaveResult {
+    const { sessionId } = contribution.summary;
+    if (!isValidSessionId(sessionId)) return { kind: 'skipped', reason: 'invalid-session-id' };
+    if (!hasRecordedUsage(contribution.summary)) {
+      return { kind: 'skipped', reason: 'no-recorded-usage' };
+    }
+    try {
+      const folded = this.project(sessionId, (dir) =>
+        writeAtomic(join(dir, `${writerId}.json`), writerFileBody(contribution)),
+      );
+      return { kind: 'saved', retracted: Boolean(folded?.retracted) };
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      logger.warn('Failed to save a session writer file', { sessionId, error });
+      return { kind: 'failed', error };
+    }
+  }
+
+  private retireContribution(writerId: string, sessionId: string): void {
+    if (!isValidSessionId(sessionId)) return;
+    const own = join(this.sessionsDir, WRITERS_DIR, sessionId, `${writerId}.json`);
+    if (!existsSync(own)) return;
+    try {
+      this.project(sessionId, () => rmSync(own, { force: true }));
+    } catch (err) {
+      logger.warn('Failed to retire a session writer file', { sessionId, error: String(err) });
+    }
+  }
+
+  /**
+   * Runs `writeOwn` between reading the session and rewriting its index. The
+   * index is read before the writer files: read the other way round, a writer
+   * an older build already folded into the index is missed, and its capture
+   * counts that writer twice. Each index file this design did not write is
+   * captured on its own before anything replaces it. Returns null when no
+   * writer file is left.
+   */
+  private project(sessionId: string, writeOwn: (dir: string) => void): WriterContribution | null {
+    const dir = join(this.sessionsDir, WRITERS_DIR, sessionId);
+    const reads = this.readIndexFiles(sessionId);
+    const before = readWriterFiles(this.sessionsDir, sessionId);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    for (const { bytes, parsed } of reads) {
+      if (parsed.kind === 'unreadable') continue;
+      for (const capture of captureLegacyIndex([parsed], before?.writers ?? [])) {
+        createOnce(join(dir, `${LEGACY_PREFIX}${sha16(bytes)}.json`), writerFileBody(capture));
+      }
+    }
+    writeOwn(dir);
+
+    const after = readWriterFiles(this.sessionsDir, sessionId);
+    if (!after) {
+      // Nothing was captured, so every index file read is a projection. One
+      // rewritten since is an older build's, and stays.
+      for (const read of reads) {
+        if (read.parsed.kind !== 'unreadable' && unchanged(read)) {
+          rmSync(read.filepath, { force: true });
+        }
+      }
+      // A writer that saved while the index was going has no index to list it.
+      return readWriterFiles(this.sessionsDir, sessionId)
+        ? this.project(sessionId, () => {})
+        : null;
+    }
+    // Every index file read is now a capture or a projection, so none is folded again.
+    const folded = foldSessionFiles([], after);
+    const projection = {
+      ...folded.summary,
+      contributions: { version: 1, writers: after.writers.length },
+    };
+    const content = JSON.stringify(projection, null, 2) + '\n';
+    if (!this.replaceIndex(sessionId, this.indexPath(folded.summary), content, reads)) {
+      throw new Error('The index was not rewritten');
+    }
+    return folded;
+  }
+
+  private indexPath({ sessionId, startTime }: FullSessionSummary): string {
+    const startDate = new Date(startTime);
+    if (!isFinite(startDate.getTime())) {
+      throw new Error(`Invalid startTime for session ${sessionId}: ${startTime}`);
+    }
+    const filepath = resolve(this.sessionsDir, `${formatDate(startDate)}_${sessionId}.json`);
+    if (!filepath.startsWith(this.sessionsDir + sep)) {
+      throw new Error(`Session path escaped storage directory: ${filepath}`);
+    }
+    return filepath;
   }
 
   loadSession(sessionId: string): FullSessionSummary | null {
@@ -1705,22 +1823,28 @@ export class SessionStore {
     readonly existing: FullSessionSummary | null;
     readonly filesRead: readonly SessionFileRead[];
   } {
-    if (!existsSync(this.sessionsDir)) return { existing: null, filesRead: [] };
-
-    const listFiles = () => this.listSessionFiles().filter((f) => f.sessionId === sessionId);
-    const filesRead = this.readListedFiles(listFiles(), listFiles);
+    const filesRead = this.readIndexFiles(sessionId);
     return { existing: this.combineWithWriterFiles(sessionId, filesRead), filesRead };
+  }
+
+  private readIndexFiles(sessionId: string): SessionFileRead[] {
+    if (!existsSync(this.sessionsDir)) return [];
+    const listFiles = () => this.listSessionFiles().filter((f) => f.sessionId === sessionId);
+    return this.readListedFiles(listFiles(), listFiles);
   }
 
   private combineWithWriterFiles(
     sessionId: string,
     reads: readonly SessionFileRead[],
     hasWriterDir = true,
+    keep: (read: SessionFileRead) => boolean = () => true,
   ): FullSessionSummary | null {
     if (reads.length === 0) return null;
-    const index = reads.flatMap(({ parsed }) => (parsed.kind === 'unreadable' ? [] : [parsed]));
+    const parsed = (rs: readonly SessionFileRead[]) =>
+      rs.flatMap(({ parsed }) => (parsed.kind === 'unreadable' ? [] : [parsed]));
     const files = hasWriterDir ? readWriterFiles(this.sessionsDir, sessionId) : null;
-    if (files) return foldSessionFiles(index, files);
+    if (files) return foldSessionFiles(parsed(reads), files).summary;
+    const index = parsed(reads.filter(keep));
     return index.length > 0 ? combineSessionFiles(index.map((f) => f.summary)) : null;
   }
 
@@ -1819,14 +1943,15 @@ export class SessionStore {
       }
     };
 
-    // A `since` load combines only the files in its window. Combining the whole
-    // id would either pull a long session's lifetime totals into a recent
-    // window or drop its recent activity because its first file is old.
+    // For a session without writer files, a `since` load combines only the files
+    // in its window. Combining the whole id would either pull a long session's
+    // lifetime totals into a recent window or drop its recent activity because
+    // its first file is old. Sessions with writer files load whole, below.
     const inWindow = (file: SessionFileInfo): boolean =>
       !sinceDate || file.date >= sinceDate || modifiedSince(file);
 
     const filesById = new Map<string, SessionFileInfo[]>();
-    for (const file of this.listSessionFiles().filter(inWindow)) {
+    for (const file of this.listSessionFiles()) {
       const group = filesById.get(file.sessionId);
       if (group) group.push(file);
       else filesById.set(file.sessionId, [file]);
@@ -1834,14 +1959,23 @@ export class SessionStore {
 
     const writerDirs = new Set(listDirOrEmpty(join(this.sessionsDir, WRITERS_DIR)));
     for (const [sessionId, files] of filesById) {
-      const relist = () =>
-        this.listSessionFiles().filter((f) => f.sessionId === sessionId && inWindow(f));
-      const reads = this.readListedFiles(files, relist).filter(
-        ({ parsed }) =>
-          !options?.developer ||
-          (parsed.kind !== 'unreadable' && parsed.summary.developer === options.developer),
+      // Writer files hold the whole session, so the window and the developer
+      // filter only pick it, and a capture must see every index file it was
+      // taken from. Every index file is read before the writer files.
+      const whole = writerDirs.has(sessionId);
+      const wanted = (f: SessionFileInfo) => whole || inWindow(f);
+      const first = files.filter(wanted);
+      if (!first.some(inWindow)) continue;
+      const reads = this.readListedFiles(first, () =>
+        this.listSessionFiles().filter((f) => f.sessionId === sessionId && wanted(f)),
       );
-      const session = this.combineWithWriterFiles(sessionId, reads, writerDirs.has(sessionId));
+      const picked = (read: SessionFileRead): boolean =>
+        inWindow(parseSessionFilename(basename(read.filepath))!) &&
+        (!options?.developer ||
+          (read.parsed.kind !== 'unreadable' &&
+            read.parsed.summary.developer === options.developer));
+      if (!reads.some(picked)) continue;
+      const session = this.combineWithWriterFiles(sessionId, reads, whole, picked);
       if (!session) continue;
 
       // Synthetic session IDs (`local-*`, `proxy-*`, `pending-*`) are
@@ -2284,6 +2418,15 @@ export function sessionSummaryToDriftRecord(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function isValidSessionId(sessionId: string): boolean {
+  return /^[A-Za-z0-9_-]{1,128}$/.test(sessionId) && sessionId !== 'unknown';
+}
+
+/** Names a capture by the index file it was taken from, so two writers make one file. */
+function sha16(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+}
 
 function formatDate(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -2904,6 +3047,14 @@ function parseDocument(raw: string): IndexFile | null {
     summary: deserializeFullSessionSummary(parsed as SerializedFullSessionSummary),
     isProjection: typeof contributions === 'object' && contributions !== null,
   };
+}
+
+function unchanged({ filepath, bytes }: SessionFileRead): boolean {
+  try {
+    return readFileSync(filepath).equals(bytes);
+  } catch {
+    return false;
+  }
 }
 
 function copiedAsideUnchanged(file: SessionFileRead): boolean {

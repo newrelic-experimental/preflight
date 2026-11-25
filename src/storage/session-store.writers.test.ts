@@ -348,7 +348,7 @@ describe('loading an older build file beside the writer files', () => {
     expect(totals(store.loadSession(SID))?.calls).toBe(7);
   });
 
-  it('filters by developer per index file, then adds the writer files whole', () => {
+  it('picks the session by the developer on its index files, then folds it whole', () => {
     writeIndex({ ...activity(ids('a', 4)), developer: 'dev-a' });
     const devB = { ...startingAt(NEXT_DAY, activity(['b0'])), developer: 'dev-b' };
     writeIndex(devB, { date: '2026-03-02' });
@@ -356,19 +356,22 @@ describe('loading an older build file beside the writer files', () => {
 
     const load = (developer: string) =>
       store.loadAllSessions({ developer }).map((s) => [s.developer, totals(s)]);
-    expect(load('dev-a')).toEqual([['bob', { calls: 6, usd: 1, input: 400 }]]);
-    expect(load('dev-b')).toEqual([['dev-b', { calls: 3, usd: 0.75, input: 300 }]]);
+    const whole = ['dev-b', { calls: 7, usd: 1.25, input: 500 }];
+    expect(load('dev-a')).toEqual([whole]);
+    expect(load('dev-b')).toEqual([whole]);
     expect(load('bob')).toEqual([]);
   });
 
-  it('windows the index files, then adds the writer files whole', () => {
+  it('picks the session by the window, then folds it whole', () => {
     writeIndex(activity(ids('p', 3)));
     writeIndex(startingAt(NEXT_DAY, activity(['old0'])), { date: '2026-03-02' });
     writeWriter('engine.1.a.b.json', startingAt(START + 5000, activity(ids('a', 2))));
+    const whole = { calls: 6, usd: 1.5, input: 600 };
 
-    expect(totals(store.loadSession(SID))).toEqual({ calls: 6, usd: 1.5, input: 600 });
+    expect(totals(store.loadSession(SID))).toEqual(whole);
     expect(store.loadAllSessions({ since: new Date('2026-03-02T00:00:00Z') }).map(totals)).toEqual([
-      { calls: 3, usd: 0.75, input: 300 },
+      whole,
     ]);
+    expect(store.loadAllSessions({ since: new Date('2026-03-03T00:00:00Z') })).toEqual([]);
   });
 });
