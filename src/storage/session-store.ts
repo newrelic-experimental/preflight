@@ -1717,15 +1717,11 @@ export class SessionStore {
     reads: readonly SessionFileRead[],
     hasWriterDir = true,
   ): FullSessionSummary | null {
-    const [first, ...rest] = reads.flatMap(({ parsed }) =>
-      parsed.kind === 'unreadable' ? [] : [parsed],
-    );
-    if (!first) return null;
-    const index: [IndexFile, ...IndexFile[]] = [first, ...rest];
+    if (reads.length === 0) return null;
+    const index = reads.flatMap(({ parsed }) => (parsed.kind === 'unreadable' ? [] : [parsed]));
     const files = hasWriterDir ? readWriterFiles(this.sessionsDir, sessionId) : null;
-    return files
-      ? foldSessionFiles(index, files)
-      : combineSessionFiles(index.map((f) => f.summary));
+    if (files) return foldSessionFiles(index, files);
+    return index.length > 0 ? combineSessionFiles(index.map((f) => f.summary)) : null;
   }
 
   private listSessionFiles(): SessionFileInfo[] {
