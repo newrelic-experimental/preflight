@@ -1,5 +1,9 @@
 import { describe, it, expect } from '@jest/globals';
-import { deserializeFullSessionSummary, mergeSummaries } from './session-store.js';
+import {
+  combineSessionFiles,
+  deserializeFullSessionSummary,
+  mergeSummaries,
+} from './session-store.js';
 import type { FullSessionSummary } from './session-store.js';
 import {
   captureLegacyIndex,
@@ -422,6 +426,18 @@ function expectSameSession(actual: FullSessionSummary, expected: FullSessionSumm
   rates(actual).forEach((rate, i) => expect(rate).toBeCloseTo(rates(expected)[i], 9));
 }
 
+/** Every file's capture, combined as the loaders combine captures. */
+function captureOf(files: FullSessionSummary[], writers: WriterContribution[]): WriterContribution {
+  const parts = captureLegacyIndex(
+    files.map((summary) => ({ summary, isProjection: false })),
+    writers,
+  );
+  return {
+    summary: combineSessionFiles(parts.map((p) => p.summary)),
+    retracted: parts.some((p) => p.retracted),
+  };
+}
+
 describe('captureLegacyIndex', () => {
   it('gives back an index that holds the writer files and an older build on top', () => {
     for (let seed = 1; seed <= RUNS; seed++) {
@@ -429,7 +445,7 @@ describe('captureLegacyIndex', () => {
       const writers = randomWriters(next);
       const older = contribution(richSummary(next, 'older', START + 9000));
       const index = fold([...writers, older]);
-      const capture = captureLegacyIndex([index], writers);
+      const capture = captureOf([index], writers);
       expect(capture.retracted).toBe(false);
       expectSameSession(fold([...writers, capture]), index);
       const totals = (s: FullSessionSummary) => [
@@ -451,7 +467,7 @@ describe('captureLegacyIndex', () => {
       const writers = randomWriters(next, true);
       const older = contribution(richSummary(next, 'older', START + 9000));
       const index = fold([...writers, older]);
-      const capture = captureLegacyIndex([index], writers);
+      const capture = captureOf([index], writers);
       const counts = (s: FullSessionSummary) => [
         s.toolCallCount,
         s.bashCommandCount,
@@ -467,7 +483,7 @@ describe('captureLegacyIndex', () => {
       const next = mulberry32(seed + RUNS);
       const writers = randomWriters(next);
       const stale = fold(writers.slice(0, 1 + Math.floor(next() * writers.length)));
-      const { summary, retracted } = captureLegacyIndex([stale], writers);
+      const { summary, retracted } = captureOf([stale], writers);
       expect(retracted).toBe(false);
       expect(summary).toMatchObject({
         toolCallCount: 0,
@@ -491,7 +507,7 @@ describe('captureLegacyIndex', () => {
       const files = Array.from({ length: 1 + Math.floor(next() * 3) }, (_, i) =>
         richSummary(next, `legacy${i}`, START + 1000 * (i + 1)),
       );
-      const capture = captureLegacyIndex(files as [FullSessionSummary], []);
+      const capture = captureOf(files, []);
       const sum = (f: (s: FullSessionSummary) => number) => files.reduce((n, s) => n + f(s), 0);
       expect(capture.retracted).toBe(false);
       expect(capture.summary).toMatchObject({
@@ -514,7 +530,7 @@ describe('captureLegacyIndex', () => {
       timeline: a.timeline?.slice(0, 1),
       endTime: START + 500,
     };
-    const { summary } = captureLegacyIndex([staleA, b, a], []);
+    const { summary } = captureOf([staleA, b, a], []);
     expect(summary.toolCallCount).toBe(a.toolCallCount + b.toolCallCount);
     expect(summary.estimatedCostUsd).toBe((a.estimatedCostUsd ?? 0) + (b.estimatedCostUsd ?? 0));
     expect(summary.tokensInput).toBe(a.tokensInput + b.tokensInput);
@@ -526,13 +542,13 @@ describe('captureLegacyIndex', () => {
       const preUpgrade = contribution(richSummary(next, 'pre', START + 500));
       const [a, b] = [1, 2].map((w) => contribution(richSummary(next, `w${w}`, START + w * 1000)));
       const older = contribution(richSummary(next, 'older', START + 9000));
-      const preUpgradeCapture = captureLegacyIndex([preUpgrade.summary], []);
+      const preUpgradeCapture = captureOf([preUpgrade.summary], []);
       const projectionOfA = fold([a, preUpgradeCapture]);
       const olderBuildIndex = mergeSummaries(
         projectionOfA,
         fold([contribution(projectionOfA), older]),
       );
-      const rewriteCapture = captureLegacyIndex([olderBuildIndex], [a]);
+      const rewriteCapture = captureOf([olderBuildIndex], [a]);
       const captures = mergeSummaries(preUpgradeCapture.summary, rewriteCapture.summary);
       const loaded = fold([a, b, contribution(captures)]);
       const truth = fold([preUpgrade, a, older, b]);
@@ -562,7 +578,7 @@ describe('captureLegacyIndex', () => {
         },
       });
     const writer = scored(0.5, 1, 0.5, 4);
-    const { summary } = captureLegacyIndex([scored(0.875, 5, 0.75, 8)], [contribution(writer)]);
+    const { summary } = captureOf([scored(0.875, 5, 0.75, 8)], [contribution(writer)]);
     expect(summary).toMatchObject({
       efficiencyScore: 0.96875,
       efficiencyScoreSampleCount: 4,
@@ -575,16 +591,13 @@ describe('captureLegacyIndex', () => {
       toolSuccessRate: 1,
       taskSuccessRate: 0.8125,
     });
-    const high = captureLegacyIndex(
-      [scored(0.875, 2, 0.75, 8)],
-      [contribution(scored(0.25, 1, 0.25, 4))],
-    );
+    const high = captureOf([scored(0.875, 2, 0.75, 8)], [contribution(scored(0.25, 1, 0.25, 4))]);
     expect(high.summary).toMatchObject({ efficiencyScore: 1, toolSuccessRate: 1 });
     const unsampled = (s: FullSessionSummary) => ({ ...s, efficiencyScoreSampleCount: undefined });
-    const kept = captureLegacyIndex([unsampled(scored(0.75, 1, 0.75, 8))], [contribution(writer)]);
+    const kept = captureOf([unsampled(scored(0.75, 1, 0.75, 8))], [contribution(writer)]);
     expect(kept.summary.efficiencyScore).toBe(0.75);
     const sampled = scored(0.7, 3, 0.75, 8);
-    const off = captureLegacyIndex([sampled], [contribution(unsampled(scored(0.5, 1, 0.5, 4)))]);
+    const off = captureOf([sampled], [contribution(unsampled(scored(0.5, 1, 0.5, 4)))]);
     expect(off.summary).toMatchObject({
       efficiencyScore: 0.7,
       efficiencyScoreSampleCount: 3,
@@ -594,13 +607,13 @@ describe('captureLegacyIndex', () => {
       efficiencyScore: 0.875,
       toolSuccessRate: 0.75,
     });
-    const low = captureLegacyIndex([scored(0.25, 3, 0.25, 8)], [contribution(scored(1, 1, 1, 4))]);
+    const low = captureOf([scored(0.25, 3, 0.25, 8)], [contribution(scored(1, 1, 1, 4))]);
     expect(low.summary).toMatchObject({
       efficiencyScore: 0,
       toolSuccessRate: 0,
       taskSuccessRate: 0,
     });
-    const unrated = captureLegacyIndex([scored(0.875, 5, 0.75, 8)], [contribution(file({}))]);
+    const unrated = captureOf([scored(0.875, 5, 0.75, 8)], [contribution(file({}))]);
     expect(unrated.summary).toMatchObject({ toolSuccessRate: 0.75, taskSuccessRate: 0.75 });
     const uncounted = (score: number) =>
       file({
@@ -612,17 +625,17 @@ describe('captureLegacyIndex', () => {
           firstAttemptQuality: score,
         },
       });
-    const old = captureLegacyIndex([uncounted(0.625)], [contribution(uncounted(0.5))]);
+    const old = captureOf([uncounted(0.625)], [contribution(uncounted(0.5))]);
     expect(old.summary.efficiencyScore).toBe(0.625);
     const tested = (runs: number, passes: number) =>
       file({ testRunCount: runs, testPassCount: passes, taskCount: 2, taskSuccessRate: 0.5 });
-    const counted = captureLegacyIndex([tested(10, 7)], [contribution(tested(4, 1))]);
+    const counted = captureOf([tested(10, 7)], [contribution(tested(4, 1))]);
     expect(counted.summary.taskSuccessRate).toBe(1);
-    const third = captureLegacyIndex([tested(10, 7)], [contribution(tested(3, 1))]);
+    const third = captureOf([tested(10, 7)], [contribution(tested(3, 1))]);
     expect(third.summary.taskSuccessRate).toBe(0.857);
-    const above = captureLegacyIndex([tested(3, 2)], [contribution(tested(2, 0))]);
+    const above = captureOf([tested(3, 2)], [contribution(tested(2, 0))]);
     expect(above.summary.taskSuccessRate).toBe(1);
-    const none = captureLegacyIndex([scored(0.5, 1, 0.5, 4)], [contribution(writer)]);
+    const none = captureOf([scored(0.5, 1, 0.5, 4)], [contribution(writer)]);
     expect(none.summary).toMatchObject({
       efficiencyScore: null,
       efficiencyScoreSampleCount: 0,
@@ -640,7 +653,7 @@ describe('captureLegacyIndex', () => {
       costByDayUsd: { [DAY]: total },
       tokensInput: writer.tokensInput + 7,
     });
-    const { summary } = captureLegacyIndex([legacy], [contribution(writer)]);
+    const { summary } = captureOf([legacy], [contribution(writer)]);
     expect(summary).toMatchObject({
       estimatedCostUsd: 5,
       costByDayUsd: { [DAY]: 5 },
@@ -660,7 +673,7 @@ describe('captureLegacyIndex', () => {
       costByDayUsd: index.costByDayUsd,
       tokensInput: index.tokensInput,
     });
-    const capture = captureLegacyIndex([index, preLedgerCopy], [writer]);
+    const capture = captureOf([index, preLedgerCopy], [writer]);
     const loaded = fold([writer, capture]);
     expect(loaded.estimatedCostUsd).toBe(index.estimatedCostUsd);
     expect(loaded.costByDayUsd).toEqual(index.costByDayUsd);
@@ -679,20 +692,20 @@ describe('captureLegacyIndex', () => {
       byteEstimates: NO_LEDGER,
       exactTotals: { costUsd: 6, inputTokens: 0, outputTokens: 0, costByDayUsd: {} },
     });
-    const capture = captureLegacyIndex([replayed], [contribution(writer)]);
+    const capture = captureOf([replayed], [contribution(writer)]);
     expect(capture.retracted).toBe(true);
     expect(fold([contribution(writer), capture]).estimatedCostUsd).toBe(6);
-    const estimating = captureLegacyIndex([writer], []);
+    const estimating = captureOf([writer], []);
     expect(estimating.retracted).toBe(false);
     for (const tokens of [{ inputTokens: 4 }, { outputTokens: 4 }]) {
       const unpriced = file({ byteEstimates: { ...NO_LEDGER, ...tokens } });
-      expect(captureLegacyIndex([unpriced], []).retracted).toBe(false);
+      expect(captureOf([unpriced], []).retracted).toBe(false);
     }
   });
 
   it('keeps an index without cost or day buckets without them', () => {
     const writer = richSummary(mulberry32(11), 'w', START + 1000);
-    const { summary } = captureLegacyIndex([file({ toolCallCount: 9 })], [contribution(writer)]);
+    const { summary } = captureOf([file({ toolCallCount: 9 })], [contribution(writer)]);
     expect(summary.estimatedCostUsd).toBeNull();
     expect(summary.costByDayUsd).toBeUndefined();
     expect(summary.toolCallCount).toBe(9 - writer.toolCallCount);
@@ -721,7 +734,7 @@ describe('captureLegacyIndex', () => {
         attribution: { buckets: { tool: { Read: b } }, highContextCostUsd: 0, apiDurationMs: null },
       });
     const without = (y: ReturnType<typeof bucket>) =>
-      captureLegacyIndex([attributed(bucket(8, true))], [contribution(attributed(y))]).summary;
+      captureOf([attributed(bucket(8, true))], [contribution(attributed(y))]).summary;
     const read = (s: FullSessionSummary) => s.attribution?.buckets.tool?.Read;
     expect(read(without(bucket(3, false)))).toEqual({
       ...bucket(5, false),
@@ -751,10 +764,29 @@ describe('captureLegacyIndex', () => {
     const [a, b] = [part('toolu_a', 6, 0), part('toolu_b', 2, 3)];
     expect(fold([{ summary: a, retracted: true }, contribution(b)]).estimatedCostUsd).toBe(8);
     for (const files of permutations([a, b])) {
-      const capture = captureLegacyIndex(files as [FullSessionSummary], []);
+      const capture = captureOf(files, []);
       expect(capture.retracted).toBe(true);
       expect(fold([capture]).estimatedCostUsd).toBe(8);
     }
+  });
+
+  it('counts the calls an older build timeline names beyond its merged counts', () => {
+    const bash = (...ids: string[]) =>
+      file({
+        toolCallCount: 2,
+        toolBreakdown: { Bash: 2 },
+        bashCommandCount: 2,
+        timeline: ids.map((toolUseId, i) => ({
+          toolUseId,
+          toolName: 'Bash',
+          timestamp: START + i,
+        })),
+      });
+    expect(captureOf([bash('w0', 'o0')], [contribution(bash('w0', 'w1'))]).summary).toMatchObject({
+      toolCallCount: 1,
+      toolBreakdown: { Bash: 1 },
+      bashCommandCount: 1,
+    });
   });
 
   it('takes out the calls a writer holds without a toolUseId', () => {
@@ -762,13 +794,13 @@ describe('captureLegacyIndex', () => {
     const legacy = (timeline: Record<string, unknown>[]) =>
       file({ toolCallCount: timeline.length, toolBreakdown: { Read: timeline.length }, timeline });
     const writer = contribution(legacy([read(START + 1), read(START + 2)]));
-    expect(captureLegacyIndex([writer.summary], [writer]).summary).toMatchObject({
+    expect(captureOf([writer.summary], [writer]).summary).toMatchObject({
       toolCallCount: 0,
       timeline: [],
     });
     const recorded = { ...read(START + 1), toolUseId: 'toolu_1' };
     const index = legacy([recorded, read(START + 2), read(START + 3)]);
-    expect(captureLegacyIndex([index], [writer]).summary).toMatchObject({
+    expect(captureOf([index], [writer]).summary).toMatchObject({
       toolCallCount: 1,
       timeline: [read(START + 3)],
     });

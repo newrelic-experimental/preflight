@@ -121,6 +121,95 @@ describe('purgeOldSessions', () => {
   });
 });
 
+describe('purgeOldSessions with writer files', () => {
+  const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+
+  function writeIndex(storagePath: string, sid: string, aged: boolean): string {
+    const path = resolve(storagePath, 'sessions', `2026-01-01_${sid}.json`);
+    writeFileSync(path, '{}');
+    if (aged) utimesSync(path, old, old);
+    return path;
+  }
+
+  function writeWriterFiles(storagePath: string, sid: string, aged: boolean): string {
+    const dir = resolve(storagePath, 'sessions', '.writers', sid);
+    mkdirSync(dir, { recursive: true });
+    for (const name of ['engine.1.a.b.json', 'legacy.0123456789abcdef.json']) {
+      writeFileSync(join(dir, name), '{}');
+      if (aged) utimesSync(join(dir, name), old, old);
+    }
+    if (aged) utimesSync(dir, old, old);
+    return dir;
+  }
+
+  it('keeps an old index while its writer files are recent', () => {
+    const dir = makeTempDir();
+    const index = writeIndex(dir, 's1', true);
+    writeWriterFiles(dir, 's1', false);
+
+    expect(purgeOldSessions(dir, 30)).toBe(0);
+    expect(existsSync(index)).toBe(true);
+  });
+
+  it('keeps old writer files while the index is recent', () => {
+    const dir = makeTempDir();
+    writeIndex(dir, 's1', false);
+    const writers = writeWriterFiles(dir, 's1', true);
+
+    expect(purgeOldSessions(dir, 30)).toBe(0);
+    expect(readdirSync(writers)).toHaveLength(2);
+  });
+
+  it('deletes the index and the writer files together once both are old', () => {
+    const dir = makeTempDir();
+    const index = writeIndex(dir, 's1', true);
+    const writers = writeWriterFiles(dir, 's1', true);
+    writeIndex(dir, 's2', false);
+    const kept = writeWriterFiles(dir, 's2', false);
+
+    expect(purgeOldSessions(dir, 30)).toBe(3);
+    expect(existsSync(index)).toBe(false);
+    expect(existsSync(writers)).toBe(false);
+    expect(readdirSync(kept)).toHaveLength(2);
+  });
+
+  it('ages writer files by the newest of them, and an empty directory by its own time', () => {
+    const dir = makeTempDir();
+    writeIndex(dir, 's1', true);
+    const writers = writeWriterFiles(dir, 's1', true);
+    const touched = new Date();
+    utimesSync(join(writers, 'engine.1.a.b.json'), touched, touched);
+    utimesSync(writers, old, old);
+    const created = resolve(dir, 'sessions', '.writers', 'just-created');
+    mkdirSync(created);
+
+    expect(purgeOldSessions(dir, 30)).toBe(0);
+    expect(readdirSync(writers)).toHaveLength(2);
+    expect(existsSync(created)).toBe(true);
+  });
+
+  it('ages index files one by one when the session has no writer files', () => {
+    const dir = makeTempDir();
+    const older = writeIndex(dir, 'split', true);
+    const newer = resolve(dir, 'sessions', '2026-01-02_split.json');
+    writeFileSync(newer, '{}');
+
+    expect(purgeOldSessions(dir, 30)).toBe(1);
+    expect(existsSync(older)).toBe(false);
+    expect(existsSync(newer)).toBe(true);
+  });
+
+  it('deletes writer files with no index once they are old', () => {
+    const dir = makeTempDir();
+    const orphan = writeWriterFiles(dir, 'orphan', true);
+    const recent = writeWriterFiles(dir, 'recent-orphan', false);
+
+    expect(purgeOldSessions(dir, 30)).toBe(2);
+    expect(existsSync(orphan)).toBe(false);
+    expect(existsSync(recent)).toBe(true);
+  });
+});
+
 describe('purgeOldWeeklySummaries', () => {
   function makeWeeklySummariesDir(dir: string): void {
     mkdirSync(resolve(dir, 'weekly_summaries'), { recursive: true });

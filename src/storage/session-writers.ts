@@ -1,15 +1,27 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { ByteEstimateLedger } from '../metrics/cost-tracker.js';
 import {
   addSummaries,
   byWriteOrder,
   combineSessionFiles,
+  deserializeFullSessionSummary,
   exactTotalsOf,
   savedToolNameByUseId,
   subtractCallUsageParts,
   subtractSummaries,
+  warnOnce,
   type FullSessionSummary,
+  type SerializedFullSessionSummary,
 } from './session-store.js';
 
+/**
+ * Each writer's files for session `<sid>` live in `sessions/.writers/<sid>/`,
+ * never beside the index, where an older build would read them as more of the
+ * session and set them aside once it combined them.
+ */
+export const WRITERS_DIR = '.writers';
+const LEGACY_PREFIX = 'legacy.';
 /**
  * One writer's own share of a session: only what this process drained, never a
  * total seeded from the saved file. Hook events and transcript turns are each
@@ -59,25 +71,55 @@ export function foldWriterContributions(
 }
 
 /**
- * The top-level files for a session as one more writer: what they hold beyond
- * the writer files. Older builds keep saving there, on top of what they read,
- * which can already include the writer files. Every top-level file counts, so a session
- * split across several is captured whole. Pass writer files only, never an
- * earlier capture: each capture is a cumulative view of the same history, so
- * readers combine captures by max and add that once. An older build saves its
- * estimates as an all-zero ledger once a real report replaced them. Retraction
- * is a fact about the session, so any top-level file with that ledger carries it.
+ * Each top-level file an older build saved, as one more writer: what it holds
+ * beyond the writer files. An older build saves on top of what it read, and
+ * the writers may have saved more since. A call is the older build's when no
+ * writer file holds it. Cost has no per-call split, so a file's cost loses the
+ * whole of every writer it may hold. Projections hold only what writer files
+ * and their captures hold, so they are skipped. Pass writer files only, never
+ * an earlier capture. An older build saves an all-zero ledger once a real
+ * report replaced its estimates, and retraction is a fact about the session,
+ * so that file carries it.
  */
 export function captureLegacyIndex(
-  indexFiles: readonly [FullSessionSummary, ...FullSessionSummary[]],
+  index: readonly IndexFile[],
   writers: readonly WriterContribution[],
-): WriterContribution {
-  const index = combineSessionFiles(indexFiles);
-  const summary =
-    writers.length === 0
-      ? index
-      : subtractSummaries(index, foldWriterContributions(writers as [WriterContribution]));
-  return { summary, retracted: indexFiles.some(savedRetraction) };
+): WriterContribution[] {
+  return index
+    .filter((f) => !f.isProjection)
+    .map(({ summary }) => {
+      const held = writers.filter((w) => mayHold(summary, w.summary));
+      const left =
+        held.length === 0
+          ? summary
+          : subtractSummaries(summary, foldWriterContributions(held as [WriterContribution]));
+      return { summary: withTimelineCalls(left), retracted: savedRetraction(summary) };
+    });
+}
+
+/**
+ * Whether `file` can hold any of `writer`. Merges keep the earliest start and
+ * the latest end, so a file holding some of a writer spans that writer's start.
+ * A call both hold without that is one call two processes drained, which the
+ * fold counts once.
+ */
+function mayHold(file: FullSessionSummary, writer: FullSessionSummary): boolean {
+  const start = writer.startTime;
+  return !(start > 0 && (file.startTime > start || (file.endTime > 0 && file.endTime < start)));
+}
+
+/** An older build max-merges call counts but unions timelines, so its timeline can name more. */
+function withTimelineCalls(s: FullSessionSummary): FullSessionSummary {
+  const named = new Map<string, number>();
+  for (const { toolName } of s.timeline ?? []) named.set(toolName, (named.get(toolName) ?? 0) + 1);
+  const toolBreakdown = { ...s.toolBreakdown };
+  for (const [name, n] of named) toolBreakdown[name] = Math.max(toolBreakdown[name] ?? 0, n);
+  return {
+    ...s,
+    toolCallCount: Math.max(s.toolCallCount, s.timeline?.length ?? 0),
+    toolBreakdown,
+    bashCommandCount: Math.max(s.bashCommandCount, named.get('Bash') ?? 0),
+  };
 }
 
 function savedRetraction({ byteEstimates: ledger }: FullSessionSummary): boolean {
@@ -114,4 +156,87 @@ function withoutEstimates(s: FullSessionSummary): FullSessionSummary {
     ...subtractCallUsageParts(s, ledger),
     byteEstimates: NO_ESTIMATES,
   };
+}
+
+export interface IndexFile {
+  readonly summary: FullSessionSummary;
+  readonly isProjection: boolean;
+}
+
+export interface WriterFiles {
+  readonly writers: readonly WriterContribution[];
+  readonly legacyCaptures: readonly WriterContribution[];
+}
+
+export function readWriterFiles(sessionsDir: string, sessionId: string): WriterFiles | null {
+  const dir = join(sessionsDir, WRITERS_DIR, sessionId);
+  const names = listDirOrEmpty(dir).filter(
+    (name) => name.endsWith('.json') && !name.startsWith('.'),
+  );
+  const writers: WriterContribution[] = [];
+  const legacyCaptures: WriterContribution[] = [];
+  for (const name of names.sort()) {
+    let raw: string;
+    try {
+      raw = readFileSync(join(dir, name), 'utf-8');
+    } catch {
+      continue;
+    }
+    const parsed = parseWriterFile(raw, sessionId);
+    if (!parsed) {
+      warnOnce(`writer:${join(dir, name)}`, 'Skipping a writer file that does not parse', {
+        sessionId,
+        file: name,
+      });
+    } else if (name.startsWith(LEGACY_PREFIX)) {
+      legacyCaptures.push(parsed);
+    } else {
+      writers.push(parsed);
+    }
+  }
+  return writers.length + legacyCaptures.length === 0 ? null : { writers, legacyCaptures };
+}
+
+export function foldSessionFiles(
+  index: readonly IndexFile[],
+  files: WriterFiles,
+): FullSessionSummary {
+  const legacy = [...files.legacyCaptures, ...captureLegacyIndex(index, files.writers)];
+  const parts = legacy.length > 0 ? [...files.writers, combineCaptures(legacy)] : files.writers;
+  return foldWriterContributions(parts as [WriterContribution]);
+}
+
+/**
+ * Captures combine as index files do. Captures that share a call are views of
+ * one history, each taken later, so they max-merge. An older build's own file
+ * beside the pre-upgrade index shares none and adds.
+ */
+function combineCaptures(captures: readonly WriterContribution[]): WriterContribution {
+  return {
+    summary: combineSessionFiles(captures.map((c) => c.summary)),
+    retracted: captures.some((c) => c.retracted),
+  };
+}
+
+export function listDirOrEmpty(dir: string): string[] {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
+
+function parseWriterFile(raw: string, sessionId: string): WriterContribution | null {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof doc !== 'object' || doc === null) return null;
+  const { version, retracted, summary } = doc as Record<string, unknown>;
+  if (version !== 1 || typeof retracted !== 'boolean') return null;
+  if (typeof summary !== 'object' || summary === null) return null;
+  const parsed = deserializeFullSessionSummary(summary as SerializedFullSessionSummary);
+  return parsed.sessionId === sessionId ? { summary: parsed, retracted } : null;
 }
