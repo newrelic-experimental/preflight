@@ -12,6 +12,7 @@ jest.mock('node:fs', () => {
   };
 });
 
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -166,6 +167,44 @@ describe('SessionStore.writer', () => {
 
     expect(writerFiles().filter((f) => f.startsWith('legacy.'))).toHaveLength(2);
     expect(totals(store.loadSession(SID))).toEqual({ calls: 10, usd: 1, input: 100 });
+  });
+
+  it('captures each older index file on its own, named by its bytes', () => {
+    writeIndex(activity(ids('p', 2)));
+    writeIndex(activity(['old0'], { start: START + 86_400_000 }), '2026-03-02');
+    const a = store.writer('engine');
+    a.save(own(activity(ids('a', 2))));
+    const older = activity(['old1'], { start: START + 2 * 86_400_000 });
+    writeIndex(older, '2026-03-03');
+    const bytes = readFileSync(join(sessionsDir, `2026-03-03_${SID}.json`));
+
+    store.writer('aggregator').save(own(activity(ids('b', 3))));
+
+    const capture = `legacy.${createHash('sha256').update(bytes).digest('hex').slice(0, 16)}.json`;
+    expect(writerFiles().filter((f) => f.startsWith('legacy.'))).toHaveLength(3);
+    expect(readJson(join(sessionsDir, WRITERS_DIR, SID, capture)).summary).toEqual(
+      JSON.parse(JSON.stringify(older)),
+    );
+    expect(totals(store.loadSession(SID))).toEqual({ calls: 9, usd: 0.9, input: 90 });
+  });
+
+  it('projects an older index that names no calls once', () => {
+    writeIndex(
+      deserializeFullSessionSummary({
+        sessionId: SID,
+        startTime: START,
+        endTime: START + 1000,
+        toolCallCount: 4,
+        estimatedCostUsd: 0.4,
+        tokensInput: 40,
+      } as unknown as Parameters<typeof deserializeFullSessionSummary>[0]),
+    );
+
+    store.writer('engine').save(own(activity(ids('a', 2))));
+
+    const projected = { calls: 6, usd: 0.6, input: 60 };
+    expect(totals(readJson(indexPath()) as unknown as FullSessionSummary)).toEqual(projected);
+    expect(totals(store.loadSession(SID))).toEqual(projected);
   });
 
   it('folds a session split across dates into one index at its earliest date', () => {
