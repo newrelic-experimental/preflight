@@ -764,14 +764,16 @@ function extractInputMeta(toolName: string, input: unknown): Record<string, unkn
 
 // `https://<host>/<owner>/<repo>/pull/<N>`: what `gh pr create` prints on
 // success and what an MCP create_pull_request result carries as html_url.
-const PR_URL_RE = /https?:\/\/[^\s"'/]+\/([^\s"'/]+)\/([^\s"'/]+)\/pull\/(\d{1,9})\b/g;
+const PR_URL_RE = /https?:\/\/([^\s"'/]+)\/([^\s"'/]+)\/([^\s"'/]+)\/pull\/(\d{1,9})\b/g;
 const GH_PR_CREATE_RE = /(?:^|[\s;&|(])gh\s+pr\s+create\b/;
 
 /** The PR named by the PR URLs in a tool's output text, as its number and
- *  (when the owner and repo are plain names) its lowercased `owner/repo`, or
- *  undefined when they name none or several, since then the created one is
- *  unknown (a second create, or a `gh pr comment` URL on another PR). Only
- *  these leave this function; the output itself is never kept. */
+ *  (when the host, owner and repo are plain names) its lowercased `owner/repo`
+ *  (`host/owner/repo` off github.com), or undefined when they name none or
+ *  several, since then the created one is unknown (a second create, or a `gh
+ *  pr comment` URL on another PR). The same owner, repo and number on two
+ *  hosts are two PRs. Only these leave this function; the output itself is
+ *  never kept. */
 function findCreatedPr(
   output: Record<string, unknown> | unknown[],
 ): { createdPrNumber: string; createdPrRepo?: string } | undefined {
@@ -783,9 +785,11 @@ function findCreatedPr(
   }
   const prs = new Map<string, { createdPrNumber: string; createdPrRepo?: string }>();
   for (const text of texts) {
-    for (const [, owner, repo, createdPrNumber] of text.matchAll(PR_URL_RE)) {
-      const createdPrRepo = parsePrRepo(`${owner}/${repo}`);
-      prs.set(`${owner}/${repo}#${createdPrNumber}`.toLowerCase(), {
+    for (const [, hostPort, owner, repo, createdPrNumber] of text.matchAll(PR_URL_RE)) {
+      // gh names a host without its port.
+      const host = hostPort.replace(/:\d+$/, '');
+      const createdPrRepo = parsePrRepo(`${host}/${owner}/${repo}`);
+      prs.set(`${host}/${owner}/${repo}#${createdPrNumber}`.toLowerCase(), {
         createdPrNumber,
         ...(createdPrRepo !== undefined && { createdPrRepo }),
       });
