@@ -77,7 +77,7 @@ import {
 import type { HeldSessionCost, UnbookedSeedCost } from './metrics/cost-tracker-seed.js';
 import { DecisionTracker } from './metrics/decision-tracker.js';
 import { EfficiencyScorer } from './metrics/efficiency-score.js';
-import { FirstSaveBaselines } from './metrics/first-save-baselines.js';
+import { FirstSaveBaselines, costSeedOf } from './metrics/first-save-baselines.js';
 import type { RepoContext } from './metrics/git-efficiency-tracker.js';
 import {
   GitEfficiencyTracker,
@@ -141,6 +141,8 @@ import {
   savedToolNameByUseId,
   SessionStore,
   sessionSummaryToDriftRecord,
+  deserializeFullSessionSummary,
+  type SerializedFullSessionSummary,
 } from './storage/session-store.js';
 import { amendRecord, type ToolCallRecord } from './storage/types.js';
 import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
@@ -983,13 +985,14 @@ async function main(): Promise<void> {
     }
   };
 
-  const armPendingConfirmation = (): void => {
+  const armPendingConfirmation = (onCapElapsed: () => void): void => {
     pendingConfirmation = true;
     pendingConfirmationCapTimer = setTimeout(() => {
       logger.warn(
         'Session id confirmation cap elapsed with no PPID correction; resuming periodic checkpointing',
       );
       clearPendingConfirmation();
+      onCapElapsed();
     }, getPendingConfirmationCapMs());
     pendingConfirmationCapTimer.unref?.();
   };
@@ -1790,7 +1793,7 @@ async function main(): Promise<void> {
       const now = Date.now();
       const ownIsSeeded =
         isSyntheticSessionId(sessionTraceId) || rehydratedTrackerSessionIds.has(sessionTraceId);
-      const ownFile = firstSaveBaselines.costFileBeforeOwnSave(sessionTraceId);
+      const ownFile = firstSaveBaselines.costSeedFile(sessionTraceId);
       const ownUnbooked = ownUnbookedCosts.get(sessionTraceId);
       const baseline = computeHistoricalCosts(
         sessionStoreForCostBaseline,
@@ -3040,6 +3043,25 @@ async function main(): Promise<void> {
       saveRollups(cwdGuessRolledUpWhilePending, 'running');
       rehydrateTrackersIfResumed(guessId);
     };
+    // Past the confirmation cap the engine saves its cwd guess's file as its own
+    // session, so its cost trackers take what it rolled up for the guess before
+    // adopting it. Never the file's other cost, which may be another session's.
+    const takeCwdGuessRollup = (guessId: string): void => {
+      try {
+        for (const rollup of cwdGuessRolledUpWhilePending) {
+          const seed = costSeedOf(
+            deserializeFullSessionSummary(rollup as unknown as SerializedFullSessionSummary),
+          );
+          costTracker.seedFromPersisted(seed.costTracker);
+          modelUsageTracker.seedFromPersisted(seed.modelBreakdown);
+        }
+        firstSaveBaselines.countRollupCost(guessId);
+        refreshPriorCostBaseline();
+        publishCost();
+      } catch (err) {
+        logger.warn('Failed to take the rollup held for a cwd guess', { error: String(err) });
+      }
+    };
 
     persistSession = (opts?: { periodic?: boolean }) => {
       if (!sessionStore || !sessionTracker || !taskDetector || !config) return;
@@ -3604,7 +3626,7 @@ async function main(): Promise<void> {
       source: 'cwd' | 'ppid-ancestor',
       readsParentLevel = true,
     ): void => {
-      if (source === 'cwd') armPendingConfirmation();
+      if (source === 'cwd') armPendingConfirmation(() => takeCwdGuessRollup(staleId));
       ppidCorrectionAbort = new AbortController();
       // Guards against both watches below firing: in practice only one ever
       // can (see the win32 branch's own comment), but a shared flag makes
