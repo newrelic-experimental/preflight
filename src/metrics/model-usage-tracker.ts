@@ -157,9 +157,7 @@ function deriveModelUsageMetrics(
 const MAX_SWITCH_EVENTS = 100;
 
 export class ModelUsageTracker implements Resettable {
-  /** Seeds plus own usage, as CostTracker's `held` book. */
-  private byModel = new Map<string, MutableModelStats>();
-  /** Own usage plus any `drainedHere` seed. */
+  private heldByModel = new Map<string, MutableModelStats>();
   private ownByModel = new Map<string, MutableModelStats>();
   private switches: ModelSwitchEvent[] = [];
 
@@ -173,7 +171,7 @@ export class ModelUsageTracker implements Resettable {
       totalCacheCreationTokens: usage.cacheCreationTokens,
       totalThinkingTokens: usage.thinkingTokens,
     };
-    addModelStats(this.byModel, model, entry);
+    addModelStats(this.heldByModel, model, entry);
     addModelStats(this.ownByModel, model, entry);
   }
 
@@ -199,7 +197,7 @@ export class ModelUsageTracker implements Resettable {
     origin: SeedOrigin = 'alreadySaved',
   ): void {
     for (const [model, entry] of Object.entries(breakdown)) {
-      addModelStats(this.byModel, model, entry);
+      addModelStats(this.heldByModel, model, entry);
       if (origin === 'drainedHere') addModelStats(this.ownByModel, model, entry);
     }
   }
@@ -233,7 +231,7 @@ export class ModelUsageTracker implements Resettable {
   // session file never stores a stale derived ratio; ratios are always
   // recomputed at read time via getMetrics()/combineBreakdowns().
   getRawBreakdown(): Readonly<Record<string, ModelBreakdownEntry>> {
-    return rawBreakdownOf(this.byModel);
+    return rawBreakdownOf(this.heldByModel);
   }
 
   /** `getRawBreakdown()` without any `alreadySaved` seed. */
@@ -284,7 +282,7 @@ export class ModelUsageTracker implements Resettable {
   }
 
   reset(_sessionId: string): void {
-    this.byModel.clear();
+    this.heldByModel.clear();
     this.ownByModel.clear();
     this.switches = [];
   }

@@ -312,12 +312,10 @@ export interface SubagentMetrics {
   readonly reconciliationDeltaPct: number | null;
 }
 
-/** One priced token event, as each `CostBook` books it. */
 interface PricedCall {
   readonly model: string;
   readonly usage: TokenUsage;
   readonly breakdown: CostBreakdown;
-  /** Null for a late arrival, which books on no day. */
   readonly dayKey: string | null;
   readonly timestampMs: number;
   readonly agentId: string | undefined;
@@ -327,13 +325,6 @@ interface PricedCall {
   readonly isByteEstimate: boolean;
 }
 
-/**
- * The totals a seed can carry. A CostTracker keeps two books: `held` (its
- * seeds plus its own work, which `getMetrics()` reports) and `own` (only what
- * it produced itself). Every own event goes to both. `held` is not own plus
- * seed summed on read, because that would reorder the float additions and
- * change the saved totals in their last digits.
- */
 class CostBook {
   totalCostUsd = 0;
   totalInputTokens = 0;
@@ -387,8 +378,6 @@ class CostBook {
       if (call.isByteEstimate) this.byteEstimateEstimated.add(model, dayKey, call.estimated);
     }
 
-    // A late arrival still counts in the session-level totals, because the
-    // cost is real, but skips day bucketing and workflow-run maps.
     this.totalCostUsd += breakdown.totalUsd;
     this.totalInputTokens += usage.inputTokens;
     this.totalOutputTokens += usage.outputTokens;
@@ -659,7 +648,6 @@ export class CostTracker implements Resettable {
     return this.accumulateTokens(usage, model, { timestampMs: Date.now() }, true);
   }
 
-  /** Every own event goes to both books. */
   private books(): readonly CostBook[] {
     return [this.held, this.own];
   }
@@ -944,7 +932,7 @@ export class CostTracker implements Resettable {
     this.totalLinesChanged += lines;
   }
 
-  /** Seeds plus own work: what display, budgets, alerts and NR read. */
+  /** Seeds plus own work. */
   getMetrics(): CostMetrics {
     return this.metricsOf(this.held);
   }

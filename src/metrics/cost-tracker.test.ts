@@ -2288,7 +2288,6 @@ describe('getOwnMetrics()', () => {
   const turn = makeUsage({ inputTokens: 2_000, outputTokens: 400, totalTokens: 2_400 });
   const REPLAY = { replacesEstimates: true };
 
-  // What a previous process saved for the session, as a restarted one loads it.
   const savedSessionOf = (tracker: CostTracker): FullSessionSummary =>
     buildSessionSummary({
       sessionTracker: new SessionTracker('sess-own'),
@@ -2379,6 +2378,20 @@ describe('getOwnMetrics()', () => {
 
     expect(tracker.getOwnMetrics().firstActivityByDayMs).toEqual({ [localDateKey(at)]: at });
     expect(tracker.getMetrics().firstActivityByDayMs).toEqual({});
+  });
+
+  it('adds the session total in arrival order, not own plus seed on read', () => {
+    const tracker = new CostTracker();
+    tracker.seedFromPersisted(
+      makeSeed({ totalCostUsd: 0.1, parentCostUsd: 0.1, totalInputTokens: 1 }),
+      'alreadySaved',
+    );
+    const small = makeUsage({ inputTokens: 100, totalTokens: 100 });
+    const first = tracker.recordTokenUsage(small, MODEL).totalUsd;
+    const second = tracker.recordTokenUsage(small, MODEL).totalUsd;
+
+    expect(0.1 + first + second).not.toBe(0.1 + (first + second));
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBe(0.1 + first + second);
   });
 
   it('forgets its own cost on reset', () => {

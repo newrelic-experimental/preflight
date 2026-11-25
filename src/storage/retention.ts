@@ -7,7 +7,6 @@ import { listDirOrEmpty, WRITERS_DIR } from './session-writers.js';
 const logger = createLogger('retention');
 
 const PURGED_SUFFIXES = ['.json', '.corrupt', '.merged', '.tmp'];
-/** One hour. A writer's temp file outlives its save only when the writer died mid-save. */
 const STALE_WRITER_TMP_DAYS = 1 / 24;
 
 /**
