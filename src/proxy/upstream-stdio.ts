@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { createLogger } from '../core/index.js';
 import { stripDangerousEnv } from '../lib/child-env.js';
 import type { ForwardResult, ProxyUpstream, UpstreamConfig } from './types.js';
+import { isToolErrorResult } from './rpc-outcome.js';
 
 const logger = createLogger('proxy-stdio');
 
@@ -250,11 +251,15 @@ export class StdioUpstream implements ProxyUpstream {
       const upstreamLatencyMs = performance.now() - start;
       const size = writeJsonRpcResponse(res, rpc.id, result);
 
+      // The SDK rejects a JSON-RPC error, so only an isError result reaches here as a failure.
+      const rpcOutcome =
+        rpc.method === 'tools/call' ? (isToolErrorResult(result) ? 'tool_error' : 'ok') : undefined;
       return {
         statusCode: 200,
         isStreaming: false,
         responseSizeBytes: size,
         upstreamLatencyMs,
+        ...(rpcOutcome !== undefined && { rpcOutcome }),
       };
     } catch (err: unknown) {
       const upstreamLatencyMs = performance.now() - start;
