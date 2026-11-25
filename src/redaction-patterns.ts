@@ -240,9 +240,8 @@ const QUOTE = String.raw`\\"|"|'`;
 const KEY_HEADER = String.raw`(?:x-)?(?:api-?key|auth-token|access-token)`;
 const AUTH_HEADER = String.raw`(?:proxy-)?authorization`;
 
-// -H may take its header straight after the flag when the header is quoted (-H"Authorization: …").
 const HEADER = new RegExp(
-  String.raw`((?:-H|--(?:proxy-)?header)(?:(?:[\s=]|${CONTINUATION}){1,8}|(?=\\?["']))(${QUOTE})?)(?:${KEY_HEADER}(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|${AUTH_HEADER}[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
+  String.raw`((?:-H|--(?:proxy-)?header)(?:[\s=]|${CONTINUATION}){0,8}(${QUOTE})?)(?:${KEY_HEADER}(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|${AUTH_HEADER}[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
   'gi',
 );
 
