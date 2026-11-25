@@ -5516,6 +5516,30 @@ describe('combining a session split across files', () => {
     expect(store.loadSession(id)).toEqual(all[0]);
   });
 
+  // Fake only Date, leaving the timers fs and the test runner rely on real.
+  const withPinnedClock = (now: Date, run: () => void) => {
+    jest.useFakeTimers({
+      now,
+      doNotFake: [
+        'hrtime',
+        'nextTick',
+        'performance',
+        'queueMicrotask',
+        'setImmediate',
+        'clearImmediate',
+        'setInterval',
+        'clearInterval',
+        'setTimeout',
+        'clearTimeout',
+      ],
+    });
+    try {
+      run();
+    } finally {
+      jest.useRealTimers();
+    }
+  };
+
   describe('a load limited to a window', () => {
     const recent = (end: number) => ({ ...second(), startTime: end - HOUR, endTime: end });
     const setMtime = (date: string, ms: number) =>
@@ -5554,17 +5578,20 @@ describe('combining a session split across files', () => {
     });
 
     it('keeps the recent piece of a long session in today and week views', () => {
-      const store = new SessionStore({ storagePath: tmpDir });
-      const now = Date.now();
-      writeSessionFile({ ...first(), startTime: now - 720 * HOUR, endTime: now - 719 * HOUR });
-      const costByDayUsd = { [localDateKey(now)]: 2 };
-      writeSessionFile({ ...recent(now), timeline: [entry(now - 60_000)], costByDayUsd });
+      // Midday, so the recent piece's hour-long span cannot cross local midnight.
+      withPinnedClock(new Date(2026, 5, 15, 12), () => {
+        const store = new SessionStore({ storagePath: tmpDir });
+        const now = Date.now();
+        writeSessionFile({ ...first(), startTime: now - 720 * HOUR, endTime: now - 719 * HOUR });
+        const costByDayUsd = { [localDateKey(now)]: 2 };
+        writeSessionFile({ ...recent(now), timeline: [entry(now - 60_000)], costByDayUsd });
 
-      expect(store.loadTodaySessions().map((s) => s.toolCallCount)).toEqual([1]);
-      expect(store.loadSessionsOverlappingToday().map((s) => s.toolCallCount)).toEqual([1]);
-      expect(computeHistoricalCosts(store, 'another-session', now).priorWeeklyCostUsd).toBeCloseTo(
-        2,
-      );
+        expect(store.loadTodaySessions().map((s) => s.toolCallCount)).toEqual([1]);
+        expect(store.loadSessionsOverlappingToday().map((s) => s.toolCallCount)).toEqual([1]);
+        expect(
+          computeHistoricalCosts(store, 'another-session', now).priorWeeklyCostUsd,
+        ).toBeCloseTo(2);
+      });
     });
   });
 
