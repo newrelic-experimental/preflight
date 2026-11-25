@@ -4565,6 +4565,36 @@ describe('api-handler GET /api/sessions/today/aggregate', () => {
     expect(parsed.antiPatternCount).toBe(0);
   });
 
+  it("counts today's tool calls of a session that started before midnight", async () => {
+    const todayStart = localStartOfDay();
+    const crossMidnight = {
+      sessionId: 'cross-midnight',
+      startTime: todayStart - 30 * 60_000,
+      endTime: todayStart + 10 * 60_000,
+      estimatedCostUsd: 1,
+      antiPatterns: [],
+      timeline: [
+        { timestamp: todayStart - 20 * 60_000, durationMs: 10, toolName: 'Read' },
+        { timestamp: todayStart + 5 * 60_000, durationMs: 10, toolName: 'Read' },
+        { timestamp: todayStart + 6 * 60_000, durationMs: 10, toolName: 'Read' },
+      ],
+    };
+    const handler = createApiHandler({
+      localStore: { peekAllBuffers: () => [] },
+      sessionStore: {
+        loadTodaySessions: () => [],
+        loadSessionsOverlappingToday: () => [crossMidnight],
+        listSessions: () => [],
+        loadSession: () => null,
+      } as unknown as Parameters<typeof createApiHandler>[0]['sessionStore'],
+    });
+    const req = { method: 'GET', url: '/api/sessions/today/aggregate' } as IncomingMessage;
+    const { res, body } = fakeRes();
+    await handler(req, res);
+    const parsed = JSON.parse(body()) as { toolCallCount: number };
+    expect(parsed.toolCallCount).toBe(2);
+  });
+
   it('keeps the lifetime anti-pattern count of a session that started within the last day', async () => {
     const todayStart = localStartOfDay();
     const todayKey = localDateKey(todayStart);
