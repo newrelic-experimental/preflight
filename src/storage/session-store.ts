@@ -1994,10 +1994,17 @@ export class SessionStore {
     return results.sort((a, b) => a.startTime - b.startTime);
   }
 
+  /**
+   * Sessions that started since local midnight. File names carry the UTC date,
+   * so `loadAllSessions({ since })` only narrows to a day that may begin up to
+   * a day before the cutoff; the start time is what decides, so every
+   * timezone returns the same sessions.
+   */
   loadTodaySessions(): FullSessionSummary[] {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    return this.loadAllSessions({ since: today });
+    const startOfToday = today.getTime();
+    return this.loadAllSessions({ since: today }).filter((s) => s.startTime >= startOfToday);
   }
 
   /**

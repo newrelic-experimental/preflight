@@ -1482,6 +1482,8 @@ function prRepoKey(
   return `${repo}#${record.prEvent.prNumber}`;
 }
 
+const PR_LOOKBACK_MS = 86_400_000;
+
 interface PrMergeTime {
   readonly timestamp: number;
   readonly hasRef: boolean;
@@ -1598,7 +1600,10 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
   }
   const prRecordsBySession = new Map<string, PrRecord[]>();
   const merges = new PrMergeIndex(repoKeyByWorkspace);
-  for (const record of activityStore.query({ since: startMs, until: now })) {
+  // Yesterday's creates and merges count too, so a PR created yesterday shows
+  // as ready for review until it merges. The loaded sessions start at
+  // yesterday, so a merge from before then can't be seen.
+  for (const record of activityStore.query({ since: startMs - PR_LOOKBACK_MS, until: now })) {
     if (!isPrRecord(record)) continue;
     const list = prRecordsBySession.get(record.sessionId);
     if (list) list.push(record);
