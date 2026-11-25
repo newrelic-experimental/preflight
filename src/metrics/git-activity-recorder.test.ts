@@ -47,6 +47,16 @@ const makeRecord = (overrides?: Partial<ToolCallRecord>): ToolCallRecord => ({
   ...overrides,
 });
 
+// What `ssh -G <host>` would report for a `Host` entry in ~/.ssh/config.
+const SSH_ALIASES: Readonly<Record<string, string | null>> = {
+  'github-work': 'github.com',
+  'github.com-work': 'github.com',
+  'ghe-work': 'ghe.example.com',
+  'broken-alias': null,
+};
+const sshHostName = (host: string): string | null =>
+  host in SSH_ALIASES ? SSH_ALIASES[host]! : host;
+
 describe('GitActivityRecorder', () => {
   let store: ActivityStore<GitActivityRecord>;
   let identityResolver: WorktreeIdentityResolver;
@@ -55,7 +65,7 @@ describe('GitActivityRecorder', () => {
 
   beforeEach(() => {
     store = new ActivityStore();
-    identityResolver = new WorktreeIdentityResolver();
+    identityResolver = new WorktreeIdentityResolver(sshHostName);
     recorder = new GitActivityRecorder(store, identityResolver);
 
     // Create a temporary git repo for testing
@@ -599,6 +609,65 @@ describe('GitActivityRecorder', () => {
       expect(refsOf(makeRecord({ command: 'gh pr merge 42', cwd: repoDir }))).toEqual([
         ['merge', '42', 'ghe.example.com/acme/app#42'],
       ]);
+    });
+
+    it.each([
+      ['an ssh host alias', 'git@github-work:Acme/App.git'],
+      ['a dotted ssh host alias', 'git@github.com-work:Acme/App.git'],
+      ['the ssh.github.com port-443 host', 'ssh://git@ssh.github.com:443/Acme/App.git'],
+      ['an alias ssh cannot resolve', 'git@broken-alias:Acme/App.git'],
+    ])('reads a github.com remote through %s as github.com', (_label, url) => {
+      addRemote('origin', url);
+      expect(refsOf(makeRecord({ command: 'gh pr merge 42', cwd: repoDir }))).toEqual([
+        ['merge', '42', 'acme/app#42'],
+      ]);
+    });
+
+    it('takes the host of a GHE remote reached through an ssh alias', () => {
+      addRemote('origin', 'git@ghe-work:Acme/App.git');
+      expect(refsOf(makeRecord({ command: 'gh pr merge 42', cwd: repoDir }))).toEqual([
+        ['merge', '42', 'ghe.example.com/acme/app#42'],
+      ]);
+    });
+
+    it('gives a GHE MCP create and merge the same host-qualified ref', () => {
+      addRemote('origin', 'git@ghe.example.com:acme/app.git');
+      expect(
+        refsOf(
+          makeRecord({
+            toolName: 'mcp__github__create_pull_request',
+            cwd: repoDir,
+            createdPrNumber: '57',
+            createdPrRepo: 'ghe.example.com/acme/app',
+            mcpPrRepo: 'acme/app',
+          }),
+          makeRecord({
+            toolUseId: 'tool-2',
+            toolName: 'mcp__github__merge_pull_request',
+            cwd: repoDir,
+            mcpPrNumber: '57',
+            mcpPrRepo: 'acme/app',
+          }),
+        ),
+      ).toEqual([
+        ['create', '57', 'ghe.example.com/acme/app#57'],
+        ['merge', '57', 'ghe.example.com/acme/app#57'],
+      ]);
+    });
+
+    it('leaves an MCP repo without a host when two hosts have it or no remote does', () => {
+      addRemote('origin', 'git@ghe.example.com:acme/app.git');
+      addRemote('upstream', 'https://github.com/acme/app.git');
+      expect(
+        refsOf(
+          makeRecord({
+            toolName: 'mcp__github__merge_pull_request',
+            cwd: repoDir,
+            mcpPrNumber: '57',
+            mcpPrRepo: 'acme/app',
+          }),
+        ),
+      ).toEqual([['merge', '57', 'acme/app#57']]);
     });
 
     it('takes a merge ref with the host -R names', () => {
