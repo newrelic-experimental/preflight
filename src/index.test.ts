@@ -3417,6 +3417,144 @@ describe('stdio integration', () => {
       });
     }, 40000);
 
+    describe('past the confirmation cap of its cwd guess', () => {
+      const capEnv = { NR_AI_PENDING_CONFIRMATION_CAP_MS: '200' };
+      const withCappedEngine = (
+        persistIntervalMs: string,
+        body: Parameters<typeof withPendingEngine>[1],
+      ) => withPendingEngine(persistIntervalMs, body, () => [], 'claude-code', capEnv);
+      const reportBeforeAndAfterGuess = async (env: Record<string, string>) => {
+        const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+        runHook(env, reportHook('conv-guess', 'r-guess-0001'));
+        expect(await drained(storage, 'conv-guess')).toBe('');
+        await guessFromCwd(storage, 'conv-guess');
+        await new Promise((r) => setTimeout(r, 1000));
+        runHook(env, reportHook('conv-guess', 'r-guess-0002'));
+        expect(await drained(storage, 'conv-guess')).toBe('');
+      };
+      const loadedTokens = (storage: string) => () =>
+        new SessionStore({ storagePath: storage }).loadSession('conv-guess')?.tokensInput;
+
+      it('a pending engine that stops adds the report it drained before the guess to the ones after', async () => {
+        await withCappedEngine('600000', async (env, _adopt, close) => {
+          await reportBeforeAndAfterGuess(env);
+          await close();
+
+          expect(savedSession(env.NEW_RELIC_AI_MCP_STORAGE_PATH, 'conv-guess')?.tokensInput).toBe(
+            2000,
+          );
+        });
+      }, 40000);
+
+      it('a pending engine that idles past the cap counts the report it drained before the guess in its session budget', async () => {
+        await withCappedEngine('600000', async (env, _adopt, close, _pid, client) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          runHook(env, reportHook('conv-guess', 'r-guess-0001'));
+          expect(await drained(storage, 'conv-guess')).toBe('');
+          await guessFromCwd(storage, 'conv-guess');
+          await new Promise((r) => setTimeout(r, 1000));
+
+          const result = await client.callTool({
+            name: 'nr_observe_get_budget_status',
+            arguments: {},
+          });
+          const [content] = result.content as Array<{ text: string }>;
+          const spent = (JSON.parse(content!.text) as { session: { spentUsd: number } }).session;
+          const saved = savedSession(storage, 'conv-guess');
+          await close();
+
+          expect(spent.spentUsd).toBeGreaterThan(0);
+          expect(spent.spentUsd).toBeCloseTo(Number(saved?.estimatedCostUsd), 9);
+        });
+      }, 40000);
+
+      it('a pending engine whose ppid watch never matches checkpoints the report it drained before the guess with the ones after, counted once in its budget', async () => {
+        await withCappedEngine('200', async (env, _adopt, close, _pid, client) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          await reportBeforeAndAfterGuess(env);
+          expect(await until(loadedTokens(storage), (tokens) => tokens === 2000)).toBe(2000);
+
+          const result = await client.callTool({
+            name: 'nr_observe_get_budget_status',
+            arguments: {},
+          });
+          const [content] = result.content as Array<{ text: string }>;
+          const spent = (JSON.parse(content!.text) as { daily: { spentUsd: number } }).daily;
+          const saved = savedSession(storage, 'conv-guess');
+          expect(spent.spentUsd).toBeCloseTo(Number(saved?.estimatedCostUsd), 9);
+          await close();
+        });
+      }, 40000);
+
+      it("a pending engine whose ppid watch never matches keeps both reports beside another writer's file", async () => {
+        await withCappedEngine('200', async (env, _adopt, close) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          const writers = resolve(storage, 'sessions', '.writers', 'conv-guess');
+          mkdirSync(writers, { recursive: true });
+          const start = Date.now() - 60_000;
+          writeFileSync(
+            resolve(writers, 'other-writer.json'),
+            JSON.stringify({
+              version: 1,
+              retracted: false,
+              summary: {
+                sessionId: 'conv-guess',
+                startTime: start,
+                endTime: start + 1000,
+                tokensInput: 500,
+              },
+            }),
+          );
+          await reportBeforeAndAfterGuess(env);
+
+          const tokens = await until(loadedTokens(storage), (t) => (t ?? 0) >= 2000);
+          await close();
+
+          expect(tokens).toBeGreaterThanOrEqual(2000);
+          expect(loadedTokens(storage)()).toBeLessThanOrEqual(2500);
+        });
+      }, 40000);
+
+      it('a pending engine that stops saves the subagent turn it drained before the guess', async () => {
+        await withCappedEngine('600000', async (env, _adopt, close) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          await subagentTurn(storage, 'conv-guess', 'msg_sub_1');
+          await guessFromCwd(storage, 'conv-guess');
+          await new Promise((r) => setTimeout(r, 1000));
+          await close();
+
+          const saved = savedSession(storage, 'conv-guess');
+          expect(saved?.tokensInput).toBe(100000);
+          expect(saved?.subagentCostUsd).toBeCloseTo(0.6);
+          expect(saved?.modelBreakdown).toMatchObject({
+            'claude-sonnet-4-6': { totalInputTokens: 100000 },
+          });
+        });
+      }, 40000);
+
+      it('a pending engine the ppid confirms after the cap seeds the guess without counting the report it drained before the guess twice', async () => {
+        await withCappedEngine('600000', async (env, _adopt, close, _pid, client) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          await reportBeforeAndAfterGuess(env);
+          const ppidCrumbs = resolve(breadcrumbRoot(storage, 'claude-code'), 'session-by-ppid');
+          mkdirSync(ppidCrumbs, { recursive: true });
+          writeFileSync(resolve(ppidCrumbs, `${process.pid}.txt`), 'conv-guess');
+          // The watch ticks at most 2 s apart.
+          await new Promise((r) => setTimeout(r, 3000));
+          const result = await client.callTool({
+            name: 'nr_observe_get_cost_breakdown',
+            arguments: {},
+          });
+          const [content] = result.content as Array<{ text: string }>;
+          const own = (JSON.parse(content!.text) as { tokens: { input: number } }).tokens.input;
+          await close();
+
+          expect(own).toBe(2000);
+          expect(savedSession(storage, 'conv-guess')?.tokensInput).toBe(2000);
+        });
+      }, 40000);
+    });
+
     it('a claude-code engine stops estimating its own session once a drained report for it arrives', async () => {
       await withPendingEngine('600000', async (env, adopt, close) => {
         const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
