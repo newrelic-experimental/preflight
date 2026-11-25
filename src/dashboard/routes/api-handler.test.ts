@@ -3269,6 +3269,19 @@ describe('api-handler GET /api/sessions/live', () => {
 });
 
 describe('api-handler GET /api/sessions/today/aggregate', () => {
+  const LATEST_FIXTURE_OFFSET_MS = 20_000;
+  const MIDNIGHT_GUARD_MS = 1_000;
+  beforeEach(
+    async () => {
+      const fixturesInPastAt =
+        localStartOfDay(Date.now() + MIDNIGHT_GUARD_MS) + LATEST_FIXTURE_OFFSET_MS + 1;
+      while (Date.now() < fixturesInPastAt) {
+        await new Promise((resolve) => setTimeout(resolve, fixturesInPastAt - Date.now()));
+      }
+    },
+    LATEST_FIXTURE_OFFSET_MS + MIDNIGHT_GUARD_MS + 5_000,
+  );
+
   it('aggregates tool calls and costs across buffer + persisted sessions', async () => {
     const now = Date.now();
     const startOfDay = new Date(now);
