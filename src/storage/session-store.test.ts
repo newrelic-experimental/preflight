@@ -3827,7 +3827,13 @@ describe('SessionStore deserialization', () => {
       timeline: [
         { timestamp: 1100, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 'Acme/App' },
         { timestamp: 1200, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 'acme/app?x=1' },
-        { timestamp: 1300, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 'a/b/c' },
+        { timestamp: 1300, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 'a/b/c/d' },
+        {
+          timestamp: 1350,
+          toolName: 'Bash',
+          createdPrNumber: '42',
+          createdPrRepo: 'GHE.Example.com/Acme/App',
+        },
         { timestamp: 1400, toolName: 'Bash', createdPrNumber: '42', createdPrRepo: 7 },
       ],
     });
@@ -3838,6 +3844,7 @@ describe('SessionStore deserialization', () => {
       'acme/app',
       undefined,
       undefined,
+      'ghe.example.com/acme/app',
       undefined,
     ]);
   });

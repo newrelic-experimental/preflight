@@ -582,7 +582,7 @@ describe('collector-script', () => {
       expect(event.toolOutput).toEqual({ createdPrNumber: '42', createdPrRepo: 'acme/app' });
     });
 
-    it('lowercases the repo a gh pr create URL names', () => {
+    it('lowercases the repo a gh pr create URL names and keeps a host other than github.com', () => {
       processHook(
         makePostToolUse({
           tool_name: 'Bash',
@@ -593,7 +593,22 @@ describe('collector-script', () => {
 
       expect(readBufferEvents()[0]!.toolOutput).toEqual({
         createdPrNumber: '7',
-        createdPrRepo: 'acme/my.app',
+        createdPrRepo: 'github.example.com/acme/my.app',
+      });
+    });
+
+    it('names a PR on a host with a port by the host alone', () => {
+      processHook(
+        makePostToolUse({
+          tool_name: 'Bash',
+          tool_input: { command: 'gh pr create --fill' },
+          tool_response: { stdout: 'https://ghe.example.com:8443/acme/app/pull/7\n' },
+        }),
+      );
+
+      expect(readBufferEvents()[0]!.toolOutput).toEqual({
+        createdPrNumber: '7',
+        createdPrRepo: 'ghe.example.com/acme/app',
       });
     });
 
@@ -607,6 +622,11 @@ describe('collector-script', () => {
         'the same number in two repos',
         'gh pr create --fill && gh pr create -R acme/other --fill',
         'https://github.com/acme/app/pull/41\nhttps://github.com/acme/other/pull/41\n',
+      ],
+      [
+        'the same owner, repo and number on two hosts',
+        'gh pr create --fill && GH_HOST=ghe.example.com gh pr create --fill',
+        'https://github.com/acme/app/pull/41\nhttps://ghe.example.com/acme/app/pull/41\n',
       ],
       [
         'a comment on another PR',

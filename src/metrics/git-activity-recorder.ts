@@ -8,7 +8,6 @@ import {
   cdSegmentTarget,
   classifyGitSegments,
   ghPrMergeTogglesAuto,
-  ghSegmentOverridesRepo,
   processGhCommand,
   segmentAssignsGhRepo,
   segmentSuccessFollowsCommand,
@@ -16,7 +15,7 @@ import {
 } from './git-event-classifier.js';
 import { UNATTRIBUTED_WORKSPACE_KEY, WorktreeIdentityResolver } from './git-workspace-identity.js';
 import { mcpPrEvent } from './mcp-pr-tools.js';
-import { ghSegmentRepo, prRefOf, type PrRef } from './pr-ref.js';
+import { ghSegmentNamesRepo, ghSegmentRepo, prRefOf, type PrRef } from './pr-ref.js';
 import { readShell } from './shell-lexer.js';
 import type { PrEvent } from './git-efficiency-tracker.js';
 
@@ -114,8 +113,14 @@ export class GitActivityRecorder {
         mcpPr.prNumber !== null && this.namesOtherRepo(record.mcpPrRepo, cwd)
           ? { ...mcpPr, prNumber: null }
           : mcpPr;
+      // The URL a create returns names its host. A call's own owner and repo
+      // don't, so they take the host of the cwd remote that has them.
       const callRepo =
-        mcpPr.action === 'create' ? (record.createdPrRepo ?? record.mcpPrRepo) : record.mcpPrRepo;
+        mcpPr.action === 'create' && record.createdPrRepo !== undefined
+          ? record.createdPrRepo
+          : typeof record.mcpPrRepo === 'string'
+            ? this.identityResolver.qualifyRepoName(record.mcpPrRepo, cwd)
+            : undefined;
       this.ingestActivity({
         sessionId: record.sessionId ?? 'unknown',
         kind: 'pr',
@@ -173,7 +178,7 @@ export class GitActivityRecorder {
       const number = parsed.prNumber ?? captured ?? null;
       const inCwdRepo =
         number !== null &&
-        !ghSegmentOverridesRepo(segment) &&
+        !ghSegmentNamesRepo(segment) &&
         !segments.slice(0, i).some((earlier) => this.mayLeaveCwdRepo(earlier.trim(), cwd));
       const prEvent = { ...parsed, prNumber: inCwdRepo ? number : null };
       this.ingestActivity({
