@@ -238,7 +238,7 @@ describe('readShell groups inside "$( … )"', () => {
     ['a "(" inside ${ }', 'echo "$(echo ${x//(/}; echo "%")"'],
     ['a case inside a group', 'echo "$( (case x in a) echo hi;; esac); echo "%")"'],
   ])('keeps a quoted operator quoted after %s', (_name, template) => {
-    const command = template.replace('%', merge);
+    const command = template.replaceAll('%', merge);
     expect(readShell(command)).toMatchObject({
       segments: [command],
       operators: [],
