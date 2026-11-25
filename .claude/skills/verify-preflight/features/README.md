@@ -44,3 +44,4 @@ Each feature file starts with an H1 title and one paragraph describing the user-
 - [Today view](./today.md) covers the dashboard landing page, its empty state, and its KPIs.
 - [Sessions view](./sessions.md) covers the session list, its filters, and selecting a session.
 - [MCP tools](./mcp-tools.md) covers the `nr_observe_*` tools an agent calls over stdio.
+- [Settings and navigation](./settings-nav.md) covers the `/settings` page, its sidebar entry, saving config, and the diagnostics panel.
