@@ -1,6 +1,8 @@
-import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { linkSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { basename, dirname, join } from 'node:path';
 import type { ByteEstimateLedger } from '../metrics/cost-tracker.js';
+import { renameIntoPlace } from './rename-into-place.js';
 import {
   addSummaries,
   byWriteOrder,
@@ -21,7 +23,72 @@ import {
  * session and set them aside once it combined them.
  */
 export const WRITERS_DIR = '.writers';
-const LEGACY_PREFIX = 'legacy.';
+export const LEGACY_PREFIX = 'legacy.';
+
+/** The code path that saves a contribution. Two producers in one process are two writers. */
+export type Producer = 'engine' | 'aggregator' | 'homelab';
+
+export type SaveResult =
+  | {
+      readonly kind: 'saved';
+      /** The session is retracted, so a writer still estimating must stop. */
+      readonly retracted: boolean;
+    }
+  | { readonly kind: 'skipped'; readonly reason: 'invalid-session-id' | 'no-recorded-usage' }
+  | { readonly kind: 'failed'; readonly error: string };
+
+/** Writes one writer's file in each session it saves, and nothing another writer wrote. */
+export interface SessionWriter {
+  readonly id: string;
+  /** Replaces this writer's whole share of the session, then rewrites the index from every share. */
+  save(contribution: WriterContribution): SaveResult;
+  /** Deletes this writer's share of a session it saved by mistake, then rewrites the index. */
+  retire(sessionId: string): void;
+}
+
+/**
+ * `<producer>.<pid>.<startedAt36>.<rand8>`, new for every process lifetime and
+ * producer. A dead writer's file is final data that no one writes again.
+ */
+export function newWriterId(producer: Producer): string {
+  return `${producer}.${process.pid}.${Date.now().toString(36)}.${randomBytes(4).toString('hex')}`;
+}
+
+export function writerFileBody({ summary, retracted }: WriterContribution): string {
+  return JSON.stringify({ version: 1, retracted, summary }, null, 2) + '\n';
+}
+
+function tmpPathFor(path: string): string {
+  return join(
+    dirname(path),
+    `.${basename(path)}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`,
+  );
+}
+
+/** Replaces `path` whole, so a reader sees the old body or the new one. */
+export function writeAtomic(path: string, body: string): void {
+  const tmp = tmpPathFor(path);
+  try {
+    writeFileSync(tmp, body, { mode: 0o600 });
+    renameIntoPlace(tmp, path, body);
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
+
+/** Creates `path` unless it exists. The first body wins, and no reader sees it half written. */
+export function createOnce(path: string, body: string): void {
+  const tmp = tmpPathFor(path);
+  try {
+    writeFileSync(tmp, body, { mode: 0o600 });
+    linkSync(tmp, path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
+
 /**
  * One writer's own share of a session: only what this process drained, never a
  * total seeded from the saved file. Hook events and transcript turns are each
@@ -197,13 +264,17 @@ export function readWriterFiles(sessionsDir: string, sessionId: string): WriterF
   return writers.length + legacyCaptures.length === 0 ? null : { writers, legacyCaptures };
 }
 
+/** The session the index files and writer files hold, and whether it is retracted. */
 export function foldSessionFiles(
   index: readonly IndexFile[],
   files: WriterFiles,
-): FullSessionSummary {
+): WriterContribution {
   const legacy = [...files.legacyCaptures, ...captureLegacyIndex(index, files.writers)];
   const parts = legacy.length > 0 ? [...files.writers, combineCaptures(legacy)] : files.writers;
-  return foldWriterContributions(parts as [WriterContribution]);
+  return {
+    summary: foldWriterContributions(parts as [WriterContribution]),
+    retracted: parts.some((p) => p.retracted),
+  };
 }
 
 /**
