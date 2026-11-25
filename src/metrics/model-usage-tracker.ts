@@ -60,8 +60,7 @@ interface MutableModelStats {
 }
 
 import type { TokenUsage } from '../core/tokens.js';
-import type { SeedOrigin } from './cost-tracker.js';
-import type { Resettable } from './tracker-contracts.js';
+import type { Resettable, SeedOrigin } from './tracker-contracts.js';
 
 function addModelStats(
   byModel: Map<string, MutableModelStats>,

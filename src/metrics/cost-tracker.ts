@@ -14,7 +14,7 @@ import { CallUsageBook, type CallUsageByDay } from './call-usage.js';
 import { priceModelUsage } from './pricing-overlay.js';
 import { localDateKey } from '../lib/date.js';
 import type { SessionTracker } from './session-tracker.js';
-import type { Resettable } from './tracker-contracts.js';
+import type { Resettable, SeedOrigin } from './tracker-contracts.js';
 import { HIGH_CONTEXT_TOKENS } from '../storage/types.js';
 import type { AttributionBucket } from '../storage/types.js';
 
@@ -312,15 +312,6 @@ export interface SubagentMetrics {
   readonly reconciliationDeltaPct: number | null;
 }
 
-/**
- * Where a seed's totals come from. `alreadySaved` totals are in a session file
- * another writer saved (a previous process, another live one, or this
- * process's rollup save), so they stay out of `getOwnMetrics()`. `drainedHere`
- * totals are work this process drained that no file holds yet, so they count
- * as its own.
- */
-export type SeedOrigin = 'alreadySaved' | 'drainedHere';
-
 /** One priced token event, as each `CostBook` books it. */
 interface PricedCall {
   readonly model: string;
@@ -435,14 +426,8 @@ class CostBook {
       runMap.set(dayKey, (runMap.get(dayKey) ?? 0) + breakdown.totalUsd);
       this.costByWorkflowRunId.set(call.workflowRunId, runMap);
     }
-  }
+    if (!call.isByteEstimate) return;
 
-  addByteEstimate(
-    model: string,
-    breakdown: CostBreakdown,
-    usage: TokenUsage,
-    dayKey: string,
-  ): void {
     this.hasByteEstimateHistory = true;
     this.byteEstimateCostUsd += breakdown.totalUsd;
     this.byteEstimateInputTokens += usage.inputTokens;
@@ -455,6 +440,14 @@ class CostBook {
       dayKey,
       (this.byteEstimateCostByDay.get(dayKey) ?? 0) + breakdown.totalUsd,
     );
+  }
+
+  cacheHitRate(): number | null {
+    const denominator =
+      this.totalInputTokens + this.totalCacheReadTokens + this.totalCacheCreationTokens;
+    if (denominator === 0) return null;
+    if (this.totalCacheReadTokens === 0 && this.totalCacheCreationTokens === 0) return null;
+    return this.totalCacheReadTokens / denominator;
   }
 
   /**
@@ -663,14 +656,10 @@ export class CostTracker implements Resettable {
     };
 
     for (const book of this.books()) book.estimationCount++;
-    const nowMs = Date.now();
-    const breakdown = this.accumulateTokens(usage, model, { timestampMs: nowMs }, true);
-    const dayKey = localDateKey(nowMs);
-    for (const book of this.books()) book.addByteEstimate(model, breakdown, usage, dayKey);
-    return breakdown;
+    return this.accumulateTokens(usage, model, { timestampMs: Date.now() }, true);
   }
 
-  /** Every own event goes to both books; a seed goes to `held`, and to `own` only when drained here. */
+  /** Every own event goes to both books. */
   private books(): readonly CostBook[] {
     return [this.held, this.own];
   }
@@ -838,14 +827,6 @@ export class CostTracker implements Resettable {
     for (const runId of Object.keys(seed.costByWorkflowRunId)) this.seededWorkflowRunIds.add(runId);
   }
 
-  private static cacheHitRateOf(book: CostBook): number | null {
-    const denominator =
-      book.totalInputTokens + book.totalCacheReadTokens + book.totalCacheCreationTokens;
-    if (denominator === 0) return null;
-    if (book.totalCacheReadTokens === 0 && book.totalCacheCreationTokens === 0) return null;
-    return book.totalCacheReadTokens / denominator;
-  }
-
   /**
    * Cost spent during a specific local-time day, attributed at the moment
    * each token event was recorded. Used to fix the cross-midnight inflation
@@ -1010,7 +991,7 @@ export class CostTracker implements Resettable {
       totalThinkingTokens: book.totalThinkingTokens,
       totalCacheReadTokens: book.totalCacheReadTokens,
       totalCacheCreationTokens: book.totalCacheCreationTokens,
-      cacheHitRate: CostTracker.cacheHitRateOf(book),
+      cacheHitRate: book.cacheHitRate(),
       totalCacheSavingsUsd: book.totalCacheSavingsUsd,
       reportCount: book.reportCount,
       estimationCount: book.estimationCount,

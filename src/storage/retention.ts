@@ -7,8 +7,8 @@ import { listDirOrEmpty, WRITERS_DIR } from './session-writers.js';
 const logger = createLogger('retention');
 
 const PURGED_SUFFIXES = ['.json', '.corrupt', '.merged', '.tmp'];
-/** A writer's temp file outlives its save only when the writer died mid-save. */
-const STALE_WRITER_TMP_MS = 60 * 60 * 1000;
+/** One hour. A writer's temp file outlives its save only when the writer died mid-save. */
+const STALE_WRITER_TMP_DAYS = 1 / 24;
 
 /**
  * Delete every `PURGED_SUFFIXES` file in `<storagePath>/<subdir>` whose mtime
@@ -78,7 +78,13 @@ export function purgeOldSessions(storagePath: string, retainDays: number): numbe
   let deleted = 0;
   for (const sessionId of writerDirs) {
     const dir = join(writersDir, sessionId);
-    deleted += sweepStaleTmp(dir);
+    deleted += purgeOldFiles(
+      storagePath,
+      join('sessions', WRITERS_DIR, sessionId),
+      STALE_WRITER_TMP_DAYS,
+      'writer temp',
+      (file) => !file.endsWith('.tmp'),
+    );
     for (const path of [dir, ...listDirOrEmpty(dir).map((name) => join(dir, name))])
       seen(sessionId, path);
   }
@@ -101,22 +107,6 @@ export function purgeOldSessions(storagePath: string, retainDays: number): numbe
     }
   }
   return deleted;
-}
-
-function sweepStaleTmp(dir: string): number {
-  const cutoffMs = Date.now() - STALE_WRITER_TMP_MS;
-  let swept = 0;
-  for (const name of listDirOrEmpty(dir)) {
-    const path = join(dir, name);
-    if (!name.endsWith('.tmp') || mtimeOf(path) >= cutoffMs) continue;
-    try {
-      rmSync(path, { force: true });
-      swept++;
-    } catch (err) {
-      logger.warn('Failed to delete a stale writer temp file', { path, error: String(err) });
-    }
-  }
-  return swept;
 }
 
 function mtimeOf(path: string): number {
