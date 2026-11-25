@@ -67,7 +67,7 @@ sleep 5                                                                     # 10
 - `prompt <sid> <text> [--cwd DIR]` pipes a `UserPromptSubmit` payload through the collector. A leading `/<skill>` opens a slash skill run; any other text closes the open run.
 - `node scripts/nr-skill-payloads.mjs dist` runs the built skill tracker, attributor, and NR emitters over a Skill, slash, and post-run sequence, prints the `AiToolCall` and `AiTurnCost` bodies, and asserts their `skill_*` attributes. Local mode never sends events, so this is the proof of what New Relic would receive.
 - `turn <sid> <model> <in> <out> [cache-read]` appends a Claude Code transcript line under the run's `HOME`. The real `ParentTranscriptWatcher` picks it up.
-- `api <path>` runs a GET against the run. The routes live in `src/dashboard/routes/api-handler.ts` (`routes.set('GET /api/...')`) plus `GET /api/health`.
+- `api <path> [curl args...]` runs a GET against the run, or any request the extra curl arguments describe, such as `-X PATCH -H 'content-type: application/json' -d '{...}'`. The routes live in `src/dashboard/routes/api-handler.ts` (`routes.set('GET /api/...')`) plus `GET /api/health`.
 - `shot <route> <name> [--expect TEXT]... [--click TEXT]...` loads a dashboard route in headless Playwright Chromium, waits for the page `h1`, and clicks or asserts each text in order. It saves `<name>.png` and `<name>.txt` to the evidence dir and exits 1 if any `--expect` text is missing.
 - `mcp [--session <sid>] <tool> [args-json]` spawns `dist/index.js --stdio`, runs the MCP handshake, calls one tool, and prints its text result. Run it against a port with no `up` server (see Gotchas).
 

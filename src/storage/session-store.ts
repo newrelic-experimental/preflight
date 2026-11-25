@@ -1698,21 +1698,25 @@ export class SessionStore {
    * Runs `writeOwn` between reading the session and rewriting its index. The
    * index is read before the writer files: read the other way round, a writer
    * an older build already folded into the index is missed, and its capture
-   * counts that writer twice. An index this design did not write is captured
-   * before anything replaces it. Returns null when no writer file is left.
+   * counts that writer twice. Each index file this design did not write is
+   * captured on its own before anything replaces it. Returns null when no
+   * writer file is left.
    */
   private project(sessionId: string, writeOwn: (dir: string) => void): WriterContribution | null {
     const dir = join(this.sessionsDir, WRITERS_DIR, sessionId);
     const reads = this.readIndexFiles(sessionId);
-    const index = reads.flatMap(({ parsed }) => (parsed.kind === 'unreadable' ? [] : [parsed]));
+    const legacy = reads.flatMap(({ bytes, parsed }) =>
+      parsed.kind === 'unreadable' || parsed.isProjection ? [] : [{ bytes, file: parsed }],
+    );
     const before = readWriterFiles(this.sessionsDir, sessionId);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    if (index.some((f) => !f.isProjection)) {
-      const capture = captureLegacyIndex(
-        index.map((f) => f.summary) as [FullSessionSummary],
-        before?.writers ?? [],
-      );
-      createOnce(join(dir, `${LEGACY_PREFIX}${sha16(reads)}.json`), writerFileBody(capture));
+    const captures = captureLegacyIndex(
+      legacy.map(({ file }) => file),
+      before?.writers ?? [],
+    );
+    for (const [i, capture] of captures.entries()) {
+      const name = `${LEGACY_PREFIX}${sha16(legacy[i].bytes)}.json`;
+      createOnce(join(dir, name), writerFileBody(capture));
     }
     writeOwn(dir);
 
@@ -1727,7 +1731,8 @@ export class SessionStore {
         ? this.project(sessionId, () => {})
         : null;
     }
-    const folded = foldSessionFiles(index, after);
+    // Every index file read is now a capture or a projection, so none is folded again.
+    const folded = foldSessionFiles([], after);
     const projection = {
       ...folded.summary,
       contributions: { version: 1, writers: after.writers.length },
@@ -1832,16 +1837,15 @@ export class SessionStore {
     sessionId: string,
     reads: readonly SessionFileRead[],
     hasWriterDir = true,
-    withoutWriters: (read: SessionFileRead) => boolean = () => true,
+    keep: (read: SessionFileRead) => boolean = () => true,
   ): FullSessionSummary | null {
+    if (reads.length === 0) return null;
+    const parsed = (rs: readonly SessionFileRead[]) =>
+      rs.flatMap(({ parsed }) => (parsed.kind === 'unreadable' ? [] : [parsed]));
     const files = hasWriterDir ? readWriterFiles(this.sessionsDir, sessionId) : null;
-    const index = (files ? reads : reads.filter(withoutWriters)).flatMap(({ parsed }) =>
-      parsed.kind === 'unreadable' ? [] : [parsed],
-    );
-    if (index.length === 0) return null;
-    return files
-      ? foldSessionFiles(index, files).summary
-      : combineSessionFiles(index.map((f) => f.summary));
+    if (files) return foldSessionFiles(parsed(reads), files).summary;
+    const index = parsed(reads.filter(keep));
+    return index.length > 0 ? combineSessionFiles(index.map((f) => f.summary)) : null;
   }
 
   private listSessionFiles(): SessionFileInfo[] {
@@ -1955,21 +1959,23 @@ export class SessionStore {
 
     const writerDirs = new Set(listDirOrEmpty(join(this.sessionsDir, WRITERS_DIR)));
     for (const [sessionId, files] of filesById) {
-      // Writer files hold the whole session, so the window only picks it, and
-      // a capture must see every index file it was taken from. Every index file
-      // is read before the writer files, which decide whether it counts.
+      // Writer files hold the whole session, so the window and the developer
+      // filter only pick it, and a capture must see every index file it was
+      // taken from. Every index file is read before the writer files.
       const whole = writerDirs.has(sessionId);
       const relist = () =>
         this.listSessionFiles().filter((f) => f.sessionId === sessionId && (whole || inWindow(f)));
       const first = whole ? listed.filter((f) => f.sessionId === sessionId) : files;
-      const reads = this.readListedFiles(first, relist).filter(
-        ({ parsed }) =>
-          !options?.developer ||
-          (parsed.kind !== 'unreadable' && parsed.summary.developer === options.developer),
-      );
-      const session = this.combineWithWriterFiles(sessionId, reads, whole, ({ filepath }) =>
-        inWindow(parseSessionFilename(basename(filepath))!),
-      );
+      const reads = this.readListedFiles(first, relist);
+      const picked = (read: SessionFileRead): boolean =>
+        inWindow(parseSessionFilename(basename(read.filepath))!) &&
+        (!options?.developer ||
+          (read.parsed.kind !== 'unreadable' &&
+            read.parsed.summary.developer === options.developer));
+      const session =
+        whole && reads.some(picked)
+          ? this.combineWithWriterFiles(sessionId, reads, true, picked)
+          : this.combineWithWriterFiles(sessionId, reads.filter(picked), false);
       if (!session) continue;
 
       // Synthetic session IDs (`local-*`, `proxy-*`, `pending-*`) are
@@ -2417,13 +2423,9 @@ function isValidSessionId(sessionId: string): boolean {
   return /^[A-Za-z0-9_-]{1,128}$/.test(sessionId) && sessionId !== 'unknown';
 }
 
-/** Names a capture by the index bytes it was taken from, so two writers make one file. */
-function sha16(reads: readonly SessionFileRead[]): string {
-  const hash = createHash('sha256');
-  for (const { bytes, parsed } of reads) {
-    if (parsed.kind !== 'unreadable') hash.update(bytes);
-  }
-  return hash.digest('hex').slice(0, 16);
+/** Names a capture by the index file it was taken from, so two writers make one file. */
+function sha16(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex').slice(0, 16);
 }
 
 function formatDate(date: Date): string {

@@ -64,6 +64,12 @@ function estimating(calls: readonly string[]): FullSessionSummary {
   };
 }
 
+function startingAt(start: number, s: FullSessionSummary): FullSessionSummary {
+  return { ...s, startTime: start, endTime: start + 1000 };
+}
+
+const NEXT_DAY = START + 86_400_000;
+
 const ids = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => `${prefix}${i}`);
 
 function writeIndex(s: FullSessionSummary, opts: { date?: string; marked?: boolean } = {}): void {
@@ -210,14 +216,6 @@ describe('loading a session with writer files', () => {
     },
   );
 
-  it('counts an older build file beside the projection', () => {
-    writeIndex(activity(ids('a', 2)), { marked: true });
-    writeIndex(activity(['old0'], START + 90_000_000), { date: '2026-03-02' });
-    writeWriter('engine.1.a.b.json', activity(ids('a', 2)));
-
-    expect(totals(store.loadSession(SID))).toEqual({ calls: 3, usd: 0.75, input: 300 });
-  });
-
   it('captures a session split across index files whole', () => {
     writeIndex(activity(ids('a', 2)));
     writeIndex(activity(ids('b', 3), START + 90_000_000), { date: '2026-03-02' });
@@ -272,5 +270,108 @@ describe('loading a session with writer files', () => {
     writeRaw(SID, 'engine.8.a.b.json', 'null');
 
     expect(totals(store.loadSession(SID))).toEqual({ calls: 2, usd: 0.5, input: 200 });
+  });
+});
+
+describe('loading an older build file beside the writer files', () => {
+  it('keeps its calls after a writer saved more than it read, and its cost past that writer', () => {
+    writeIndex(activity([...ids('w', 3), ...ids('o', 2)]));
+    writeWriter('engine.1.a.b.json', activity(ids('w', 3)));
+    expect(totals(store.loadSession(SID))).toEqual({ calls: 5, usd: 1.25, input: 500 });
+
+    writeWriter('engine.1.a.b.json', activity(ids('w', 5)));
+    const loaded = store.loadSession(SID);
+    expect(totals(loaded)).toEqual({ calls: 7, usd: 1.25, input: 500 });
+    expect(loaded?.toolBreakdown).toEqual({ Read: 7 });
+  });
+
+  it('adds a file that started after the writers whole, beside a stale projection', () => {
+    writeWriter('engine.1.a.b.json', activity(ids('w', 5)));
+    writeIndex(activity(ids('w', 3)), { marked: true });
+    writeIndex(startingAt(NEXT_DAY, activity(ids('o', 2))), { date: '2026-03-02' });
+
+    expect(totals(store.loadSession(SID))).toEqual({ calls: 7, usd: 1.75, input: 700 });
+  });
+
+  it('ignores a marked index beside an unmarked one', () => {
+    writeIndex(activity(ids('z', 40)), { marked: true });
+    writeIndex(startingAt(NEXT_DAY, activity(['o0'])), { date: '2026-03-02' });
+    writeWriter('engine.1.a.b.json', activity(ids('a', 2)));
+
+    expect(totals(store.loadSession(SID))).toEqual({ calls: 3, usd: 0.75, input: 300 });
+  });
+
+  it('takes a writer out of a file whose span covers its start, sharing a call or not', () => {
+    const costly = (calls: string[]) => ({
+      ...activity(calls),
+      estimatedCostUsd: 0.5,
+      costByDayUsd: { [DAY]: 0.5 },
+    });
+    writeWriter('engine.1.a.b.json', costly(['w0']));
+    writeIndex(costly(['o0']));
+    const takenOut = { calls: 2, usd: 0.5, input: 100 };
+
+    expect(totals(store.loadSession(SID))).toEqual(takenOut);
+    writeWriter('engine.1.a.b.json', { ...costly(['w0']), startTime: 0 });
+    writeIndex(startingAt(NEXT_DAY, costly(['o0'])));
+    expect(totals(store.loadSession(SID))).toEqual(takenOut);
+    writeWriter('engine.1.a.b.json', startingAt(NEXT_DAY, costly(['w0'])));
+    writeIndex({ ...costly(['o0']), endTime: 0 });
+    expect(totals(store.loadSession(SID))).toEqual(takenOut);
+  });
+
+  it('adds an older build file to a captured pre-upgrade index', () => {
+    writeWriter('legacy.0123456789abcdef.json', activity(ids('p', 4)));
+    writeWriter('engine.1.a.b.json', activity(ids('a', 2), START + 2000));
+    writeIndex(activity([...ids('p', 4), ...ids('a', 2)]), { marked: true });
+    writeIndex(startingAt(NEXT_DAY, activity(ids('o', 2))), { date: '2026-03-02' });
+
+    expect(totals(store.loadSession(SID))).toEqual({ calls: 8, usd: 2, input: 800 });
+  });
+
+  it('adds a pre-upgrade index whole when every writer started after its last save', () => {
+    writeIndex(activity(ids('p', 4)));
+    writeWriter('engine.1.a.b.json', startingAt(START + 5000, activity(ids('a', 2))));
+
+    expect(totals(store.loadSession(SID))).toEqual({ calls: 6, usd: 1.5, input: 600 });
+  });
+
+  it('folds the writer files when no index file parses, so a save merges into them', () => {
+    writeFileSync(join(storagePath, 'sessions', `${DAY}_${SID}.json`), '{not json');
+    expect(store.loadSession(SID)).toBeNull();
+    writeWriter('engine.1.a.b.json', activity(ids('w', 5)));
+
+    expect(totals(store.loadSession(SID))).toEqual({ calls: 5, usd: 1.25, input: 500 });
+    expect(store.loadAllSessions().map(totals)).toEqual([{ calls: 5, usd: 1.25, input: 500 }]);
+    const saved = store.saveSession(activity(ids('n', 2), START + 4000));
+    expect(totals(saved?.previous)).toEqual({ calls: 5, usd: 1.25, input: 500 });
+    expect(totals(store.loadSession(SID))?.calls).toBe(7);
+  });
+
+  it('picks the session by the developer on its index files, then folds it whole', () => {
+    writeIndex({ ...activity(ids('a', 4)), developer: 'dev-a' });
+    const devB = { ...startingAt(NEXT_DAY, activity(['b0'])), developer: 'dev-b' };
+    writeIndex(devB, { date: '2026-03-02' });
+    writeWriter('engine.1.a.b.json', { ...activity(ids('w', 2), START + 2000), developer: 'bob' });
+
+    const load = (developer: string) =>
+      store.loadAllSessions({ developer }).map((s) => [s.developer, totals(s)]);
+    const whole = ['dev-b', { calls: 7, usd: 1.25, input: 500 }];
+    expect(load('dev-a')).toEqual([whole]);
+    expect(load('dev-b')).toEqual([whole]);
+    expect(load('bob')).toEqual([]);
+  });
+
+  it('picks the session by the window, then folds it whole', () => {
+    writeIndex(activity(ids('p', 3)));
+    writeIndex(startingAt(NEXT_DAY, activity(['old0'])), { date: '2026-03-02' });
+    writeWriter('engine.1.a.b.json', startingAt(START + 5000, activity(ids('a', 2))));
+    const whole = { calls: 6, usd: 1.5, input: 600 };
+
+    expect(totals(store.loadSession(SID))).toEqual(whole);
+    expect(store.loadAllSessions({ since: new Date('2026-03-02T00:00:00Z') }).map(totals)).toEqual([
+      whole,
+    ]);
+    expect(store.loadAllSessions({ since: new Date('2026-03-03T00:00:00Z') })).toEqual([]);
   });
 });

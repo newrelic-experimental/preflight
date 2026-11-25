@@ -56,6 +56,9 @@ export class OtlpReceiver {
   // Built once and reused for every forward() call. Its connect.lookup resolves and
   // validates the address actually connected to — see createSsrfSafeLookup()'s doc
   // comment. undefined when forwarding is disabled (nothing to protect).
+  // Keep undici on 7.x: for an IP-literal host with a different TLS servername, undici 8
+  // replaces connectOptions.lookup and skips that check. Re-run the DNS-rebinding test
+  // in otlp-receiver.test.ts before any major bump.
   private readonly forwardDispatcher: Agent | undefined;
 
   constructor(options: OtlpReceiverOptions) {
