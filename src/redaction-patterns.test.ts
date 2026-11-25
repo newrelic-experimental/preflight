@@ -51,6 +51,9 @@ const KEEPS_COMMAND: Row[] = [
   ['docker login -p s3cretpw x;rm -rf /tmp/x', '-p s3cretpw'],
   ['sshpass -p hunter2 ssh h && rm -rf /tmp/x', '-p hunter2'],
   ['redis-cli -a s3cretpw ping;rm -rf /tmp/x', '-a s3cretpw'],
+  ['http x "X-Api-Key: S3 CRET9" ; rm -rf /tmp/x', ' S3 CRET9'],
+  ["echo 'a'X-Api-Key:b c ; rm -rf /tmp/x"],
+  ["echo 'X-Api-Key:\"S3'CRET9 ; rm -rf /tmp/x", 'S3'],
 ];
 
 const REDACTS: Row[] = [
@@ -189,9 +192,37 @@ const REDACTS: Row[] = [
     'Authorization: Basic YWxpY2U6czNjcmV0cHc=',
   ],
   [JSON.stringify('curl -H"X-Api-Key: S3CRET9" https://x'), 'X-Api-Key: S3CRET9'],
+  ['curl -H"Proxy-Authorization: Basic YQ==" x', 'Proxy-Authorization: Basic YQ=='],
+  ['curl --header="X-Api-Key: S3CRET9" x', 'X-Api-Key: S3CRET9'],
+  ['curl -H X-Api-Key:S3CRET9 x', 'X-Api-Key:S3CRET9'],
+  ['curl -H "Authorization : Basic YQ==" x', 'Authorization : Basic YQ=='],
+  ['curl -H "Authorization: Basically x" x'],
   ['curl -H "Authorization: Basic" https://api.example.com'],
   ['curl -H "Authorization: Digest abc" https://api.example.com'],
   ['echo Authorization: Basic abc'],
+  ['curl -H "Proxy-Authorization: Basic YQ==" x', 'Proxy-Authorization: Basic YQ=='],
+  ["curl --proxy-header 'proxy-authorization: basic YQ==' x", 'proxy-authorization: basic YQ=='],
+  ['curl --proxy-header "X-Api-Key: S3CRET9" x', 'X-Api-Key: S3CRET9'],
+  ['curl -H Authorization:"Basic YQ==" x', 'Basic YQ=='],
+  ['http x Authorization:"Basic YQ=="', 'Basic YQ=='],
+  ["http x 'Proxy-Authorization: Basic YQ=='", ' Basic YQ=='],
+  [JSON.stringify('http x Authorization:"Basic YQ=="'), 'Basic YQ=='],
+  ['http x X-Api-Key:"S3 CRET9"', 'S3 CRET9'],
+  ["http x 'X-Api-Key: S3 CRET9'", ' S3 CRET9'],
+  [JSON.stringify("http x 'X-Api-Key: S3 CRET9'"), ' S3 CRET9'],
+  [JSON.stringify('http x "X-Api-Key: S3 CRET9"'), ' S3 CRET9'],
+  [`bash -c "http x 'X-Api-Key: S3 CRET9'"`, ' S3 CRET9'],
+  ["http x $'X-Api-Key: S3 CRET9'", ' S3 CRET9'],
+  [
+    'curl --proxy-header "Proxy-Authorization: Bearer abcdefghijklmnopqrstuvwx" x',
+    'Bearer abcdefghijklmnopqrstuvwx',
+  ],
+  ['echo X-Api-Key: abc'],
+  ['echo Authorization:"Basically fine"'],
+  ['http x X-Api-Key:S3CRET9'],
+  ['npm run api-key:rotate'],
+  [JSON.stringify('bash -c "curl -H \\"X-Api-Key: S3CRET9\\" x; rm -rf /tmp/x"')],
+  ['git commit -m "api-key rotation"'],
   ['docker login -u me -p s3cretpw', '-p s3cretpw'],
   ['docker login -p s3cretpw -u me registry.example.com', '-p s3cretpw'],
   ['docker login -u me -p "my pass" registry', '-p "my pass"'],
@@ -269,6 +300,11 @@ describe('secret arguments', () => {
       ['cd /tmp\nsshpass -p hunter2 ssh h', '{"command":"cd /tmp\\nsshpass [REDACTED] ssh h"}'],
       ['cd /tmp\nredis-cli -a hunter2 ping', '{"command":"cd /tmp\\nredis-cli [REDACTED] ping"}'],
       ['curl -H "Authorization: Basic YQ==" x', '{"command":"curl -H \\"[REDACTED]\\" x"}'],
+      [
+        'curl --proxy-header "Proxy-Authorization: Basic YQ==" x',
+        '{"command":"curl --proxy-header \\"[REDACTED]\\" x"}',
+      ],
+      ['http x Authorization:"Basic YQ=="', '{"command":"http x Authorization:\\"[REDACTED]\\""}'],
     ])('records the content of %j with its password redacted', (command, content) => {
       process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
       expect(save(command).inputContent).toBe(content);
@@ -403,6 +439,10 @@ const SECRETS = [
   '-H "X-Api-Key: m"',
   '-H "X-Api-Key: m m"',
   "-H 'X-Auth-Token: m m'",
+  '--proxy-header "Proxy-Authorization: Basic m m"',
+  'Authorization:"Basic m m"',
+  "'Proxy-Authorization: Basic m'",
+  "'X-Api-Key: m m'",
 ];
 const ARGUMENTS = [
   'curl --token ',
