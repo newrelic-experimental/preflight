@@ -5517,18 +5517,28 @@ describe('combining a session split across files', () => {
   });
 
   // Fake only Date, leaving the timers fs and the test runner rely on real.
-  const FAKE_TIMER_KEEP = [
-    'hrtime',
-    'nextTick',
-    'performance',
-    'queueMicrotask',
-    'setImmediate',
-    'clearImmediate',
-    'setInterval',
-    'clearInterval',
-    'setTimeout',
-    'clearTimeout',
-  ] as const;
+  const withPinnedClock = (now: Date, run: () => void) => {
+    jest.useFakeTimers({
+      now,
+      doNotFake: [
+        'hrtime',
+        'nextTick',
+        'performance',
+        'queueMicrotask',
+        'setImmediate',
+        'clearImmediate',
+        'setInterval',
+        'clearInterval',
+        'setTimeout',
+        'clearTimeout',
+      ],
+    });
+    try {
+      run();
+    } finally {
+      jest.useRealTimers();
+    }
+  };
 
   describe('a load limited to a window', () => {
     const recent = (end: number) => ({ ...second(), startTime: end - HOUR, endTime: end });
@@ -5568,9 +5578,8 @@ describe('combining a session split across files', () => {
     });
 
     it('keeps the recent piece of a long session in today and week views', () => {
-      // Pinned to midday so the recent piece's hour-long span cannot cross local midnight.
-      jest.useFakeTimers({ now: new Date(2026, 5, 15, 12), doNotFake: [...FAKE_TIMER_KEEP] });
-      try {
+      // Midday, so the recent piece's hour-long span cannot cross local midnight.
+      withPinnedClock(new Date(2026, 5, 15, 12), () => {
         const store = new SessionStore({ storagePath: tmpDir });
         const now = Date.now();
         writeSessionFile({ ...first(), startTime: now - 720 * HOUR, endTime: now - 719 * HOUR });
@@ -5582,9 +5591,7 @@ describe('combining a session split across files', () => {
         expect(
           computeHistoricalCosts(store, 'another-session', now).priorWeeklyCostUsd,
         ).toBeCloseTo(2);
-      } finally {
-        jest.useRealTimers();
-      }
+      });
     });
   });
 
