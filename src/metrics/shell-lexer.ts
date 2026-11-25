@@ -74,6 +74,26 @@ const HEREDOC_START_RE =
 // out because it also closes a `$( … )` inside a word.
 const WORD_BREAK_RE = /[ \t(<>]/;
 
+// Characters that end a word, for telling which word it was.
+const WORD_END_RE = /[ \t()<>]/;
+
+// A `(` mid-word opens a group after `=` (`arr=(a b)`, `arr+=(a)`) and after
+// an extglob prefix (`@(a|b)`, `!(x)`); anywhere else mid-word it is text.
+const MID_WORD_GROUP_PREFIX_RE = /[=?*+@!]/;
+
+// Words after which the next word still starts a command.
+const COMMAND_PREFIX_WORDS = new Set([
+  'if',
+  'then',
+  'elif',
+  'else',
+  'while',
+  'until',
+  'do',
+  '!',
+  '{',
+]);
+
 interface PendingHeredoc {
   readonly delimiter: string;
   readonly stripTabs: boolean;
@@ -86,13 +106,43 @@ function scan(command: string, mode: ScanMode): Scan {
   const kept: string[] = [];
   let keptFrom = 0;
   const pending: PendingHeredoc[] = [];
-  // Open quotes and `(`/`$(` groups, innermost last.
+  // Open quotes, `(`/`$(` groups, `${ … }` expansions (`{`, where a paren is
+  // plain text) and `case … in` clauses (`c`, where a `)` ends a pattern
+  // instead of closing a group), innermost last.
   const open: string[] = [];
   let current = '';
   let wordStart = true;
   // After `||`, `&&` or `|` bash reads past line breaks, blank lines and
   // comment lines to the rest of the command.
   let continuing = false;
+  // The unquoted word being read, to spot `case`, `in` and `esac`. A word with
+  // any quote or escape in it is never a keyword.
+  let word = '';
+  let wordQuoted = false;
+  let commandStart = true;
+  // After `case`, the words left before its `in`, and the nesting they sit at.
+  let caseWords = 0;
+  let caseLevel = -1;
+
+  const endWord = (): void => {
+    const text = wordQuoted ? '' : word;
+    word = '';
+    wordQuoted = false;
+    if (caseWords > 0 && open.length === caseLevel) {
+      caseWords--;
+      if (caseWords === 0 && text === 'in') {
+        open.push('c');
+        commandStart = true;
+        return;
+      }
+    } else if (commandStart && text === 'case') {
+      caseWords = 2;
+      caseLevel = open.length;
+    } else if (commandStart && text === 'esac' && open.at(-1) === 'c') {
+      open.pop();
+    }
+    commandStart = COMMAND_PREFIX_WORDS.has(text);
+  };
 
   for (let i = 0; i < command.length; i++) {
     const ch = command[i]!;
@@ -122,6 +172,7 @@ function scan(command: string, mode: ScanMode): Scan {
       if (command[i + 1] !== '\n') {
         current += command.slice(i, i + 2);
         wordStart = false;
+        wordQuoted = true;
       }
       continuing = false;
       i++;
@@ -133,6 +184,9 @@ function scan(command: string, mode: ScanMode): Scan {
         open.pop();
       } else if (command.startsWith('$(', i)) {
         open.push('(');
+        commandStart = true;
+        word = '';
+        wordQuoted = false;
         current += '(';
         i++;
       }
@@ -146,28 +200,49 @@ function scan(command: string, mode: ScanMode): Scan {
       i = end - 1;
       continue;
     }
+    const token = operatorAt(command, i);
     if (readQuotes) {
+      if ((word !== '' || wordQuoted) && (token !== null || WORD_END_RE.test(ch))) endWord();
       if (ch === "'" || ch === '"') {
         open.push(ch);
         current += ch;
         wordStart = false;
+        wordQuoted = true;
         continuing = false;
         continue;
       }
       // A `(` opens a group only where bash reads one: at the start of a
-      // word or after `$`. Mid-word, as in `${x//(/}`, it is plain text.
-      if (ch === '(' && (wordStart || command[i - 1] === '$')) open.push(ch);
-      else if (ch === ')' && inner === '(') open.pop();
+      // word, after `$`, or after `=` or an extglob prefix. Mid-word, as in
+      // `${x//(/}`, or inside `${ … }`, it is plain text, and a `)` there
+      // closes nothing.
+      const top = open.at(-1);
+      if (ch === '(' && top !== '{') {
+        const prev = command[i - 1] ?? '';
+        if (wordStart || prev === '$' || MID_WORD_GROUP_PREFIX_RE.test(prev)) {
+          open.push(ch);
+          commandStart = true;
+        }
+      } else if (ch === ')' && top === '(') {
+        open.pop();
+      } else if (ch === ')' && top === 'c') {
+        // The `)` ending a case pattern, then the command it selects.
+        commandStart = true;
+      } else if (ch === '{' && command[i - 1] === '$') {
+        open.push(ch);
+      } else if (ch === '}' && top === '{') {
+        open.pop();
+      }
     }
-    const token = operatorAt(command, i);
     if (token === null) {
       current += ch;
+      if (readQuotes && !WORD_END_RE.test(ch)) word += ch;
       wordStart = WORD_BREAK_RE.test(ch);
       if (ch !== ' ' && ch !== '\t') continuing = false;
       continue;
     }
     i += token.length - 1;
     wordStart = true;
+    commandStart = true;
     if (open.includes('"')) {
       current += token;
       continue;
@@ -182,6 +257,7 @@ function scan(command: string, mode: ScanMode): Scan {
     continuing = token !== ';' && token !== '\n' && token !== '&';
   }
 
+  if (readQuotes) endWord();
   segments.push(current);
   kept.push(command.slice(keptFrom));
   return {
@@ -243,4 +319,63 @@ function heredocBodiesEnd(command: string, newline: number, pending: PendingHere
     if (candidate === heredoc.delimiter) pending.shift();
   }
   return pending.length > 0 ? command.length : end;
+}
+
+/** One word of a segment: its `text` with quotes and backslashes removed, and
+ *  `bare`, the run of it typed before any quote or backslash. */
+export interface ShellWord {
+  readonly text: string;
+  readonly bare: string;
+}
+
+/**
+ * The words of one segment as bash passes them on: split on unquoted
+ * whitespace, so `GH_REPO="a/b"` is the word `GH_REPO=a/b` (bare `GH_REPO=`)
+ * and `--body "see -R x"` is two words, not four. Whitespace inside a
+ * `$( … )` stays in its word.
+ */
+export function shellWords(segment: string): ShellWord[] {
+  const words: ShellWord[] = [];
+  let text = '';
+  let bare = '';
+  let quoted = false;
+  let inWord = false;
+  let quote: string | null = null;
+  let depth = 0;
+  const add = (ch: string): void => {
+    text += ch;
+    if (!quoted) bare += ch;
+  };
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i]!;
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      else add(ch);
+    } else if (ch === '\\') {
+      quoted = true;
+      add(segment[i + 1] ?? '');
+      inWord = true;
+      i++;
+    } else if (quote === '"') {
+      if (ch === '"') quote = null;
+      else add(ch);
+    } else if (ch === "'" || ch === '"') {
+      quote = ch;
+      quoted = true;
+      inWord = true;
+    } else if (/\s/.test(ch) && depth === 0) {
+      if (inWord) words.push({ text, bare });
+      text = '';
+      bare = '';
+      quoted = false;
+      inWord = false;
+    } else {
+      if (ch === '(' && segment[i - 1] === '$') depth++;
+      else if (ch === ')' && depth > 0) depth--;
+      add(ch);
+      inWord = true;
+    }
+  }
+  if (inWord) words.push({ text, bare });
+  return words;
 }

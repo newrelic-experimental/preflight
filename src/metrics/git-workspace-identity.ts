@@ -2,8 +2,8 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { basename, dirname, resolve as resolvePath } from 'node:path';
 
-import { repoNameFromRemote } from '../lib/git-remote.js';
-import { parseGhRepoName } from './pr-ref.js';
+import { parseGitRemote, repoNameFromRemote, type ParsedGitRemote } from '../lib/git-remote.js';
+import { parsePrRepo } from './pr-ref.js';
 
 /** Workspace key for activity whose cwd was never recorded and whose session
  *  has no `repoName` to fall back on. */
@@ -51,6 +51,55 @@ export interface WorktreeIdentity {
   readonly branch: string | null;
 }
 
+const SSH_PROTOCOLS = new Set(['ssh', 'git+ssh', 'ssh+git', 'scp']);
+const SSH_HOST_TTL_MS = 10 * 60_000;
+const sshHostCache = new Map<string, { hostname: string | null; resolvedAt: number }>();
+
+/** The host an ssh remote's host name really reaches, as `ssh -G` reads it
+ *  from `~/.ssh/config`, lowercased, or null when ssh can't say. `gh` resolves
+ *  a remote the same way, so a `Host github-work` alias for github.com reads
+ *  as github.com. Cached across resolvers, because the dashboard builds one
+ *  per request. */
+export function sshConfiguredHostName(host: string): string | null {
+  const now = Date.now();
+  const cached = sshHostCache.get(host);
+  if (cached && now - cached.resolvedAt < SSH_HOST_TTL_MS) return cached.hostname;
+  let hostname: string | null = null;
+  try {
+    // The host comes from the repo's remote, so one that starts with `-` must
+    // not reach ssh as an option.
+    const result = host.startsWith('-') ? null : spawnSync('ssh', ['-G', '--', host], GIT_OPTS);
+    if (result?.status === 0 && typeof result.stdout === 'string') {
+      hostname = /^hostname\s+(\S+)$/m.exec(result.stdout)?.[1]?.toLowerCase() ?? null;
+    }
+  } catch {
+    hostname = null;
+  }
+  sshHostCache.set(host, { hostname, resolvedAt: now });
+  return hostname;
+}
+
+/** The repo a parsed remote names as `gh` does, `owner/name`, or
+ *  `host/owner/name` off github.com, so a repo on a GitHub Enterprise host is
+ *  not mistaken for the same owner and name on github.com. An ssh remote's
+ *  host is the one `sshHostName` resolves, and `github.com` or any
+ *  `*.github.com` (`ssh.github.com`) is github.com. When ssh can't resolve it,
+ *  the host is left off, as before hosts were kept. */
+function prRepoNameOf(
+  parsed: ParsedGitRemote,
+  sshHostName: (host: string) => string | null,
+): string | null {
+  // A one-segment path takes its host as owner, so `ownerRepo` already holds it.
+  const ownerIsHost = parsed.host !== null && !parsed.path.includes('/');
+  if (parsed.host === null || ownerIsHost) return parsePrRepo(parsed.ownerRepo) ?? null;
+  let host: string | null = parsed.host;
+  if (SSH_PROTOCOLS.has(parsed.protocol)) {
+    host = sshHostName(parsed.host);
+    if (host?.endsWith('.github.com')) host = 'github.com';
+  }
+  return parsePrRepo(host === null ? parsed.ownerRepo : `${host}/${parsed.ownerRepo}`) ?? null;
+}
+
 const GIT_OPTS = {
   encoding: 'utf-8' as const,
   timeout: 2000,
@@ -74,7 +123,8 @@ export function cacheKeyOf(dir: string): string {
 interface Remotes {
   /** Every remote's lowercased `owner/name`, fetch and push URLs alike. */
   readonly names: readonly string[];
-  /** Each remote's lowercased `owner/name` from its fetch URL, by remote name. */
+  /** Each remote's lowercased `owner/name` (`host/owner/name` off github.com)
+   *  from its fetch URL, by remote name. */
   readonly fetchNameByRemote: ReadonlyMap<string, string>;
 }
 
@@ -87,6 +137,10 @@ export class WorktreeIdentityResolver {
   private readonly missTtlMs = 3_000;
   private readonly remotesCache = new Map<string, { remotes: Remotes; resolvedAt: number }>();
   private readonly ghBaseCache = new Map<string, { name: string | null; resolvedAt: number }>();
+
+  constructor(
+    private readonly sshHostName: (host: string) => string | null = sshConfiguredHostName,
+  ) {}
 
   resolve(dir: string | null | undefined): WorktreeIdentity | null {
     if (typeof dir !== 'string' || dir.length === 0) return null;
@@ -128,9 +182,23 @@ export class WorktreeIdentityResolver {
     return this.remotes(dir)?.names ?? [];
   }
 
+  /** `repo`, an `owner/name` from an MCP call that carries no host, as the
+   *  repo the cwd's remotes name it: with the host of the one remote whose
+   *  `owner/name` it is, so a GitHub Enterprise PR matches the ref its create
+   *  URL gave. `repo` unchanged when no remote, or more than one host, has it. */
+  qualifyRepoName(repo: string, dir: string | null | undefined): string {
+    const wanted = repo.toLowerCase();
+    const named = new Set(
+      [...(this.remotes(dir)?.fetchNameByRemote.values() ?? [])].filter(
+        (name) => name === wanted || name.endsWith(`/${wanted}`),
+      ),
+    );
+    return named.size === 1 ? [...named][0]! : repo;
+  }
+
   /**
-   * The lowercased `owner/name` a bare `gh` command run in `dir` targets, or
-   * null when that isn't certain. gh takes the repo `gh repo set-default`
+   * The lowercased `owner/name` (`host/owner/name` off github.com) a bare
+   * `gh` command run in `dir` targets, or null when that isn't certain. gh takes the repo `gh repo set-default`
    * saved as a remote's `gh-resolved` config (`base` for the remote's own
    * repo, else an `owner/name`), and otherwise, with one remote, that
    * remote's repo. With several remotes and no default it may prompt or
@@ -159,7 +227,7 @@ export class WorktreeIdentityResolver {
         if (!match) continue;
         const [, remote, resolved] = match;
         defaults.add(
-          resolved === 'base' ? (fetchNames.get(remote) ?? null) : parseGhRepoName(resolved),
+          resolved === 'base' ? (fetchNames.get(remote) ?? null) : (parsePrRepo(resolved) ?? null),
         );
       }
       const sole = fetchNames.size === 1 ? [...fetchNames.values()][0] : null;
@@ -187,10 +255,11 @@ export class WorktreeIdentityResolver {
       if (result.status === 0) {
         for (const line of result.stdout.split('\n')) {
           const [remote, url, direction] = line.split(/\s+/);
-          const name = url ? repoNameFromRemote(url)?.toLowerCase() : undefined;
-          if (!name) continue;
-          names.add(name);
-          if (direction === '(fetch)') fetchNameByRemote.set(remote, name);
+          const parsed = parseGitRemote(url);
+          if (!parsed?.ownerRepo) continue;
+          names.add(parsed.ownerRepo.toLowerCase());
+          const prName = prRepoNameOf(parsed, this.sshHostName);
+          if (direction === '(fetch)' && prName) fetchNameByRemote.set(remote, prName);
         }
       }
       const remotes = { names: [...names], fetchNameByRemote };
@@ -296,7 +365,7 @@ export class WorktreeIdentityResolver {
   private resolveRepoName(dir: string): string | null {
     try {
       const result = spawnSync('git', ['-C', dir, 'remote', 'get-url', 'origin'], GIT_OPTS);
-      if (result.status === 0 && typeof result.stdout === 'string') {
+      if (result?.status === 0 && typeof result.stdout === 'string') {
         return repoNameFromRemote(result.stdout);
       }
     } catch {
@@ -312,7 +381,7 @@ export class WorktreeIdentityResolver {
   private resolveBranch(dir: string): { ok: boolean; branch: string | null } {
     try {
       const result = spawnSync('git', ['-C', dir, 'rev-parse', '--abbrev-ref', 'HEAD'], GIT_OPTS);
-      if (result.status === 0 && typeof result.stdout === 'string') {
+      if (result?.status === 0 && typeof result.stdout === 'string') {
         const headRef = result.stdout.trim();
         return { ok: true, branch: headRef === 'HEAD' ? null : headRef };
       }
