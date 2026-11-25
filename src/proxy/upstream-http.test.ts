@@ -21,7 +21,8 @@ import {
 } from 'node:http';
 import { performance } from 'node:perf_hooks';
 import { HttpUpstream, ByteCountTransform } from './upstream-http.js';
-import type { UpstreamConfig } from './types.js';
+import type { ForwardResult, UpstreamConfig } from './types.js';
+import { MAX_RPC_OUTCOME_BYTES } from './rpc-outcome.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -735,6 +736,117 @@ describe('HttpUpstream.forward()', () => {
 
     expect(result.statusCode).toBe(500);
     expect(Buffer.concat(fakeRes._body).toString()).toBe(errorBody);
+  });
+
+  describe('rpcOutcome for tools/call responses', () => {
+    const toolsCallBody = Buffer.from(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'read_file' },
+      }),
+    );
+
+    /** Serve one response, forward the request, and return the result with the bytes the client got. */
+    async function forwardToServer(
+      responseBody: string,
+      options: { statusCode?: number; contentType?: string; requestBody?: Buffer } = {},
+    ): Promise<{ result: ForwardResult; sent: string }> {
+      const {
+        statusCode = 200,
+        contentType = 'application/json',
+        requestBody = toolsCallBody,
+      } = options;
+      ({ server: mockServer, port } = await createMockServer((req, res) => {
+        req.on('data', () => {});
+        req.on('end', () => {
+          res.writeHead(statusCode, { 'content-type': contentType });
+          res.end(responseBody);
+        });
+      }));
+
+      const upstream = new HttpUpstream(makeConfig(port));
+      const fakeRes = makeFakeResponse();
+      Object.assign(fakeRes, { socket: { destroy() {} } });
+      const result = await upstream.forward(
+        makeFakeRequest({ headers: { 'content-type': 'application/json' } }),
+        fakeRes as unknown as ServerResponse,
+        requestBody,
+      );
+      return { result, sent: Buffer.concat(fakeRes._body).toString() };
+    }
+
+    it('reports jsonrpc_error for a JSON-RPC error on HTTP 200 and forwards the bytes unchanged', async () => {
+      const body = '{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"bad args"}}';
+
+      const { result, sent } = await forwardToServer(body);
+
+      expect(result.statusCode).toBe(200);
+      expect(result.rpcOutcome).toBe('jsonrpc_error');
+      expect(sent).toBe(body);
+    });
+
+    it('reports tool_error for a tool result with isError true', async () => {
+      const body =
+        '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"no such file"}],"isError":true}}';
+
+      const { result, sent } = await forwardToServer(body);
+
+      expect(result.rpcOutcome).toBe('tool_error');
+      expect(sent).toBe(body);
+    });
+
+    it('reports ok for a normal tool result', async () => {
+      const body = '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"hi"}]}}';
+
+      const { result } = await forwardToServer(body);
+
+      expect(result.rpcOutcome).toBe('ok');
+    });
+
+    it('leaves rpcOutcome unset for an SSE response, even one carrying an error event', async () => {
+      const body = 'event: message\ndata: {"jsonrpc":"2.0","id":1,"error":{"code":-32602}}\n\n';
+
+      const { result } = await forwardToServer(body, { contentType: 'text/event-stream' });
+
+      expect(result.isStreaming).toBe(true);
+      expect(result.rpcOutcome).toBeUndefined();
+    });
+
+    it('leaves rpcOutcome unset for a body over the classification cap and forwards it unchanged', async () => {
+      const body = JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        error: { code: -32602, message: 'bad args' },
+        padding: 'x'.repeat(MAX_RPC_OUTCOME_BYTES),
+      });
+
+      const { result, sent } = await forwardToServer(body);
+
+      expect(result.rpcOutcome).toBeUndefined();
+      expect(result.responseSizeBytes).toBe(Buffer.byteLength(body));
+      expect(sent).toBe(body);
+    });
+
+    it('leaves rpcOutcome unset when the request is not tools/call', async () => {
+      const body = '{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"no"}}';
+      const listBody = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }));
+
+      const { result } = await forwardToServer(body, { requestBody: listBody });
+
+      expect(result.rpcOutcome).toBeUndefined();
+    });
+
+    it('leaves rpcOutcome unset for a non-2xx response, which keeps its HTTP status class', async () => {
+      const body =
+        '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"boom"}],"isError":true}}';
+
+      const { result } = await forwardToServer(body, { statusCode: 500 });
+
+      expect(result.statusCode).toBe(500);
+      expect(result.rpcOutcome).toBeUndefined();
+    });
   });
 
   it('forwards SSE response chunk-by-chunk', async () => {

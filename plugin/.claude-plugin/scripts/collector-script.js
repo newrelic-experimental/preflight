@@ -191,7 +191,7 @@ function pushValue(spans, spanStart, from, end) {
   return end;
 }
 var HEADER = new RegExp(
-  String.raw`((?:-H|--header)(?:[\s=]|${CONTINUATION}){1,8}(\\"|"|')?)(?:(?:x-)?(?:api-?key|auth-token|access-token)(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|authorization[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
+  String.raw`((?:-H|--header)(?:(?:[\s=]|${CONTINUATION}){1,8}|(?=\\?["']))(\\"|"|')?)(?:(?:x-)?(?:api-?key|auth-token|access-token)(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|authorization[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
   "gi"
 );
 var headerValue = (text, match, quote, spans) => {
@@ -268,10 +268,47 @@ function passwordFlag(text, from, end) {
   return -1;
 }
 var CURL = /curl\b/g;
-var CURL_LONG_CREDENTIAL = /--(?:proxy-)?user(?:=|$)/y;
+var CURL_LONG_TAKES_VALUE = new Set(
+  `
+  --abstract-unix-socket --alt-svc --aws-sigv4 --cacert --capath --cert --cert-type --ciphers
+  --config --connect-timeout --connect-to --continue-at --cookie --cookie-jar --create-file-mode
+  --crlfile --curves --data --data-ascii --data-binary --data-raw --data-urlencode --delegation
+  --dns-interface --dns-ipv4-addr --dns-ipv6-addr --dns-servers --doh-url --dump-header --egd-file
+  --engine --etag-compare --etag-save --expect100-timeout --form --form-string --ftp-account
+  --ftp-alternative-to-user --ftp-method --ftp-port --ftp-ssl-ccc-mode --happy-eyeballs-timeout-ms
+  --haproxy-clientip --header --help --hostpubmd5 --hostpubsha256 --hsts --interface --ipfs-gateway
+  --json --keepalive-time --key --key-type --krb --libcurl --limit-rate --local-port
+  --login-options --mail-auth --mail-from --mail-rcpt --max-filesize --max-redirs --max-time
+  --netrc-file --noproxy --oauth2-bearer --output --output-dir --parallel-max --pass --pinnedpubkey
+  --preproxy --proto --proto-default --proto-redir --proxy --proxy1.0 --proxy-cacert
+  --proxy-capath --proxy-cert --proxy-cert-type --proxy-ciphers --proxy-crlfile --proxy-header
+  --proxy-key --proxy-key-type --proxy-pass --proxy-pinnedpubkey --proxy-service-name
+  --proxy-tls13-ciphers --proxy-tlsauthtype --proxy-tlspassword --proxy-tlsuser --proxy-user
+  --pubkey --quote --random-file --range --rate --referer --request --request-target --resolve
+  --retry --retry-delay --retry-max-time --sasl-authzid --service-name --socks4 --socks4a --socks5
+  --socks5-gssapi-service --socks5-hostname --speed-limit --speed-time --stderr --telnet-option
+  --tftp-blksize --time-cond --tls-max --tls13-ciphers --tlsauthtype --tlspassword --tlsuser
+  --trace --trace-ascii --trace-config --unix-socket --upload-file --url --url-query --user
+  --user-agent --variable --write-out
+  `.trim().split(/\s+/)
+);
+var CURL_LONG_CREDENTIAL = /* @__PURE__ */ new Set([
+  "--cookie",
+  "--oauth2-bearer",
+  "--pass",
+  "--proxy-pass",
+  "--proxy-tlspassword",
+  "--proxy-user",
+  "--tlspassword",
+  "--user"
+]);
 var CURL_TAKES_VALUE = charTable("AbcCdDeEFHKmoPQrtTuUwxXyYz");
-var CURL_CREDENTIAL = charTable("tuU");
+var CURL_CREDENTIAL = charTable("btuU");
 var ONLY_QUOTES = /^(?:\\*["'])*$/;
+function curlLongName(word) {
+  const equals = word.indexOf("=");
+  return (equals < 0 ? word : word.slice(0, equals)).replace(/["'\\]/g, "");
+}
 var curlCredentials = (text, match, quote, spans) => {
   let pending;
   return commandWords(text, match, quote, (from, end) => {
@@ -281,13 +318,17 @@ var curlCredentials = (text, match, quote, spans) => {
       return;
     }
     const word = text.slice(from, end);
-    CURL_LONG_CREDENTIAL.lastIndex = 0;
-    if (CURL_LONG_CREDENTIAL.test(word)) {
-      if (word.includes("=")) spans.push(from, end);
-      else pending = { start: from, credential: true };
+    const name = curlLongName(word);
+    if (name.startsWith("--")) {
+      const credential = CURL_LONG_CREDENTIAL.has(name);
+      if (word.includes("=")) {
+        if (credential) spans.push(from, end);
+      } else if (credential || CURL_LONG_TAKES_VALUE.has(name)) {
+        pending = { start: from, credential };
+      }
       return;
     }
-    if (word[0] !== "-" || word[1] === "-") return;
+    if (word[0] !== "-") return;
     for (let k = 1; k < word.length; k++) {
       const c = word.charCodeAt(k);
       if (c >= 128 || CURL_TAKES_VALUE[c] !== 1) continue;
