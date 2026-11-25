@@ -164,7 +164,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "SELECT latest(typeCount) AS 'antiPatterns' FROM (SELECT count(*) AS typeCount FROM AiAntiPattern FACET type, session_id LIMIT 500) FACET session_id LIMIT 10 SINCE 1 month ago"
+                "query": "SELECT sum(typeCount) AS 'antiPatterns' FROM (SELECT count(*) AS typeCount FROM AiAntiPattern FACET type, session_id LIMIT 500) FACET session_id LIMIT 10 SINCE 1 month ago"
               }
             ],
             "platformOptions": {

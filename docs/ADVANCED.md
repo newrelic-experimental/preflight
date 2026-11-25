@@ -604,7 +604,7 @@ The script queries NR for your past sessions, reconstructs session summaries, wr
 
 ## Terraform Deployment
 
-A Terraform module in `terraform/` is an IaC alternative to the deploy scripts. It deploys all 8 dashboards via `newrelic_one_dashboard_json` and the full alert policy with all 10 conditions (5 shared + 5 personal). Use it for GitOps workflows or when you want Terraform state tracking.
+A Terraform module in `terraform/` is an IaC alternative to the deploy scripts. It deploys all 9 dashboards via `newrelic_one_dashboard_json` and the full alert policy with all 10 conditions (5 shared + 5 personal). Use it for GitOps workflows or when you want Terraform state tracking.
 
 ### Prerequisites
 
