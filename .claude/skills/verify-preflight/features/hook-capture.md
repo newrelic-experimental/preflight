@@ -31,7 +31,7 @@ Preconditions:
 
 ## Gotchas
 
-- `/api/session/current` is the server's own rollup across live sessions, and its `sessionId` is `local-<ts>`, not your id. Check `liveSessions` in the same body for your id.
+- `/api/session/current` is the server's own rollup across live sessions, and its `sessionId` is `local-<ts>` in a `--local` server (what `$PF up` starts), not your id. A `--stdio` server reports the real session id. Check `liveSessions` in the same body for your id.
 - `/api/sessions` shows a thin stub for an unpersisted session. `toolBreakdown` and `model` are missing until the first persist.
-- The collector silently rewrites an id that fails `^[a-zA-Z0-9_-]{1,128}$` to `unknown`. Ids with dots or spaces vanish from the session views.
+- An id that fails `^[a-zA-Z0-9_-]{1,128}$` is written to `buffer-unknown.jsonl`, because the collector only rewrites the buffer filename, and the event keeps the raw id. The server still drains it. An id like `bad.id x` appears in `/api/sessions/live` and as a stub in `/api/sessions`, and it counts in `toolCallCount`, but no `store/sessions/*_<sid>.json` file is written for it and transcript cost never attaches. Use `$PF sid` ids.
 - A `hook` with no input JSON sends `{}`. Tool-specific parsing, like file paths and bash categories, then has nothing to read.
