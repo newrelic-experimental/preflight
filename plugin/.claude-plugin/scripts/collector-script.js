@@ -190,16 +190,37 @@ function pushValue(spans, spanStart, from, end) {
   if (end > from) spans.push(spanStart, end);
   return end;
 }
+var QUOTE = String.raw`\\"|"|'`;
+var KEY_HEADER = String.raw`(?:x-)?(?:api-?key|auth-token|access-token)`;
+var AUTH_HEADER = String.raw`(?:proxy-)?authorization`;
 var HEADER = new RegExp(
-  String.raw`((?:-H|--header)(?:(?:[\s=]|${CONTINUATION}){1,8}|(?=\\?["']))(\\"|"|')?)(?:(?:x-)?(?:api-?key|auth-token|access-token)(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|authorization[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
+  String.raw`((?:-H|--(?:proxy-)?header)(?:(?:[\s=]|${CONTINUATION}){1,8}|(?=\\?["']))(${QUOTE})?)(?:${KEY_HEADER}(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|${AUTH_HEADER}[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
   "gi"
 );
+var UNESCAPED_QUOTE = String.raw`(?:(?<!\\)(${QUOTE}))`;
+var HEADER_WORD = new RegExp(
+  String.raw`:(?<=${UNESCAPED_QUOTE}?(?:${KEY_HEADER}|${AUTH_HEADER}):)(${QUOTE})?(?:(?<=${KEY_HEADER}:(?:${QUOTE})?)|[ \t]{0,4}basic[ \t]{1,4})`,
+  "gi"
+);
+var quoteOpenedBy = (opener, quote) => {
+  if (opener === "'") return "single";
+  return opener === '"' || opener === '\\"' && quote === "double" ? "double" : "none";
+};
 var headerValue = (text, match, quote, spans) => {
   const from = match.index + match[0].length;
-  const opener = match[2];
-  const double = opener === '"' || opener === '\\"' && quote === "double";
-  const end = readValue(text, from, quote, opener === "'" ? "single" : double ? "double" : "none");
+  const end = readValue(text, from, quote, quoteOpenedBy(match[2], quote));
   return pushValue(spans, match.index + match[1].length, from, end);
+};
+var headerWordValue = (text, match, quote, spans) => {
+  const after = match[2];
+  const before = quote === "none" ? void 0 : match[1];
+  const beforeOpensQuote = quoteOpenedBy(before, "none") === (quote === "ansi" ? "single" : quote);
+  const outside = after === void 0 && beforeOpensQuote ? "none" : quote;
+  const inside = quoteOpenedBy(after ?? before, outside);
+  const from = match.index + match[0].length;
+  if (inside === "none") return from;
+  const start = match.index + 1 + (after?.length ?? 0);
+  return pushValue(spans, start, from, readValue(text, from, outside, inside));
 };
 var NAME = /(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-z])\s*[=:]\s*/gi;
 var FLAG = new RegExp(
@@ -360,6 +381,7 @@ var passwordValue = ({ flags, joined, wrapperOptions }) => (text, match, quote, 
 };
 var RULES = [
   { start: HEADER, redact: headerValue },
+  { start: HEADER_WORD, redact: headerWordValue },
   { start: NAME, redact: nameValue },
   ...REDACTION_PATTERNS,
   { start: FLAG, redact: wordValue },
