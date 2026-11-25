@@ -26,7 +26,7 @@ Preconditions: `$PF up` has run, `$PF doctor` prints four `ok` lines, and `PF_PO
 - **Watcher status.** Run `$PF shot /settings settings-watcher --expect "Subagent watcher:"`. The line prints `ok`.
 - **Save budgets.** Run `$PF shot /settings settings-save-budgets --click "Save budgets" --expect "Restart the server"`. The line prints `ok`.
 - **Persist a value.** Run `$PF api /api/settings -X PATCH -H 'content-type: application/json' -d '{"dailyBudgetUsd":5}'`. The body is `{"ok":true,"restartRequired":true}`. Then `$PF api /api/settings` contains `"dailyBudgetUsd":5`.
-- **Reject invalid input.** Run `$PF api /api/settings -X PATCH -H 'content-type: application/json' -d '{"retainSessionsDays":0}'`. The body is `{"error":"validation_failed","errors":["retainSessionsDays must be integer 1-365 or null"]}`.
+- **Reject invalid input.** Run `$PF api /api/settings -X PATCH -H 'content-type: application/json' -d '{"retainSessionsDays":0}'`. The body is `{"error":"validation_failed","errors":["retainSessionsDays must be integer 1-2190 or null"]}`.
 - **Diagnostics.** Run `$PF api /api/diagnostics`. The body is an array of `{check,status,detail}` objects. The first checks are `Config valid` and `Telemetry mode`, both `ok`.
 - **Reset.** Run `$PF api /api/settings -X PATCH -H 'content-type: application/json' -d '{"dailyBudgetUsd":null}'` so the run store is left clean.
 - **Proof.** Keep `settings-page.png`, `settings-nav-sidebar.png`, and `settings-save-budgets.png` with their `.txt` files, plus the PATCH and GET bodies. Skip the `g` then `e` shortcut and the `?` overlay, and report them as not driven rather than verified.
