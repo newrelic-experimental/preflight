@@ -60,14 +60,16 @@ const sshHostCache = new Map<string, { hostname: string | null; resolvedAt: numb
  *  a remote the same way, so a `Host github-work` alias for github.com reads
  *  as github.com. Cached across resolvers, because the dashboard builds one
  *  per request. */
-function sshConfiguredHostName(host: string): string | null {
+export function sshConfiguredHostName(host: string): string | null {
   const now = Date.now();
   const cached = sshHostCache.get(host);
   if (cached && now - cached.resolvedAt < SSH_HOST_TTL_MS) return cached.hostname;
   let hostname: string | null = null;
   try {
-    const result = spawnSync('ssh', ['-G', host], GIT_OPTS);
-    if (result.status === 0 && typeof result.stdout === 'string') {
+    // The host comes from the repo's remote, so one that starts with `-` must
+    // not reach ssh as an option.
+    const result = host.startsWith('-') ? null : spawnSync('ssh', ['-G', '--', host], GIT_OPTS);
+    if (result?.status === 0 && typeof result.stdout === 'string') {
       hostname = /^hostname\s+(\S+)$/m.exec(result.stdout)?.[1]?.toLowerCase() ?? null;
     }
   } catch {
@@ -363,7 +365,7 @@ export class WorktreeIdentityResolver {
   private resolveRepoName(dir: string): string | null {
     try {
       const result = spawnSync('git', ['-C', dir, 'remote', 'get-url', 'origin'], GIT_OPTS);
-      if (result.status === 0 && typeof result.stdout === 'string') {
+      if (result?.status === 0 && typeof result.stdout === 'string') {
         return repoNameFromRemote(result.stdout);
       }
     } catch {
@@ -379,7 +381,7 @@ export class WorktreeIdentityResolver {
   private resolveBranch(dir: string): { ok: boolean; branch: string | null } {
     try {
       const result = spawnSync('git', ['-C', dir, 'rev-parse', '--abbrev-ref', 'HEAD'], GIT_OPTS);
-      if (result.status === 0 && typeof result.stdout === 'string') {
+      if (result?.status === 0 && typeof result.stdout === 'string') {
         const headRef = result.stdout.trim();
         return { ok: true, branch: headRef === 'HEAD' ? null : headRef };
       }
