@@ -41,6 +41,13 @@ export interface UpstreamConfig {
 // Proxy upstream interface
 // ---------------------------------------------------------------------------
 
+/**
+ * Outcome of a tools/call response, read from its JSON-RPC body:
+ * `ok` (a result with no failure marker), `jsonrpc_error` (an `error` object)
+ * or `tool_error` (a result with `isError: true`).
+ */
+export type RpcOutcome = 'ok' | 'jsonrpc_error' | 'tool_error';
+
 export interface ForwardResult {
   /** HTTP status code from upstream (or synthetic for stdio) */
   readonly statusCode: number;
@@ -50,6 +57,12 @@ export interface ForwardResult {
   readonly responseSizeBytes: number | null;
   /** Time spent waiting for upstream response (ms) */
   readonly upstreamLatencyMs: number;
+  /**
+   * Outcome of a tools/call response. Undefined when the body was not inspected:
+   * SSE, a non-JSON or non-2xx HTTP response, a body over MAX_RPC_OUTCOME_BYTES,
+   * or a request that was not tools/call.
+   */
+  readonly rpcOutcome?: RpcOutcome;
 }
 
 export interface ProxyUpstream {

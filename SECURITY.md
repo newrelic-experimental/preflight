@@ -89,37 +89,39 @@ Apply the same pattern to any user-supplied string that becomes a NR event field
 
 One redaction pass, called by `redactSensitive()` and `redactIdentifier()` in `src/config.ts` and by `redact()` in `collector-script.ts`. It runs `REDACTION_PATTERNS`, token patterns that each redact their whole match, and nine argument rules: `NAME=value`, secret flags, mysql `-p`, curl credentials, `docker login -p`, `sshpass -p`, `redis-cli -a`, credential headers after a header flag, and credential headers written as one quoted `Name:value` word. An argument rule's regex only finds where the secret starts. The mysql, curl, docker, sshpass and redis-cli rules start at the command name, which counts when it starts a word, including right after a JSON escape or ANSI colour code (`\ncurl`, `\x1b[32mmysql`, `\u001b[32mcurl`). A scanner reads the value as one bash word, so quotes, escapes and line continuations stay in it, and an unquoted space, tab, line break, one of `; | & ( ) < >` or the backtick ends it. The scanner starts in the quote the text is in at the match, so a value inside a quoted string never reads past its closing quote. A `#` comment reads like a quote that the line break closes. The pass covers:
 
-| Pattern                                                                         | What it catches                           |
-| ------------------------------------------------------------------------------- | ----------------------------------------- |
-| `API_KEY=`, `SECRET=`, `TOKEN=`, `PASSWORD=`, `PASSPHRASE=`, `PRIVATE_KEY=`, …  | Key-value secret assignments              |
-| `sk-`, `ghp_`, `gho_`, `ghs_`, `github_pat_`, `xoxb-`, `xoxp-`, `Bearer …`      | Common API token prefixes                 |
-| `-----BEGIN … -----END-----`                                                    | PEM-encoded private keys and certificates |
-| `AKIA[0-9A-Z]{16}`                                                              | AWS access key IDs                        |
-| `AIzaSy…`                                                                       | Google API keys                           |
-| `eyJ…` (three-part)                                                             | JWT tokens                                |
-| `npm_…`                                                                         | npm auth tokens                           |
-| `xox[a-z]-…`                                                                    | All Slack token types                     |
-| `glpat-…`                                                                       | GitLab personal access tokens             |
-| `sk_live_` / `sk_test_` / `rk_live_` / `rk_test_`                               | Stripe secret and restricted keys         |
-| `pypi-…`                                                                        | PyPI upload tokens                        |
-| `hf_…`                                                                          | Hugging Face tokens                       |
-| `vercel_`, `heroku_`, `dd_`, `pk_`                                              | Vercel, Heroku, Datadog and similar keys  |
-| `AC…` / `SK…` (32 hex characters)                                               | Twilio account SIDs and API keys          |
-| `user:pass@` in `https://`, `mongodb://`, `postgres://`, `mysql://`, `redis://` | Credentials embedded in URLs              |
-| `?sig=`, `?se=`, `?sp=`, `?sv=`, …                                              | Azure SAS token parameters                |
-| `--token`, `--password`, `--secret`, `--api-key` and the flags listed below     | Secret values passed as flags             |
-| Each `-p<password>` after `mysql`, `mysqldump`, `mysqladmin` or `mariadb`       | MySQL client passwords                    |
-| The value of `-u`, `-U`, `--user`, `--proxy-user` and `-t` after `curl`         | curl credentials                          |
-| `-H`/`--header` with `X-Api-Key`, `Api-Key`, `X-Auth-Token`, `X-Access-Token`   | API-key headers                           |
-| `-H`/`--header` with `Authorization: Basic` or `Proxy-Authorization: Basic`     | Basic auth credentials                    |
-| The same headers after `--proxy-header`, or as one quoted `Name:value` word     | Header credentials                        |
-| The value of `-p` after `docker login`, or after `sshpass` before its command   | docker and sshpass passwords              |
-| The value of `-a` or `--pass` after `redis-cli`                                 | Redis passwords                           |
-| `aws_secret_access_key` followed by 40 characters, bare or quoted               | AWS secret access keys                    |
+| Pattern                                                                                                                                                                        | What it catches                           |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------- |
+| `API_KEY=`, `SECRET=`, `TOKEN=`, `PASSWORD=`, `PASSPHRASE=`, `PRIVATE_KEY=`, …                                                                                                 | Key-value secret assignments              |
+| `sk-`, `ghp_`, `gho_`, `ghs_`, `github_pat_`, `xoxb-`, `xoxp-`, `Bearer …`                                                                                                     | Common API token prefixes                 |
+| `-----BEGIN … -----END-----`                                                                                                                                                   | PEM-encoded private keys and certificates |
+| `AKIA[0-9A-Z]{16}`                                                                                                                                                             | AWS access key IDs                        |
+| `AIzaSy…`                                                                                                                                                                      | Google API keys                           |
+| `eyJ…` (three-part)                                                                                                                                                            | JWT tokens                                |
+| `npm_…`                                                                                                                                                                        | npm auth tokens                           |
+| `xox[a-z]-…`                                                                                                                                                                   | All Slack token types                     |
+| `glpat-…`                                                                                                                                                                      | GitLab personal access tokens             |
+| `sk_live_` / `sk_test_` / `rk_live_` / `rk_test_`                                                                                                                              | Stripe secret and restricted keys         |
+| `pypi-…`                                                                                                                                                                       | PyPI upload tokens                        |
+| `hf_…`                                                                                                                                                                         | Hugging Face tokens                       |
+| `vercel_`, `heroku_`, `dd_`, `pk_`                                                                                                                                             | Vercel, Heroku, Datadog and similar keys  |
+| `AC…` / `SK…` (32 hex characters)                                                                                                                                              | Twilio account SIDs and API keys          |
+| `user:pass@` in `https://`, `mongodb://`, `postgres://`, `mysql://`, `redis://`                                                                                                | Credentials embedded in URLs              |
+| `?sig=`, `?se=`, `?sp=`, `?sv=`, …                                                                                                                                             | Azure SAS token parameters                |
+| `--token`, `--password`, `--secret`, `--api-key` and the flags listed below                                                                                                    | Secret values passed as flags             |
+| Each `-p<password>` after `mysql`, `mysqldump`, `mysqladmin` or `mariadb`                                                                                                      | MySQL client passwords                    |
+| The value of `-u`, `-U`, `-b`, `-t`, `--user`, `--proxy-user`, `--cookie`, `--oauth2-bearer`, `--pass`, `--proxy-pass`, `--tlspassword` and `--proxy-tlspassword` after `curl` | curl credentials                          |
+| `-H`/`--header` with `X-Api-Key`, `Api-Key`, `X-Auth-Token`, `X-Access-Token`                                                                                                  | API-key headers                           |
+| `-H`/`--header` with `Authorization: Basic` or `Proxy-Authorization: Basic`                                                                                                    | Basic auth credentials                    |
+| The same headers after `--proxy-header`, or as one quoted `Name:value` word                                                                                                    | Header credentials                        |
+| The value of `-p` after `docker login`, or after `sshpass` before its command                                                                                                  | docker and sshpass passwords              |
+| The value of `-a` or `--pass` after `redis-cli`                                                                                                                                | Redis passwords                           |
+| `aws_secret_access_key` followed by 40 characters, bare or quoted                                                                                                              | AWS secret access keys                    |
 
 The secret flags are `--token`, `--password`, `--passwd`, `--secret`, `--api-key`, `--access-key`, `--secret-key` and `--private-key`, in single-dash, underscore and `=` forms, and the same flags with more words joined in front by `-` or `_`, such as `--db-password`. Flags that name a file or stdin, such as `--token-file` and `--password-stdin`, are left alone.
 
-A quoted flag or command name is not recognised, so `curl "-u" user:pass`, `"curl" -u user:pass` and `--"token" value` are stored as is. A quote inside a curl flag word is read, so `curl -"u" user:pass` is redacted. Both rules err toward hiding: a word after the command name that only looks like an option, as in `rg curl -t ts`, is redacted too.
+A header after `-H`, `--header` or `--proxy-header` is redacted whole, name included, so `curl -H "Authorization: Basic …"` and the joined `curl -H"Authorization: Basic …"` are stored as `curl -H "[REDACTED]"` and `curl -H"[REDACTED]"`. A quoted `Name:value` word with no header flag before it keeps its name and hides the value, so `http x Authorization:"Basic …"` is stored as `http x Authorization:"[REDACTED]"`.
+
+A quoted short flag or command name is not recognised, so `curl "-u" user:pass`, `"curl" -u user:pass` and `--"token" value` are stored as is. A quote inside a curl flag word is read, so `curl -"u" user:pass` is redacted, and so is a quoted long option such as `curl "--user" user:pass`. Both rules err toward hiding: a word after the command name that only looks like an option, as in `rg curl -t ts`, is redacted too.
 
 **Where applied:**
 

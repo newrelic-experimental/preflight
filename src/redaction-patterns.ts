@@ -240,8 +240,9 @@ const QUOTE = String.raw`\\"|"|'`;
 const KEY_HEADER = String.raw`(?:x-)?(?:api-?key|auth-token|access-token)`;
 const AUTH_HEADER = String.raw`(?:proxy-)?authorization`;
 
+// -H may take its header straight after the flag when the header is quoted (-H"Authorization: …").
 const HEADER = new RegExp(
-  String.raw`((?:-H|--(?:proxy-)?header)(?:[\s=]|${CONTINUATION}){1,8}(${QUOTE})?)(?:${KEY_HEADER}(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|${AUTH_HEADER}[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
+  String.raw`((?:-H|--(?:proxy-)?header)(?:(?:[\s=]|${CONTINUATION}){1,8}|(?=\\?["']))(${QUOTE})?)(?:${KEY_HEADER}(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|${AUTH_HEADER}[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
   'gi',
 );
 
@@ -373,15 +374,62 @@ function passwordFlag(text: string, from: number, end: number): number {
 }
 
 const CURL = /curl\b/g;
-const CURL_LONG_CREDENTIAL = /--(?:proxy-)?user(?:=|$)/y;
+// curl's long options that take a value (`curl --help all`, curl 8.7). The value is the next word,
+// or the rest of the word after `=`, even when it starts with a dash.
+const CURL_LONG_TAKES_VALUE: ReadonlySet<string> = new Set(
+  `
+  --abstract-unix-socket --alt-svc --aws-sigv4 --cacert --capath --cert --cert-type --ciphers
+  --config --connect-timeout --connect-to --continue-at --cookie --cookie-jar --create-file-mode
+  --crlfile --curves --data --data-ascii --data-binary --data-raw --data-urlencode --delegation
+  --dns-interface --dns-ipv4-addr --dns-ipv6-addr --dns-servers --doh-url --dump-header --egd-file
+  --engine --etag-compare --etag-save --expect100-timeout --form --form-string --ftp-account
+  --ftp-alternative-to-user --ftp-method --ftp-port --ftp-ssl-ccc-mode --happy-eyeballs-timeout-ms
+  --haproxy-clientip --header --help --hostpubmd5 --hostpubsha256 --hsts --interface --ipfs-gateway
+  --json --keepalive-time --key --key-type --krb --libcurl --limit-rate --local-port
+  --login-options --mail-auth --mail-from --mail-rcpt --max-filesize --max-redirs --max-time
+  --netrc-file --noproxy --oauth2-bearer --output --output-dir --parallel-max --pass --pinnedpubkey
+  --preproxy --proto --proto-default --proto-redir --proxy --proxy1.0 --proxy-cacert
+  --proxy-capath --proxy-cert --proxy-cert-type --proxy-ciphers --proxy-crlfile --proxy-header
+  --proxy-key --proxy-key-type --proxy-pass --proxy-pinnedpubkey --proxy-service-name
+  --proxy-tls13-ciphers --proxy-tlsauthtype --proxy-tlspassword --proxy-tlsuser --proxy-user
+  --pubkey --quote --random-file --range --rate --referer --request --request-target --resolve
+  --retry --retry-delay --retry-max-time --sasl-authzid --service-name --socks4 --socks4a --socks5
+  --socks5-gssapi-service --socks5-hostname --speed-limit --speed-time --stderr --telnet-option
+  --tftp-blksize --time-cond --tls-max --tls13-ciphers --tlsauthtype --tlspassword --tlsuser
+  --trace --trace-ascii --trace-config --unix-socket --upload-file --url --url-query --user
+  --user-agent --variable --write-out
+  `
+    .trim()
+    .split(/\s+/),
+);
+// The long options whose value is a secret, redacted like -u.
+const CURL_LONG_CREDENTIAL: ReadonlySet<string> = new Set([
+  '--cookie',
+  '--oauth2-bearer',
+  '--pass',
+  '--proxy-pass',
+  '--proxy-tlspassword',
+  '--proxy-user',
+  '--tlspassword',
+  '--user',
+]);
 // curl's short options that take a value. The value is the rest of the word, or the next word.
 const CURL_TAKES_VALUE = charTable('AbcCdDeEFHKmoPQrtTuUwxXyYz');
-const CURL_CREDENTIAL = charTable('tuU');
+// -b takes cookie data or a cookie file's name. Telling them apart needs the file system, so both
+// are redacted.
+const CURL_CREDENTIAL = charTable('btuU');
 // A word such as -"u" ends in a closing quote, so its value is the next word.
 const ONLY_QUOTES = /^(?:\\*["'])*$/;
 
-// -u and -U hold user:password and -t holds a secret, with the value in the same word (-uuser:pw,
-// -sSu user:pw, --user=user:pw) or the next. Another option's value, as in -o -t.txt, is skipped.
+// A long option's name as curl receives it: the quotes and backslashes that bash removes are gone.
+function curlLongName(word: string): string {
+  const equals = word.indexOf('=');
+  return (equals < 0 ? word : word.slice(0, equals)).replace(/["'\\]/g, '');
+}
+
+// The values of -u, -U, -b, -t and the long credential options are redacted, in the same word
+// (-uuser:pw, -sSu user:pw, --user=user:pw) or the next. Another option's value, as in -o -t.txt,
+// is skipped.
 const curlCredentials: Redact = (text, match, quote, spans) => {
   let pending: { start: number; credential: boolean } | undefined;
   return commandWords(text, match, quote, (from, end) => {
@@ -391,13 +439,17 @@ const curlCredentials: Redact = (text, match, quote, spans) => {
       return;
     }
     const word = text.slice(from, end);
-    CURL_LONG_CREDENTIAL.lastIndex = 0;
-    if (CURL_LONG_CREDENTIAL.test(word)) {
-      if (word.includes('=')) spans.push(from, end);
-      else pending = { start: from, credential: true };
+    const name = curlLongName(word);
+    if (name.startsWith('--')) {
+      const credential = CURL_LONG_CREDENTIAL.has(name);
+      if (word.includes('=')) {
+        if (credential) spans.push(from, end);
+      } else if (credential || CURL_LONG_TAKES_VALUE.has(name)) {
+        pending = { start: from, credential };
+      }
       return;
     }
-    if (word[0] !== '-' || word[1] === '-') return;
+    if (word[0] !== '-') return;
     for (let k = 1; k < word.length; k++) {
       const c = word.charCodeAt(k);
       if (c >= 128 || CURL_TAKES_VALUE[c] !== 1) continue;

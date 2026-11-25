@@ -8,6 +8,7 @@ import {
   type Server,
 } from 'node:http';
 import { ProxyManager } from './proxy-manager.js';
+import { MAX_RPC_OUTCOME_BYTES } from './rpc-outcome.js';
 import type { ProxyToolCallRecord, ProxyRequestRecord } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -705,6 +706,144 @@ describe('ProxyManager observability', () => {
 
     expect(records[0].success).toBe(true);
     expect(records[0].errorType).toBeUndefined();
+  });
+
+  it('records a JSON-RPC error on HTTP 200 as a jsonrpc_error failure and passes the body through', async () => {
+    const upstreamBody = '{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"bad args"}}';
+    ({ server: mockServer, port: proxyPort } = await createMockMcpServer((_rpc, _req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(upstreamBody);
+    }));
+    const mockPort = proxyPort;
+
+    const records: ProxyToolCallRecord[] = [];
+    await setupWithCallbacks(mockPort, { onToolCall: (r) => records.push(r) });
+
+    const response = await httpRequest(`http://127.0.0.1:${proxyPort}/proxy/test-mcp`, {
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'bad' },
+      }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe(upstreamBody);
+    expect(records).toHaveLength(1);
+    expect(records[0].success).toBe(false);
+    expect(records[0].errorType).toBe('jsonrpc_error');
+  });
+
+  it('records an isError tool result on HTTP 200 as a tool_error failure', async () => {
+    ({ server: mockServer, port: proxyPort } = await createMockMcpServer((_rpc, _req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"no such file"}],"isError":true}}',
+      );
+    }));
+    const mockPort = proxyPort;
+
+    const records: ProxyToolCallRecord[] = [];
+    await setupWithCallbacks(mockPort, { onToolCall: (r) => records.push(r) });
+
+    await httpRequest(`http://127.0.0.1:${proxyPort}/proxy/test-mcp`, {
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'read' },
+      }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(records).toHaveLength(1);
+    expect(records[0].success).toBe(false);
+    expect(records[0].errorType).toBe('tool_error');
+  });
+
+  it('keeps the HTTP status class when a non-2xx response also carries a failure marker', async () => {
+    ({ server: mockServer, port: proxyPort } = await createMockMcpServer((_rpc, _req, res) => {
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end('{"jsonrpc":"2.0","id":1,"result":{"isError":true}}');
+    }));
+    const mockPort = proxyPort;
+
+    const records: ProxyToolCallRecord[] = [];
+    await setupWithCallbacks(mockPort, { onToolCall: (r) => records.push(r) });
+
+    await httpRequest(`http://127.0.0.1:${proxyPort}/proxy/test-mcp`, {
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'x' } }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(records[0].success).toBe(false);
+    expect(records[0].errorType).toBe('http_5xx');
+  });
+
+  it('leaves a tools/call answered as an SSE stream successful, even with an error event', async () => {
+    ({ server: mockServer, port: proxyPort } = await createMockMcpServer((_rpc, _req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end('event: message\ndata: {"jsonrpc":"2.0","id":1,"error":{"code":-32602}}\n\n');
+    }));
+    const mockPort = proxyPort;
+
+    const records: ProxyToolCallRecord[] = [];
+    await setupWithCallbacks(mockPort, { onToolCall: (r) => records.push(r) });
+
+    await httpRequest(`http://127.0.0.1:${proxyPort}/proxy/test-mcp`, {
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'x' } }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(records[0].success).toBe(true);
+    expect(records[0].errorType).toBeUndefined();
+  });
+
+  it('leaves a JSON-RPC error body over the classification cap successful', async () => {
+    const upstreamBody = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      error: { code: -32602, message: 'bad args' },
+      padding: 'x'.repeat(MAX_RPC_OUTCOME_BYTES),
+    });
+    ({ server: mockServer, port: proxyPort } = await createMockMcpServer((_rpc, _req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(upstreamBody);
+    }));
+    const mockPort = proxyPort;
+
+    const records: ProxyToolCallRecord[] = [];
+    await setupWithCallbacks(mockPort, { onToolCall: (r) => records.push(r) });
+
+    const response = await httpRequest(`http://127.0.0.1:${proxyPort}/proxy/test-mcp`, {
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'x' } }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(response.body).toBe(upstreamBody);
+    expect(records[0].success).toBe(true);
+    expect(records[0].errorType).toBeUndefined();
+  });
+
+  it('keeps a tools/list answered with a JSON-RPC error as a successful request record', async () => {
+    ({ server: mockServer, port: proxyPort } = await createMockMcpServer((_rpc, _req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"no"}}');
+    }));
+    const mockPort = proxyPort;
+
+    const records: ProxyRequestRecord[] = [];
+    await setupWithCallbacks(mockPort, { onRequest: (r) => records.push(r) });
+
+    await httpRequest(`http://127.0.0.1:${proxyPort}/proxy/test-mcp`, {
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(records).toHaveLength(1);
+    expect(records[0].success).toBe(true);
   });
 
   it('computes proxyOverheadMs as totalDuration - upstreamLatency', async () => {
