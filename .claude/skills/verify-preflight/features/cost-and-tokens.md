@@ -24,7 +24,7 @@ Preconditions:
 - **One hook.** Run `$PF hook $SID Bash '{"command":"npm run build"}'` so the session exists.
 - **One turn.** Run `$PF turn $SID claude-sonnet-4-5-20250929 1200 300 5000`. It prints the transcript path under the run's `HOME`.
 - **Transcript consumed.** After 5s, `ls -a "$($PF where | sed -n 's/^run=//p')/store" | grep parent-transcript-pos-$SID` finds the watcher's cursor file.
-- **Priced by model.** Run `$PF api /api/cost`. `costByModel` contains `"claude-sonnet-4-5-20250929":0.0096`. That is 1200 input at $3/M, 300 output at $15/M, and 5000 cache-read at $0.30/M. `totalCacheReadTokens` includes 5000.
+- **Priced by model.** Run `$PF api /api/cost`. `.cost.costByModel` contains `"claude-sonnet-4-5-20250929":0.0096`. That is 1200 input at $3/M, 300 output at $15/M, and 5000 cache-read at $0.30/M. `.cost.totalCacheReadTokens` includes 5000.
 - **Aggregate.** After one more persist, `$PF api /api/sessions/today/aggregate` reports a `totalCostUsd` of at least `0.01`.
 - **Proof.** Save the `/api/cost` body and the transcript line (`tail -1` of the printed path) to the evidence dir.
 
@@ -33,4 +33,5 @@ Preconditions:
 - `turn` refuses non-UUID ids, because the transcript watchers skip them. A hand-written transcript under a non-UUID filename is silently ignored.
 - Without a `turn`, `costByModel` still shows a small `claude-sonnet-4-6` entry. That is the tool-I/O estimate, not a transcript read. Do not mistake it for the feature working.
 - The expected dollar figure depends on the built-in table in `src/core/pricing-data.ts`. If a pricing change is under test, recompute the expectation from that table instead of reusing `0.0096`.
+- The dated `claude-sonnet-4-5-20250929` id has no exact entry in `src/core/pricing-data.ts`. It resolves through the prefix fallbacks to rates of $3, $15, and $0.30 per million tokens. The `claude-sonnet-4-5` entry is marked retiring 2026-11-30. If a pricing change moves those rates, switch the seeded model and recompute the expectation.
 - Each `turn` mints a new message id, so repeated turns add up. Rerunning the same line does not dedupe.
