@@ -214,6 +214,9 @@ const REDACTS: Row[] = [
   ['curl -H x'],
   ['curl -HX-Api-Keys:abc x'],
   ['curl -HAuthorization:Basically x'],
+  // Known over-redaction: no word boundary before the joined header name.
+  ['grep -Hapi-key file', 'api-key file'],
+  ['git log -Hauth-token x', 'auth-token x'],
   ['curl -H "Authorization : Basic YQ==" x', 'Authorization : Basic YQ=='],
   ['curl -H "Authorization: Basically x" x'],
   ['curl -H "Authorization: Basic" https://api.example.com'],
