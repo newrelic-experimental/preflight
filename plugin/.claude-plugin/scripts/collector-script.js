@@ -394,12 +394,12 @@ var passwordValue = ({ flags, joined, wrapperOptions }) => (text, match, quote, 
 };
 var RULES = [
   { start: HEADER, redact: headerValue },
-  { start: CURL, redact: curlCredentials },
   { start: HEADER_WORD, redact: headerWordValue },
   { start: NAME, redact: nameValue },
   ...REDACTION_PATTERNS,
   { start: FLAG, redact: wordValue },
   { start: MYSQL, redact: mysqlPasswords },
+  { start: CURL, redact: curlCredentials },
   { start: /docker[ \t]+login\b/g, redact: passwordValue({ flags: ["-p"], joined: true }) },
   {
     start: /sshpass\b/g,

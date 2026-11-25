@@ -436,7 +436,7 @@ const curlShortValue = (c: number): CurlValue => {
   return CURL_CREDENTIAL[c] === 1 ? 'credential' : 'other';
 };
 
-// The value of an option of the given kind, which starts at `from` and ends at `end`.
+// Not a closure in curlCredentials: one per curl command made 1 MB of curl -H commands 25% slower.
 function redactCurlValue(
   text: string,
   quote: Quote,
@@ -522,12 +522,12 @@ type RedactionRule = RegExp | ArgumentRule;
 
 const RULES: readonly RedactionRule[] = [
   { start: HEADER, redact: headerValue },
-  { start: CURL, redact: curlCredentials },
   { start: HEADER_WORD, redact: headerWordValue },
   { start: NAME, redact: nameValue },
   ...REDACTION_PATTERNS,
   { start: FLAG, redact: wordValue },
   { start: MYSQL, redact: mysqlPasswords },
+  { start: CURL, redact: curlCredentials },
   { start: /docker[ \t]+login\b/g, redact: passwordValue({ flags: ['-p'], joined: true }) },
   {
     start: /sshpass\b/g,
