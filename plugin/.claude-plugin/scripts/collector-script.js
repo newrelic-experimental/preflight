@@ -1259,8 +1259,18 @@ function classifyBash(command) {
 
 // src/metrics/pr-ref.ts
 var PR_REPO_RE = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
+var PR_HOST_RE = /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/;
+var GITHUB_HOST = "github.com";
 function parsePrRepo(value) {
-  return typeof value === "string" && PR_REPO_RE.test(value) ? value.toLowerCase() : void 0;
+  if (typeof value !== "string") return void 0;
+  const parts = value.split("/");
+  if (parts.length !== 2 && parts.length !== 3) return void 0;
+  const repo = parts.slice(-2).join("/");
+  if (!PR_REPO_RE.test(repo)) return void 0;
+  if (parts.length === 2) return repo.toLowerCase();
+  const host = parts[0].toLowerCase();
+  if (!PR_HOST_RE.test(host)) return void 0;
+  return host === GITHUB_HOST ? repo.toLowerCase() : `${host}/${repo.toLowerCase()}`;
 }
 
 // src/hooks/minted-tool-use-ids.ts
@@ -1776,7 +1786,7 @@ function extractInputMeta(toolName, input) {
   }
   return Object.keys(meta).length > 0 ? meta : void 0;
 }
-var PR_URL_RE = /https?:\/\/[^\s"'/]+\/([^\s"'/]+)\/([^\s"'/]+)\/pull\/(\d{1,9})\b/g;
+var PR_URL_RE = /https?:\/\/([^\s"'/]+)\/([^\s"'/]+)\/([^\s"'/]+)\/pull\/(\d{1,9})\b/g;
 var GH_PR_CREATE_RE = /(?:^|[\s;&|(])gh\s+pr\s+create\b/;
 function findCreatedPr(output) {
   const texts = [];
@@ -1787,9 +1797,10 @@ function findCreatedPr(output) {
   }
   const prs = /* @__PURE__ */ new Map();
   for (const text of texts) {
-    for (const [, owner, repo, createdPrNumber] of text.matchAll(PR_URL_RE)) {
-      const createdPrRepo = parsePrRepo(`${owner}/${repo}`);
-      prs.set(`${owner}/${repo}#${createdPrNumber}`.toLowerCase(), {
+    for (const [, hostPort, owner, repo, createdPrNumber] of text.matchAll(PR_URL_RE)) {
+      const host = hostPort.replace(/:\d+$/, "");
+      const createdPrRepo = parsePrRepo(`${host}/${owner}/${repo}`);
+      prs.set(`${host}/${owner}/${repo}#${createdPrNumber}`.toLowerCase(), {
         createdPrNumber,
         ...createdPrRepo !== void 0 && { createdPrRepo }
       });

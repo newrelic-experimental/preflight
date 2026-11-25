@@ -9,7 +9,11 @@ import {
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { cacheKeyOf, WorktreeIdentityResolver } from './git-workspace-identity.js';
+import {
+  cacheKeyOf,
+  sshConfiguredHostName,
+  WorktreeIdentityResolver,
+} from './git-workspace-identity.js';
 
 // git sets GIT_DIR/GIT_WORK_TREE for hook subprocesses (e.g. a pre-push
 // hook), which override `-C <dir>` and silently redirect every fixture call
@@ -316,4 +320,17 @@ describe('WorktreeIdentityResolver', () => {
     },
     15_000,
   );
+});
+
+describe('sshConfiguredHostName', () => {
+  it('does not hand a host that starts with - to ssh as an option', () => {
+    const marker = join(mkdtempSync(join(tmpdir(), 'ssh-host-')), 'ran');
+    try {
+      expect(sshConfiguredHostName(`-oProxyCommand=touch ${marker}`)).toBeNull();
+      expect(sshConfiguredHostName(`-oLocalCommand=touch ${marker}`)).toBeNull();
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(join(marker, '..'), { recursive: true, force: true });
+    }
+  });
 });

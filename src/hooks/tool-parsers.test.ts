@@ -475,7 +475,12 @@ describe('parseToolSpecificFields', () => {
       const repoOf = (output: Record<string, unknown>) =>
         parseToolSpecificFields('Bash', cmd, output).createdPrRepo;
       expect(repoOf({ createdPrNumber: '42', createdPrRepo: 'Acme/App' })).toBe('acme/app');
-      expect(repoOf({ createdPrNumber: '42', createdPrRepo: 'acme/app/extra' })).toBeUndefined();
+      expect(repoOf({ createdPrNumber: '42', createdPrRepo: 'GHE.Example.com/Acme/App' })).toBe(
+        'ghe.example.com/acme/app',
+      );
+      expect(
+        repoOf({ createdPrNumber: '42', createdPrRepo: 'acme/app/extra/more' }),
+      ).toBeUndefined();
       expect(repoOf({ createdPrNumber: '42', createdPrRepo: 'acme app/x' })).toBeUndefined();
       expect(repoOf({ createdPrRepo: 'acme/app' })).toBeUndefined();
     });
