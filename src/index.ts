@@ -1564,10 +1564,10 @@ async function main(): Promise<void> {
           sessionStore!.loadSession(sessionId),
         );
         if (cost) {
-          costTracker.seedFromPersisted(cost.costTracker);
+          costTracker.seedFromPersisted(cost.costTracker, 'alreadySaved');
           ownUnbookedCosts.set(sessionId, cost.unbooked);
           budgetTracker.seedFiredThresholdsFromSessionTotal(cost.estimatedCostUsd ?? 0);
-          modelUsageTracker.seedFromPersisted(cost.modelBreakdown);
+          modelUsageTracker.seedFromPersisted(cost.modelBreakdown, 'alreadySaved');
         }
         if (toolCalls) {
           sessionTracker!.seedFromPersisted(toolCalls.sessionTracker);
@@ -1822,8 +1822,8 @@ async function main(): Promise<void> {
         return;
       }
       const seed = settledCostTrackerSeed(persisted);
-      costTracker.seedFromPersisted(seed);
-      modelUsageTracker.seedFromPersisted(persisted.modelBreakdown);
+      costTracker.seedFromPersisted(seed, 'alreadySaved');
+      modelUsageTracker.seedFromPersisted(persisted.modelBreakdown, 'alreadySaved');
       localHeldCosts.set(sessionId, heldSessionCostOf(persisted, Date.now(), seed));
       refreshPriorCostBaseline();
     };

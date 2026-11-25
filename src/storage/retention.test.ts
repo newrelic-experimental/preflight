@@ -199,6 +199,30 @@ describe('purgeOldSessions with writer files', () => {
     expect(existsSync(newer)).toBe(true);
   });
 
+  it('deletes a writer temp file once it is an hour old, and keeps the session', () => {
+    const dir = makeTempDir();
+    writeIndex(dir, 's1', false);
+    const writers = writeWriterFiles(dir, 's1', false);
+    const stale = join(writers, '.engine.1.a.b.json.41.0badf00d.tmp');
+    const inFlight = join(writers, '.engine.1.a.b.json.42.c0ffee00.tmp');
+    for (const [path, ageMs] of [
+      [join(writers, 'engine.1.a.b.json'), 2 * 60 * 60 * 1000],
+      [stale, 61 * 60 * 1000],
+      [inFlight, 59 * 60 * 1000],
+    ] as const) {
+      writeFileSync(path, '{}');
+      const at = new Date(Date.now() - ageMs);
+      utimesSync(path, at, at);
+    }
+
+    expect(purgeOldSessions(dir, 30)).toBe(1);
+    expect(readdirSync(writers).sort()).toEqual([
+      '.engine.1.a.b.json.42.c0ffee00.tmp',
+      'engine.1.a.b.json',
+      'legacy.0123456789abcdef.json',
+    ]);
+  });
+
   it('deletes writer files with no index once they are old', () => {
     const dir = makeTempDir();
     const orphan = writeWriterFiles(dir, 'orphan', true);

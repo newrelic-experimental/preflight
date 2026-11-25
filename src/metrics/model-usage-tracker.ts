@@ -60,7 +60,37 @@ interface MutableModelStats {
 }
 
 import type { TokenUsage } from '../core/tokens.js';
+import type { SeedOrigin } from './cost-tracker.js';
 import type { Resettable } from './tracker-contracts.js';
+
+function addModelStats(
+  byModel: Map<string, MutableModelStats>,
+  model: string,
+  entry: ModelBreakdownEntry,
+): void {
+  let stats = byModel.get(model);
+  if (!stats) {
+    stats = zeroModelStats();
+    byModel.set(model, stats);
+  }
+  stats.requestCount += entry.requestCount;
+  stats.totalInputTokens += entry.totalInputTokens;
+  stats.totalOutputTokens += entry.totalOutputTokens;
+  stats.totalCostUsd += entry.totalCostUsd;
+  stats.totalCacheReadTokens += entry.totalCacheReadTokens;
+  stats.totalCacheCreationTokens += entry.totalCacheCreationTokens;
+  stats.totalThinkingTokens += entry.totalThinkingTokens;
+}
+
+function rawBreakdownOf(
+  byModel: ReadonlyMap<string, MutableModelStats>,
+): Readonly<Record<string, ModelBreakdownEntry>> {
+  const out: Record<string, ModelBreakdownEntry> = {};
+  for (const [model, stats] of byModel) {
+    out[model] = { ...stats };
+  }
+  return out;
+}
 
 function zeroModelStats(): MutableModelStats {
   return {
@@ -128,22 +158,24 @@ function deriveModelUsageMetrics(
 const MAX_SWITCH_EVENTS = 100;
 
 export class ModelUsageTracker implements Resettable {
+  /** Seeds plus own usage, as CostTracker's `held` book. */
   private byModel = new Map<string, MutableModelStats>();
+  /** Own usage plus any `drainedHere` seed. */
+  private ownByModel = new Map<string, MutableModelStats>();
   private switches: ModelSwitchEvent[] = [];
 
   recordUsage(model: string, usage: TokenUsage, costUsd: number): void {
-    let stats = this.byModel.get(model);
-    if (!stats) {
-      stats = zeroModelStats();
-      this.byModel.set(model, stats);
-    }
-    stats.requestCount++;
-    stats.totalInputTokens += usage.inputTokens;
-    stats.totalOutputTokens += usage.outputTokens;
-    stats.totalCostUsd += costUsd;
-    stats.totalCacheReadTokens += usage.cacheReadTokens;
-    stats.totalCacheCreationTokens += usage.cacheCreationTokens;
-    stats.totalThinkingTokens += usage.thinkingTokens;
+    const entry: ModelBreakdownEntry = {
+      requestCount: 1,
+      totalInputTokens: usage.inputTokens,
+      totalOutputTokens: usage.outputTokens,
+      totalCostUsd: costUsd,
+      totalCacheReadTokens: usage.cacheReadTokens,
+      totalCacheCreationTokens: usage.cacheCreationTokens,
+      totalThinkingTokens: usage.thinkingTokens,
+    };
+    addModelStats(this.byModel, model, entry);
+    addModelStats(this.ownByModel, model, entry);
   }
 
   /**
@@ -160,22 +192,16 @@ export class ModelUsageTracker implements Resettable {
    *
    * Adds to current per-model state rather than overwriting, so callers must
    * invoke this at most once per (re)adopted session id, with totals this
-   * tracker has not already counted.
+   * tracker has not already counted. `getOwnRawBreakdown()` includes only a
+   * `drainedHere` seed (see `SeedOrigin`).
    */
-  seedFromPersisted(breakdown: Readonly<Record<string, ModelBreakdownEntry>>): void {
+  seedFromPersisted(
+    breakdown: Readonly<Record<string, ModelBreakdownEntry>>,
+    origin: SeedOrigin = 'alreadySaved',
+  ): void {
     for (const [model, entry] of Object.entries(breakdown)) {
-      let stats = this.byModel.get(model);
-      if (!stats) {
-        stats = zeroModelStats();
-        this.byModel.set(model, stats);
-      }
-      stats.requestCount += entry.requestCount;
-      stats.totalInputTokens += entry.totalInputTokens;
-      stats.totalOutputTokens += entry.totalOutputTokens;
-      stats.totalCostUsd += entry.totalCostUsd;
-      stats.totalCacheReadTokens += entry.totalCacheReadTokens;
-      stats.totalCacheCreationTokens += entry.totalCacheCreationTokens;
-      stats.totalThinkingTokens += entry.totalThinkingTokens;
+      addModelStats(this.byModel, model, entry);
+      if (origin === 'drainedHere') addModelStats(this.ownByModel, model, entry);
     }
   }
 
@@ -208,11 +234,12 @@ export class ModelUsageTracker implements Resettable {
   // session file never stores a stale derived ratio; ratios are always
   // recomputed at read time via getMetrics()/combineBreakdowns().
   getRawBreakdown(): Readonly<Record<string, ModelBreakdownEntry>> {
-    const out: Record<string, ModelBreakdownEntry> = {};
-    for (const [model, stats] of this.byModel) {
-      out[model] = { ...stats };
-    }
-    return out;
+    return rawBreakdownOf(this.byModel);
+  }
+
+  /** `getRawBreakdown()` without any `alreadySaved` seed. */
+  getOwnRawBreakdown(): Readonly<Record<string, ModelBreakdownEntry>> {
+    return rawBreakdownOf(this.ownByModel);
   }
 
   getMetrics(): ModelUsageMetrics {
@@ -259,6 +286,7 @@ export class ModelUsageTracker implements Resettable {
 
   reset(_sessionId: string): void {
     this.byModel.clear();
+    this.ownByModel.clear();
     this.switches = [];
   }
 }
