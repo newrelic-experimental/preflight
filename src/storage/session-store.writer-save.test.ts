@@ -483,6 +483,19 @@ describe('retire racing a save', () => {
     });
   });
 
+  it('keeps an older build rewrite that lands while retire removes the index', () => {
+    const a = store.writer('engine');
+    a.save(own(activity(ids('a', 2))));
+    mocked.rmSync.mockImplementationOnce((path, options) => {
+      real.rmSync(path, options);
+      writeIndex(activity([...ids('a', 2), ...ids('o', 3)]));
+    });
+
+    a.retire(SID);
+
+    expect(calls()).toBe(5);
+  });
+
   it('drops the retired share from every load though a racing save still projects it', () => {
     const a = store.writer('engine');
     const b = new SessionStore({ storagePath }).writer('aggregator');

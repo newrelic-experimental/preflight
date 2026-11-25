@@ -1636,22 +1636,75 @@ export class SessionStore {
     // so this is normally the existing file's own date; recomputing here
     // keeps the filename consistent with what's actually written.
     const filepath = this.indexPath(toWrite);
+    const content = JSON.stringify(toWrite, null, 2) + '\n';
+    return this.replaceIndex(toWrite.sessionId, filepath, content, filesRead)
+      ? { previous: existing }
+      : null;
+  }
+
+  /**
+   * Writes `content` to `filepath` and sets aside every other file in
+   * `filesRead`. Returns false, writing nothing, when an unparsed file at
+   * `filepath` changed since it was read or cannot be copied aside, or when
+   * the write fails.
+   */
+  private replaceIndex(
+    sessionId: string,
+    filepath: string,
+    content: string,
+    filesRead: readonly SessionFileRead[],
+  ): boolean {
     const filename = basename(filepath);
+    const unparsedFilesReplaced = filesRead.filter(
+      (file) => file.parsed.kind !== 'clean' && file.filepath === filepath,
+    );
+
+    // Write-then-rename so two processes saving the same session id can never
+    // interleave bytes in the target file (the temp name does not end in .json,
+    // so loaders never see it).
+    const tmpPath = `${filepath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     try {
-      const content = JSON.stringify(toWrite, null, 2) + '\n';
-      if (!this.replaceIndex(toWrite.sessionId, filepath, content, filesRead)) {
-        return null;
+      try {
+        writeFileSync(tmpPath, content, { mode: 0o600 });
+        if (!unparsedFilesReplaced.every(copiedAsideUnchanged)) return false;
+        renameIntoPlace(tmpPath, filepath, content);
+      } finally {
+        try {
+          unlinkSync(tmpPath);
+        } catch {
+          // Renamed into place, or never written.
+        }
       }
-      logger.debug('Session saved', { sessionId: toWrite.sessionId, filename });
-      return { previous: existing };
+      // Every other file the record was combined from is now superseded. A
+      // file rewritten since it was read holds data this write lacks, so it
+      // stays for the next save to fold in. Superseded files are renamed, not
+      // deleted: the add-vs-max choice is a heuristic, and a `*.merged` copy
+      // (which loaders ignore) keeps those files' bytes. It cannot undo a wrong
+      // combine alone, because the earliest file is overwritten by the combined
+      // record and has no copy.
+      for (const file of filesRead) {
+        if (file.parsed.kind === 'unreadable' || file.filepath === filepath) continue;
+        try {
+          if (!readFileSync(file.filepath).equals(file.bytes)) continue;
+          renameSync(file.filepath, `${file.filepath}.${Date.now()}.merged`);
+        } catch (err) {
+          logger.warn('Failed to set aside superseded session file after merge', {
+            sessionId,
+            stalePath: file.filepath,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      logger.debug('Session saved', { sessionId, filename });
+      return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn('Failed to save session file', {
-        sessionId: toWrite.sessionId,
+        sessionId,
         filename,
         error: message,
       });
-      return null;
+      return false;
     }
   }
 
@@ -1717,9 +1770,12 @@ export class SessionStore {
 
     const after = readWriterFiles(this.sessionsDir, sessionId);
     if (!after) {
-      // Nothing was captured, so every index file read is a projection.
-      for (const { filepath, parsed } of reads) {
-        if (parsed.kind !== 'unreadable') rmSync(filepath, { force: true });
+      // Nothing was captured, so every index file read is a projection. One
+      // rewritten since is an older build's, and stays.
+      for (const read of reads) {
+        if (read.parsed.kind !== 'unreadable' && unchanged(read)) {
+          rmSync(read.filepath, { force: true });
+        }
       }
       // A writer that saved while the index was going has no index to list it.
       return readWriterFiles(this.sessionsDir, sessionId)
@@ -1733,7 +1789,9 @@ export class SessionStore {
       contributions: { version: 1, writers: after.writers.length },
     };
     const content = JSON.stringify(projection, null, 2) + '\n';
-    this.replaceIndex(sessionId, this.indexPath(folded.summary), content, reads);
+    if (!this.replaceIndex(sessionId, this.indexPath(folded.summary), content, reads)) {
+      throw new Error('The index was not rewritten');
+    }
     return folded;
   }
 
@@ -1747,59 +1805,6 @@ export class SessionStore {
       throw new Error(`Session path escaped storage directory: ${filepath}`);
     }
     return filepath;
-  }
-
-  /**
-   * Writes `content` to `filepath` and sets aside every other file in
-   * `filesRead`. Returns false, writing nothing, when an unparsed file at
-   * `filepath` changed since it was read or cannot be copied aside.
-   */
-  private replaceIndex(
-    sessionId: string,
-    filepath: string,
-    content: string,
-    filesRead: readonly SessionFileRead[],
-  ): boolean {
-    const unparsedFilesReplaced = filesRead.filter(
-      (file) => file.parsed.kind !== 'clean' && file.filepath === filepath,
-    );
-
-    // Write-then-rename so two processes saving the same session id can never
-    // interleave bytes in the target file (the temp name does not end in .json,
-    // so loaders never see it).
-    const tmpPath = `${filepath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
-    try {
-      writeFileSync(tmpPath, content, { mode: 0o600 });
-      if (!unparsedFilesReplaced.every(copiedAsideUnchanged)) return false;
-      renameIntoPlace(tmpPath, filepath, content);
-    } finally {
-      try {
-        unlinkSync(tmpPath);
-      } catch {
-        // Renamed into place, or never written.
-      }
-    }
-    // Every other file the record was combined from is now superseded. A
-    // file rewritten since it was read holds data this write lacks, so it
-    // stays for the next save to fold in. Superseded files are renamed, not
-    // deleted: the add-vs-max choice is a heuristic, and a `*.merged` copy
-    // (which loaders ignore) keeps those files' bytes. It cannot undo a wrong
-    // combine alone, because the earliest file is overwritten by the combined
-    // record and has no copy.
-    for (const file of filesRead) {
-      if (file.parsed.kind === 'unreadable' || file.filepath === filepath) continue;
-      try {
-        if (!readFileSync(file.filepath).equals(file.bytes)) continue;
-        renameSync(file.filepath, `${file.filepath}.${Date.now()}.merged`);
-      } catch (err) {
-        logger.warn('Failed to set aside superseded session file after merge', {
-          sessionId,
-          stalePath: file.filepath,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-    return true;
   }
 
   loadSession(sessionId: string): FullSessionSummary | null {
@@ -3041,6 +3046,14 @@ function parseDocument(raw: string): IndexFile | null {
     summary: deserializeFullSessionSummary(parsed as SerializedFullSessionSummary),
     isProjection: typeof contributions === 'object' && contributions !== null,
   };
+}
+
+function unchanged({ filepath, bytes }: SessionFileRead): boolean {
+  try {
+    return readFileSync(filepath).equals(bytes);
+  } catch {
+    return false;
+  }
 }
 
 function copiedAsideUnchanged(file: SessionFileRead): boolean {
