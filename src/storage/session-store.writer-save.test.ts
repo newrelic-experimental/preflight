@@ -169,49 +169,18 @@ describe('SessionStore.writer', () => {
     expect(totals(store.loadSession(SID))).toEqual({ calls: 10, usd: 1, input: 100 });
   });
 
-  it('captures each older index file on its own, named by its bytes', () => {
-    writeIndex(activity(ids('p', 2)));
-    writeIndex(activity(['old0'], { start: START + 86_400_000 }), '2026-03-02');
-    const a = store.writer('engine');
-    a.save(own(activity(ids('a', 2))));
-    const older = activity(['old1'], { start: START + 2 * 86_400_000 });
-    writeIndex(older, '2026-03-03');
-    const bytes = readFileSync(join(sessionsDir, `2026-03-03_${SID}.json`));
-
-    store.writer('aggregator').save(own(activity(ids('b', 3))));
-
-    const capture = `legacy.${createHash('sha256').update(bytes).digest('hex').slice(0, 16)}.json`;
-    expect(writerFiles().filter((f) => f.startsWith('legacy.'))).toHaveLength(3);
-    expect(readJson(join(sessionsDir, WRITERS_DIR, SID, capture)).summary).toEqual(
-      JSON.parse(JSON.stringify(older)),
-    );
-    expect(totals(store.loadSession(SID))).toEqual({ calls: 9, usd: 0.9, input: 90 });
-  });
-
-  it('projects an older index that names no calls once', () => {
-    writeIndex(
-      deserializeFullSessionSummary({
-        sessionId: SID,
-        startTime: START,
-        endTime: START + 1000,
-        toolCallCount: 4,
-        estimatedCostUsd: 0.4,
-        tokensInput: 40,
-      } as unknown as Parameters<typeof deserializeFullSessionSummary>[0]),
-    );
-
-    store.writer('engine').save(own(activity(ids('a', 2))));
-
-    const projected = { calls: 6, usd: 0.6, input: 60 };
-    expect(totals(readJson(indexPath()) as unknown as FullSessionSummary)).toEqual(projected);
-    expect(totals(store.loadSession(SID))).toEqual(projected);
-  });
-
   it('folds a session split across dates into one index at its earliest date', () => {
     writeIndex(activity(ids('p', 2)));
     writeIndex(activity(ids('q', 3), { start: START + 86_400_000 }), '2026-03-02');
+    const capture = (date: string) => {
+      const bytes = readFileSync(join(sessionsDir, `${date}_${SID}.json`));
+      return `legacy.${createHash('sha256').update(bytes).digest('hex').slice(0, 16)}.json`;
+    };
+    const captures = [capture(DAY), capture('2026-03-02')].sort();
 
     store.writer('engine').save(own(activity(ids('a', 1), { start: START + 2 * 86_400_000 })));
+
+    expect(writerFiles().filter((f) => f.startsWith('legacy.'))).toEqual(captures);
 
     expect(topLevel().filter((f) => f.endsWith('.json'))).toEqual([`${DAY}_${SID}.json`]);
     expect(topLevel().filter((f) => f.endsWith('.merged'))).toHaveLength(1);
@@ -295,6 +264,18 @@ describe('SessionWriter.retire', () => {
     expect(readJson(join(sessionsDir, `${DAY}_${SID}.json`)).toolCallCount).toBe(4);
   });
 
+  it('drops its share from an older build file that copied it', () => {
+    writeIndex(activity(ids('p', 4)));
+    const a = store.writer('engine');
+    a.save(own(activity(ids('a', 2))));
+    writeIndex(activity([...ids('p', 4), ...ids('a', 2), 'old0']));
+
+    a.retire(SID);
+
+    expect(totals(store.loadSession(SID))).toEqual({ calls: 5, usd: 0.5, input: 50 });
+    expect(readJson(indexPath()).toolCallCount).toBe(5);
+  });
+
   it('touches nothing in a session it never saved', () => {
     writeIndex(activity(ids('p', 4)));
     const before = readFileSync(join(sessionsDir, `${DAY}_${SID}.json`));
@@ -325,6 +306,19 @@ describe('a since load of a session with writer files', () => {
     expect(store.loadAllSessions({ since: new Date('2026-03-02T00:00:00Z') }).map(totals)).toEqual([
       whole,
     ]);
+  });
+
+  it('rereads an older file that moved out of the window during the load', () => {
+    store.writer('engine').save(own(activity(ids('a', 2))));
+    writeIndex(activity([...ids('a', 2), 'old0']));
+    writeIndex(activity(ids('q', 3), { start: START + 86_400_000 }), '2026-03-02');
+    mocked.readFileSync.mockImplementationOnce(() => {
+      real.renameSync(indexPath(), join(sessionsDir, `2026-02-28_${SID}.json`));
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+
+    const since = { since: new Date('2026-03-02T00:00:00Z') };
+    expect(store.loadAllSessions(since).map(totals)).toEqual([{ calls: 6, usd: 0.6, input: 60 }]);
   });
 
   it('picks a resumed session by its projection, which every save rewrites', () => {

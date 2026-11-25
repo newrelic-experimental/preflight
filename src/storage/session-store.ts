@@ -1705,18 +1705,13 @@ export class SessionStore {
   private project(sessionId: string, writeOwn: (dir: string) => void): WriterContribution | null {
     const dir = join(this.sessionsDir, WRITERS_DIR, sessionId);
     const reads = this.readIndexFiles(sessionId);
-    const legacy = reads.flatMap(({ bytes, parsed }) =>
-      parsed.kind === 'unreadable' || parsed.isProjection ? [] : [{ bytes, file: parsed }],
-    );
     const before = readWriterFiles(this.sessionsDir, sessionId);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const captures = captureLegacyIndex(
-      legacy.map(({ file }) => file),
-      before?.writers ?? [],
-    );
-    for (const [i, capture] of captures.entries()) {
-      const name = `${LEGACY_PREFIX}${sha16(legacy[i].bytes)}.json`;
-      createOnce(join(dir, name), writerFileBody(capture));
+    for (const { bytes, parsed } of reads) {
+      if (parsed.kind === 'unreadable') continue;
+      for (const capture of captureLegacyIndex([parsed], before?.writers ?? [])) {
+        createOnce(join(dir, `${LEGACY_PREFIX}${sha16(bytes)}.json`), writerFileBody(capture));
+      }
     }
     writeOwn(dir);
 
@@ -1949,9 +1944,8 @@ export class SessionStore {
     const inWindow = (file: SessionFileInfo): boolean =>
       !sinceDate || file.date >= sinceDate || modifiedSince(file);
 
-    const listed = this.listSessionFiles();
     const filesById = new Map<string, SessionFileInfo[]>();
-    for (const file of listed.filter(inWindow)) {
+    for (const file of this.listSessionFiles()) {
       const group = filesById.get(file.sessionId);
       if (group) group.push(file);
       else filesById.set(file.sessionId, [file]);
@@ -1963,19 +1957,19 @@ export class SessionStore {
       // filter only pick it, and a capture must see every index file it was
       // taken from. Every index file is read before the writer files.
       const whole = writerDirs.has(sessionId);
-      const relist = () =>
-        this.listSessionFiles().filter((f) => f.sessionId === sessionId && (whole || inWindow(f)));
-      const first = whole ? listed.filter((f) => f.sessionId === sessionId) : files;
-      const reads = this.readListedFiles(first, relist);
+      const wanted = (f: SessionFileInfo) => whole || inWindow(f);
+      const first = files.filter(wanted);
+      if (!first.some(inWindow)) continue;
+      const reads = this.readListedFiles(first, () =>
+        this.listSessionFiles().filter((f) => f.sessionId === sessionId && wanted(f)),
+      );
       const picked = (read: SessionFileRead): boolean =>
         inWindow(parseSessionFilename(basename(read.filepath))!) &&
         (!options?.developer ||
           (read.parsed.kind !== 'unreadable' &&
             read.parsed.summary.developer === options.developer));
-      const session =
-        whole && reads.some(picked)
-          ? this.combineWithWriterFiles(sessionId, reads, true, picked)
-          : this.combineWithWriterFiles(sessionId, reads.filter(picked), false);
+      if (!reads.some(picked)) continue;
+      const session = this.combineWithWriterFiles(sessionId, reads, whole, picked);
       if (!session) continue;
 
       // Synthetic session IDs (`local-*`, `proxy-*`, `pending-*`) are
