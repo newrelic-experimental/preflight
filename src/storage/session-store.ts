@@ -1943,9 +1943,10 @@ export class SessionStore {
       }
     };
 
-    // A `since` load combines only the files in its window. Combining the whole
-    // id would either pull a long session's lifetime totals into a recent
-    // window or drop its recent activity because its first file is old.
+    // For a session without writer files, a `since` load combines only the files
+    // in its window. Combining the whole id would either pull a long session's
+    // lifetime totals into a recent window or drop its recent activity because
+    // its first file is old. Sessions with writer files load whole, below.
     const inWindow = (file: SessionFileInfo): boolean =>
       !sinceDate || file.date >= sinceDate || modifiedSince(file);
 
