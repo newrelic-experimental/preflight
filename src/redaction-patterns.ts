@@ -236,18 +236,45 @@ function pushValue(spans: number[], spanStart: number, from: number, end: number
   return end;
 }
 
+const QUOTE = String.raw`\\"|"|'`;
+const KEY_HEADER = String.raw`(?:x-)?(?:api-?key|auth-token|access-token)`;
+const AUTH_HEADER = String.raw`(?:proxy-)?authorization`;
+
 const HEADER = new RegExp(
-  String.raw`((?:-H|--header)(?:[\s=]|${CONTINUATION}){1,8}(\\"|"|')?)(?:(?:x-)?(?:api-?key|auth-token|access-token)(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|authorization[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
+  String.raw`((?:-H|--(?:proxy-)?header)(?:[\s=]|${CONTINUATION}){1,8}(${QUOTE})?)(?:${KEY_HEADER}(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|${AUTH_HEADER}[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
   'gi',
 );
 
-// A header's value runs to its closing quote, which stays. In plain bash \" opens no quote.
+// httpie takes a header as one Name:value word, as curl -H does, so its quote may open after the
+// colon.
+const UNESCAPED_QUOTE = String.raw`(?:(?<!\\)(${QUOTE}))`;
+const HEADER_WORD = new RegExp(
+  String.raw`:(?<=${UNESCAPED_QUOTE}?(?:${KEY_HEADER}|${AUTH_HEADER}):)(${QUOTE})?(?:(?<=${KEY_HEADER}:(?:${QUOTE})?)|[ \t]{0,4}basic[ \t]{1,4})`,
+  'gi',
+);
+
+// In plain bash \" opens no quote.
+const quoteOpenedBy = (opener: string | undefined, quote: Quote): Quote => {
+  if (opener === "'") return 'single';
+  return opener === '"' || (opener === '\\"' && quote === 'double') ? 'double' : 'none';
+};
+
 const headerValue: Redact = (text, match, quote, spans) => {
   const from = match.index + match[0].length;
-  const opener: string | undefined = match[2];
-  const double = opener === '"' || (opener === '\\"' && quote === 'double');
-  const end = readValue(text, from, quote, opener === "'" ? 'single' : double ? 'double' : 'none');
+  const end = readValue(text, from, quote, quoteOpenedBy(match[2], quote));
   return pushValue(spans, match.index + match[1].length, from, end);
+};
+
+const headerWordValue: Redact = (text, match, quote, spans) => {
+  const after: string | undefined = match[2];
+  const before = quote === 'none' ? undefined : match[1];
+  const beforeOpensQuote = quoteOpenedBy(before, 'none') === (quote === 'ansi' ? 'single' : quote);
+  const outside = after === undefined && beforeOpensQuote ? 'none' : quote;
+  const inside = quoteOpenedBy(after ?? before, outside);
+  const from = match.index + match[0].length;
+  if (inside === 'none') return from;
+  const start = match.index + 1 + (after?.length ?? 0);
+  return pushValue(spans, start, from, readValue(text, from, outside, inside));
 };
 
 // An = or : takes the next word even after a space or a line break, as the earlier rule did,
@@ -418,6 +445,7 @@ type RedactionRule = RegExp | ArgumentRule;
 
 const RULES: readonly RedactionRule[] = [
   { start: HEADER, redact: headerValue },
+  { start: HEADER_WORD, redact: headerWordValue },
   { start: NAME, redact: nameValue },
   ...REDACTION_PATTERNS,
   { start: FLAG, redact: wordValue },
