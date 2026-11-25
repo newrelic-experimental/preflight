@@ -64,6 +64,20 @@ function httpErrorType(statusCode: number): string {
   return 'http_error';
 }
 
+/**
+ * Failure class for a proxied tools/call, or undefined when it succeeded. A non-2xx
+ * HTTP status wins over the JSON-RPC outcome.
+ */
+function toolCallErrorType(result: ForwardResult): string | undefined {
+  if (result.statusCode < 200 || result.statusCode >= 300) {
+    return httpErrorType(result.statusCode);
+  }
+  if (result.rpcOutcome === 'jsonrpc_error' || result.rpcOutcome === 'tool_error') {
+    return result.rpcOutcome;
+  }
+  return undefined;
+}
+
 function peekJsonRpc(body: Buffer): JsonRpcPeek | null {
   if (body.length === 0) return null;
   try {
@@ -446,7 +460,7 @@ export class ProxyManager {
           : undefined;
     const command = typeof args.command === 'string' ? args.command : undefined;
 
-    const success = result.statusCode >= 200 && result.statusCode < 300;
+    const errorType = toolCallErrorType(result);
     const record: ProxyToolCallRecord = {
       id: randomUUID(),
       sessionId,
@@ -454,8 +468,8 @@ export class ProxyManager {
       toolUseId: String(rpc.id ?? ''),
       timestamp: Date.now(),
       durationMs,
-      success,
-      ...(!success && { errorType: httpErrorType(result.statusCode) }),
+      success: errorType === undefined,
+      ...(errorType !== undefined && { errorType }),
       serverName: upstream.name,
       upstreamLatencyMs: result.upstreamLatencyMs,
       proxyOverheadMs,

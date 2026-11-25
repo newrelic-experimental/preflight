@@ -133,8 +133,7 @@ describe('SessionStore saves under filesystem faults', () => {
       return contents;
     });
 
-    store.saveSession(summary(5));
-
+    expect(store.saveSession(summary(5))).toBeNull();
     expect(savedToolCalls()).toBe(9);
     expect(sessionFiles()).toEqual([basename(target)]);
 
