@@ -191,7 +191,7 @@ function pushValue(spans, spanStart, from, end) {
   return end;
 }
 var HEADER = new RegExp(
-  String.raw`((?:-H|--header)(?:(?:[\s=]|${CONTINUATION}){1,8}|(?=["']))(\\"|"|')?)(?:(?:x-)?(?:api-?key|auth-token|access-token)(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|authorization[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
+  String.raw`((?:-H|--header)(?:(?:[\s=]|${CONTINUATION}){1,8}|(?=\\?["']))(\\"|"|')?)(?:(?:x-)?(?:api-?key|auth-token|access-token)(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|authorization[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
   "gi"
 );
 var headerValue = (text, match, quote, spans) => {

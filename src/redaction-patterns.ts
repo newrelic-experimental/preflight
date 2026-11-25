@@ -238,7 +238,7 @@ function pushValue(spans: number[], spanStart: number, from: number, end: number
 
 // -H may take its header straight after the flag when the header is quoted (-H"Authorization: …").
 const HEADER = new RegExp(
-  String.raw`((?:-H|--header)(?:(?:[\s=]|${CONTINUATION}){1,8}|(?=["']))(\\"|"|')?)(?:(?:x-)?(?:api-?key|auth-token|access-token)(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|authorization[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
+  String.raw`((?:-H|--header)(?:(?:[\s=]|${CONTINUATION}){1,8}|(?=\\?["']))(\\"|"|')?)(?:(?:x-)?(?:api-?key|auth-token|access-token)(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|authorization[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
   'gi',
 );
 

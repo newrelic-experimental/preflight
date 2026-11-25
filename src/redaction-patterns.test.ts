@@ -184,6 +184,11 @@ const REDACTS: Row[] = [
     'Authorization: Basic YWxpY2U6czNjcmV0cHc=',
   ],
   ["curl -H'X-Api-Key: S3CRET9' https://api.example.com", 'X-Api-Key: S3CRET9'],
+  [
+    JSON.stringify('curl -H"Authorization: Basic YWxpY2U6czNjcmV0cHc=" https://x'),
+    'Authorization: Basic YWxpY2U6czNjcmV0cHc=',
+  ],
+  [JSON.stringify('curl -H"X-Api-Key: S3CRET9" https://x'), 'X-Api-Key: S3CRET9'],
   ['curl -H "Authorization: Basic" https://api.example.com'],
   ['curl -H "Authorization: Digest abc" https://api.example.com'],
   ['echo Authorization: Basic abc'],
