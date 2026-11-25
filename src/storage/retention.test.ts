@@ -223,6 +223,19 @@ describe('purgeOldSessions with writer files', () => {
     ]);
   });
 
+  it('deletes an old session whose writer left a temp file', () => {
+    const dir = makeTempDir();
+    const index = writeIndex(dir, 's1', true);
+    const writers = writeWriterFiles(dir, 's1', false);
+    const stale = join(writers, '.engine.1.a.b.json.41.0badf00d.tmp');
+    writeFileSync(stale, '{}');
+    for (const name of [...readdirSync(writers), '']) utimesSync(join(writers, name), old, old);
+
+    expect(purgeOldSessions(dir, 30)).toBe(4);
+    expect(existsSync(index)).toBe(false);
+    expect(existsSync(writers)).toBe(false);
+  });
+
   it('deletes writer files with no index once they are old', () => {
     const dir = makeTempDir();
     const orphan = writeWriterFiles(dir, 'orphan', true);

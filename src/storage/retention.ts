@@ -77,6 +77,8 @@ export function purgeOldSessions(storagePath: string, retainDays: number): numbe
   let deleted = 0;
   for (const sessionId of writerDirs) {
     const dir = join(writersDir, sessionId);
+    for (const path of [dir, ...listDirOrEmpty(dir).map((name) => join(dir, name))])
+      seen(sessionId, path);
     deleted += purgeOldFiles(
       storagePath,
       join('sessions', WRITERS_DIR, sessionId),
@@ -84,8 +86,6 @@ export function purgeOldSessions(storagePath: string, retainDays: number): numbe
       'writer temp',
       (file) => !file.endsWith('.tmp'),
     );
-    for (const path of [dir, ...listDirOrEmpty(dir).map((name) => join(dir, name))])
-      seen(sessionId, path);
   }
   const isLiveWriterSession = (sessionId: string | undefined) =>
     sessionId !== undefined &&
