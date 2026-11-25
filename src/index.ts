@@ -3057,6 +3057,7 @@ async function main(): Promise<void> {
         }
         firstSaveBaselines.countRollupCost(guessId);
         refreshPriorCostBaseline();
+        publishCost();
       } catch (err) {
         logger.warn('Failed to take the rollup held for a cwd guess', { error: String(err) });
       }

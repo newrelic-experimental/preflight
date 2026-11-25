@@ -3446,6 +3446,28 @@ describe('stdio integration', () => {
         });
       }, 40000);
 
+      it('a pending engine that idles past the cap counts the report it drained before the guess in its session budget', async () => {
+        await withCappedEngine('600000', async (env, _adopt, close, _pid, client) => {
+          const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+          runHook(env, reportHook('conv-guess', 'r-guess-0001'));
+          expect(await drained(storage, 'conv-guess')).toBe('');
+          await guessFromCwd(storage, 'conv-guess');
+          await new Promise((r) => setTimeout(r, 1000));
+
+          const result = await client.callTool({
+            name: 'nr_observe_get_budget_status',
+            arguments: {},
+          });
+          const [content] = result.content as Array<{ text: string }>;
+          const spent = (JSON.parse(content!.text) as { session: { spentUsd: number } }).session;
+          const saved = savedSession(storage, 'conv-guess');
+          await close();
+
+          expect(spent.spentUsd).toBeGreaterThan(0);
+          expect(spent.spentUsd).toBeCloseTo(Number(saved?.estimatedCostUsd), 9);
+        });
+      }, 40000);
+
       it('a pending engine whose ppid watch never matches checkpoints the report it drained before the guess with the ones after, counted once in its budget', async () => {
         await withCappedEngine('200', async (env, _adopt, close, _pid, client) => {
           const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
