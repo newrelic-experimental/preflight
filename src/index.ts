@@ -3052,8 +3052,8 @@ async function main(): Promise<void> {
           const seed = costSeedOf(
             deserializeFullSessionSummary(rollup as unknown as SerializedFullSessionSummary),
           );
-          costTracker.seedFromPersisted(seed.costTracker);
-          modelUsageTracker.seedFromPersisted(seed.modelBreakdown);
+          costTracker.seedFromPersisted(seed.costTracker, 'drainedHere');
+          modelUsageTracker.seedFromPersisted(seed.modelBreakdown, 'drainedHere');
         }
         firstSaveBaselines.countRollupCost(guessId);
         refreshPriorCostBaseline();
