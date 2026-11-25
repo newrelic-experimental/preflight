@@ -120,19 +120,45 @@ describe('FirstSaveBaselines', () => {
   it('reports the file before its own first save, and nothing before any own save', () => {
     const baselines = new FirstSaveBaselines();
     baselines.recordSave({ sessionId: 'sess-a', previous: beforeSave, ownSession: false });
-    expect(baselines.costFileBeforeOwnSave('sess-a')).toBeUndefined();
+    expect(baselines.costSeedFile('sess-a')).toBeUndefined();
 
     baselines.recordSave({ sessionId: 'sess-a', previous: current, ownSession: true });
     baselines.recordSave({ sessionId: 'sess-a', previous: beforeSave, ownSession: true });
-    expect(baselines.costFileBeforeOwnSave('sess-a')).toBe(current);
+    expect(baselines.costSeedFile('sess-a')).toBe(current);
 
     baselines.take('sess-a', () => current);
-    expect(baselines.costFileBeforeOwnSave('sess-a')).toBeUndefined();
+    expect(baselines.costSeedFile('sess-a')).toBeUndefined();
+  });
+
+  it('seeds cost from before any save once its cost trackers count the rollups', () => {
+    const baselines = new FirstSaveBaselines();
+    const afterRollup = makeSummary({ toolCallCount: 4, estimatedCostUsd: 0.9 });
+    baselines.recordSave({ sessionId: 'sess-a', previous: beforeSave, ownSession: false });
+    baselines.recordSave({ sessionId: 'sess-a', previous: afterRollup, ownSession: true });
+    baselines.countRollupCost('sess-a');
+
+    expect(baselines.costSeedFile('sess-a')).toBe(beforeSave);
+    expect(baselines.take('sess-a', () => current)).toEqual({
+      toolCalls: toolCallSeedOf(beforeSave),
+      cost: costSeedOf(beforeSave),
+    });
+  });
+
+  it('seeds cost from the current file when its cost trackers count rollups it never saved', () => {
+    const baselines = new FirstSaveBaselines();
+    baselines.countRollupCost('sess-a');
+
+    expect(baselines.costSeedFile('sess-a')).toBeUndefined();
+    expect(baselines.take('sess-a', () => current).cost).toEqual(costSeedOf(current));
   });
 
   it('forgets a session once taken', () => {
     const baselines = new FirstSaveBaselines();
     baselines.recordSave({ sessionId: 'sess-a', previous: beforeSave, ownSession: true });
+    baselines.countRollupCost('sess-a');
+    baselines.take('sess-a', () => current);
+    baselines.recordSave({ sessionId: 'sess-a', previous: beforeSave, ownSession: false });
+    expect(baselines.costSeedFile('sess-a')).toBeUndefined();
     baselines.take('sess-a', () => current);
 
     expect(baselines.take('sess-a', () => current)).toEqual({

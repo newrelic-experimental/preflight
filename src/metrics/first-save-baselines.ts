@@ -75,18 +75,19 @@ export interface RehydrationSeeds {
  * the first save of any kind. The cost trackers only price another session's
  * tokens, so theirs is taken at the first save of the process's own summary;
  * until then they seed from the current file, which holds the rollup cost they
- * never counted.
+ * never counted. Once they are given that rollup cost too (countRollupCost),
+ * theirs is the tool-call trackers' snapshot.
  *
- * Entries stay until their id is rehydrated. A provisional engine keeps one
- * small tool-call record per session it rolls up, next to the full rollup
- * (timeline included) LocalSessionAggregator already keeps for that session
- * for the life of the process. Evicting a record would bring the double
+ * Entries stay until their id is rehydrated. A provisional engine keeps the
+ * file it first saved over for each session it rolls up, next to the full
+ * rollup (timeline included) LocalSessionAggregator already keeps for that
+ * session for the life of the process. Evicting one would bring the double
  * count back. Only the cwd-guessed id ever has an own-summary snapshot.
  */
 export class FirstSaveBaselines {
-  private readonly toolCalls = new Map<string, ToolCallSeed | null>();
-  private readonly cost = new Map<string, CostSeed | null>();
-  private readonly costFile = new Map<string, FullSessionSummary | null>();
+  private readonly beforeAnySave = new Map<string, FullSessionSummary | null>();
+  private readonly beforeOwnSave = new Map<string, FullSessionSummary | null>();
+  private readonly rollupCostCounted = new Set<string>();
 
   /** `previous` is the file the save merged against, null for a new file. */
   recordSave(save: {
@@ -95,40 +96,46 @@ export class FirstSaveBaselines {
     readonly ownSession: boolean;
   }): void {
     const { sessionId, previous, ownSession } = save;
-    if (!this.toolCalls.has(sessionId)) {
-      this.toolCalls.set(sessionId, previous && toolCallSeedOf(previous));
+    if (!this.beforeAnySave.has(sessionId)) this.beforeAnySave.set(sessionId, previous);
+    if (ownSession && !this.beforeOwnSave.has(sessionId)) {
+      this.beforeOwnSave.set(sessionId, previous);
     }
-    if (ownSession && !this.cost.has(sessionId)) {
-      this.cost.set(sessionId, previous && costSeedOf(previous));
-      this.costFile.set(sessionId, previous);
-    }
+  }
+
+  /** The cost trackers now count every save of `sessionId` this process made, rollups included. */
+  countRollupCost(sessionId: string): void {
+    this.rollupCostCounted.add(sessionId);
   }
 
   /**
    * The file `sessionId`'s cost seed will come from: the file before this
-   * process's first own save (null for a new file), or undefined when there
-   * has been no own save yet and the current file still holds none of this
-   * process's cost.
+   * process first saved anything its cost trackers count (null for a new
+   * file), or undefined when it has saved nothing of the kind and the current
+   * file still holds none of their cost.
    */
-  costFileBeforeOwnSave(sessionId: string): FullSessionSummary | null | undefined {
-    return this.costFile.get(sessionId);
+  costSeedFile(sessionId: string): FullSessionSummary | null | undefined {
+    return this.costFiles(sessionId).get(sessionId);
   }
 
   /** Seeds for `sessionId`, falling back to `loadCurrent()` per family, and forgets it. */
   take(sessionId: string, loadCurrent: () => FullSessionSummary | null): RehydrationSeeds {
+    const costFiles = this.costFiles(sessionId);
     const current =
-      this.toolCalls.has(sessionId) && this.cost.has(sessionId) ? null : loadCurrent();
-    const seeds: RehydrationSeeds = {
-      toolCalls: this.toolCalls.has(sessionId)
-        ? (this.toolCalls.get(sessionId) ?? null)
-        : current && toolCallSeedOf(current),
-      cost: this.cost.has(sessionId)
-        ? (this.cost.get(sessionId) ?? null)
-        : current && costSeedOf(current),
+      this.beforeAnySave.has(sessionId) && costFiles.has(sessionId) ? null : loadCurrent();
+    const toolCallFile = this.beforeAnySave.has(sessionId)
+      ? (this.beforeAnySave.get(sessionId) ?? null)
+      : current;
+    const costFile = costFiles.has(sessionId) ? (costFiles.get(sessionId) ?? null) : current;
+    this.beforeAnySave.delete(sessionId);
+    this.beforeOwnSave.delete(sessionId);
+    this.rollupCostCounted.delete(sessionId);
+    return {
+      toolCalls: toolCallFile && toolCallSeedOf(toolCallFile),
+      cost: costFile && costSeedOf(costFile),
     };
-    this.toolCalls.delete(sessionId);
-    this.cost.delete(sessionId);
-    this.costFile.delete(sessionId);
-    return seeds;
+  }
+
+  private costFiles(sessionId: string): ReadonlyMap<string, FullSessionSummary | null> {
+    return this.rollupCostCounted.has(sessionId) ? this.beforeAnySave : this.beforeOwnSave;
   }
 }
