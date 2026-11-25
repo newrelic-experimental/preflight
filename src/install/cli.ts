@@ -802,8 +802,11 @@ function execCopilotCli(cliPath: string, args: string[]): void {
         `an argument to ${cliPath} holds a ", %, or line break that cmd.exe cannot quote`,
       );
     }
-    // Double trailing backslashes so the closing quote is not escaped.
-    return `"${arg.replace(/(\\+)$/, '$1$1')}"`;
+    // Double trailing backslashes so the closing quote is not escaped. Scanned
+    // by hand: a backslash-run regex anchored at the end is quadratic.
+    let end = arg.length;
+    while (end > 0 && arg[end - 1] === '\\') end--;
+    return `"${arg}${arg.slice(end)}"`;
   });
   // execFileSync hands its options to spawnSync, which honors this flag,
   // though execFileSync's type leaves it out.
