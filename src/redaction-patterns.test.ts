@@ -54,6 +54,7 @@ const KEEPS_COMMAND: Row[] = [
   ['http x "X-Api-Key: S3 CRET9" ; rm -rf /tmp/x', ' S3 CRET9'],
   ["echo 'a'X-Api-Key:b c ; rm -rf /tmp/x"],
   ["echo 'X-Api-Key:\"S3'CRET9 ; rm -rf /tmp/x", 'S3'],
+  ['curl -HX-Api-Key:S3CRET9;rm -rf /tmp/x', 'X-Api-Key:S3CRET9'],
 ];
 
 const REDACTS: Row[] = [
@@ -195,6 +196,24 @@ const REDACTS: Row[] = [
   ['curl -H"Proxy-Authorization: Basic YQ==" x', 'Proxy-Authorization: Basic YQ=='],
   ['curl --header="X-Api-Key: S3CRET9" x', 'X-Api-Key: S3CRET9'],
   ['curl -H X-Api-Key:S3CRET9 x', 'X-Api-Key:S3CRET9'],
+  ['curl -HX-Api-Key:S3CRET9 x', 'X-Api-Key:S3CRET9'],
+  ['curl -hapi-key:S3CRET9 x', 'api-key:S3CRET9'],
+  ['curl -HAuthorization:Basic YQ== x', 'Authorization:Basic YQ=='],
+  ['curl -HProxy-Authorization:Basic YQ== x', 'Proxy-Authorization:Basic YQ=='],
+  ['curl -HX-Api-Key:"S3 CRET9" x', 'X-Api-Key:"S3 CRET9"'],
+  [JSON.stringify('curl -HX-Api-Key:S3CRET9 x'), 'X-Api-Key:S3CRET9'],
+  [JSON.stringify('curl -HAuthorization:Basic YQ== x'), 'Authorization:Basic YQ=='],
+  [JSON.stringify('curl x \\\n-HX-Api-Key:S3CRET9'), 'X-Api-Key:S3CRET9'],
+  ['curl --header=X-Api-Key:S3CRET9 x', 'X-Api-Key:S3CRET9'],
+  ['curl --proxy-header=Proxy-Authorization:Basic YQ== x', 'Proxy-Authorization:Basic YQ=='],
+  ['sort -h api-key.txt'],
+  ['du -Hs /tmp'],
+  ['grep -H pattern file'],
+  ['ssh -Hostname x'],
+  ['curl -Hfoo:bar x'],
+  ['curl -H x'],
+  ['curl -HX-Api-Keys:abc x'],
+  ['curl -HAuthorization:Basically x'],
   ['curl -H "Authorization : Basic YQ==" x', 'Authorization : Basic YQ=='],
   ['curl -H "Authorization: Basically x" x'],
   ['curl -H "Authorization: Basic" https://api.example.com'],
@@ -305,6 +324,7 @@ describe('secret arguments', () => {
         '{"command":"curl --proxy-header \\"[REDACTED]\\" x"}',
       ],
       ['http x Authorization:"Basic YQ=="', '{"command":"http x Authorization:\\"[REDACTED]\\""}'],
+      ['curl -HX-Api-Key:S3CRET9 x', '{"command":"curl -H[REDACTED] x"}'],
     ])('records the content of %j with its password redacted', (command, content) => {
       process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
       expect(save(command).inputContent).toBe(content);

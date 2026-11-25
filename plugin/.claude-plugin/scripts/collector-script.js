@@ -194,7 +194,7 @@ var QUOTE = String.raw`\\"|"|'`;
 var KEY_HEADER = String.raw`(?:x-)?(?:api-?key|auth-token|access-token)`;
 var AUTH_HEADER = String.raw`(?:proxy-)?authorization`;
 var HEADER = new RegExp(
-  String.raw`((?:-H|--(?:proxy-)?header)(?:(?:[\s=]|${CONTINUATION}){1,8}|(?=\\?["']))(${QUOTE})?)(?:${KEY_HEADER}(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|${AUTH_HEADER}[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
+  String.raw`((?:-H|--(?:proxy-)?header)(?:[\s=]|${CONTINUATION}){0,8}(${QUOTE})?)(?:${KEY_HEADER}(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|${AUTH_HEADER}[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
   "gi"
 );
 var UNESCAPED_QUOTE = String.raw`(?:(?<!\\)(${QUOTE}))`;
