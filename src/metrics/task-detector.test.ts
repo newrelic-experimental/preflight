@@ -1035,3 +1035,25 @@ describe('seedFromPersisted', () => {
     jest.useRealTimers();
   });
 });
+
+describe('TaskDetector.reset()', () => {
+  it('drops a seeded task count', () => {
+    const detector = new TaskDetector();
+    detector.seedFromPersisted({
+      filesRead: [],
+      filesModified: [],
+      linesAdded: 0,
+      linesRemoved: 0,
+      testsRun: 0,
+      testsPassed: 0,
+      buildRun: 0,
+      buildPassed: 0,
+      agentSpawns: 0,
+      taskCount: 3,
+    });
+
+    detector.reset('sess-1');
+
+    expect(detector.getMetrics().totalTasksCompleted).toBe(0);
+  });
+});

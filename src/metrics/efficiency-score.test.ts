@@ -893,3 +893,19 @@ describe('seedFromPersisted', () => {
     expect(scorer.getSessionAverage()).toBeNull();
   });
 });
+
+describe('EfficiencyScorer.reset()', () => {
+  it('drops a seeded average', () => {
+    const scorer = new EfficiencyScorer();
+    scorer.seedFromPersisted({
+      score: 0.5,
+      components: { speed: 0.5, correctness: 0.5, autonomy: 0.5, firstAttemptQuality: 0.5 },
+      sampleCount: 2,
+    });
+
+    scorer.reset('sess-1');
+
+    expect(scorer.getSessionAverage()).toBeNull();
+    expect(scorer.getSessionSampleCount()).toBe(0);
+  });
+});

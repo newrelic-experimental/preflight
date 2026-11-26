@@ -1,8 +1,8 @@
 import { savedToolNameByUseId, type FullSessionSummary } from '../storage/session-store.js';
 import { buildCostTrackerSeed, unbookedSeedCostOf } from './cost-tracker-seed.js';
 import type { UnbookedSeedCost } from './cost-tracker-seed.js';
-import type { CostTrackerSeed } from './cost-tracker.js';
-import type { ModelBreakdownEntry } from './model-usage-tracker.js';
+import type { CostTracker, CostTrackerSeed } from './cost-tracker.js';
+import type { ModelBreakdownEntry, ModelUsageTracker } from './model-usage-tracker.js';
 import type { EfficiencyScoreSeed } from './efficiency-score.js';
 import type { QualityProxyRawCounts } from './quality-proxy-tracker.js';
 import type { SessionTrackerSeed } from './session-tracker.js';
@@ -57,6 +57,19 @@ export function costSeedOf(summary: FullSessionSummary): CostSeed {
     estimatedCostUsd: summary.estimatedCostUsd,
     unbooked: unbookedSeedCostOf(summary, costTracker),
   };
+}
+
+/** Seeds the cost trackers with rollups this process drained, which count as its own. */
+export function seedDrainedRollups(
+  rollups: readonly FullSessionSummary[],
+  costTracker: CostTracker,
+  modelUsageTracker: ModelUsageTracker,
+): void {
+  for (const rollup of rollups) {
+    const seed = costSeedOf(rollup);
+    costTracker.seedFromPersisted(seed.costTracker, 'drainedHere');
+    modelUsageTracker.seedFromPersisted(seed.modelBreakdown, 'drainedHere');
+  }
 }
 
 /** The session file each tracker family seeds from; null seeds nothing. */

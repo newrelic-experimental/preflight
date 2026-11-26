@@ -77,7 +77,7 @@ import {
 import type { HeldSessionCost, UnbookedSeedCost } from './metrics/cost-tracker-seed.js';
 import { DecisionTracker } from './metrics/decision-tracker.js';
 import { EfficiencyScorer } from './metrics/efficiency-score.js';
-import { FirstSaveBaselines, costSeedOf } from './metrics/first-save-baselines.js';
+import { FirstSaveBaselines, seedDrainedRollups } from './metrics/first-save-baselines.js';
 import type { RepoContext } from './metrics/git-efficiency-tracker.js';
 import {
   GitEfficiencyTracker,
@@ -3048,13 +3048,13 @@ async function main(): Promise<void> {
     // adopting it. Never the file's other cost, which may be another session's.
     const takeCwdGuessRollup = (guessId: string): void => {
       try {
-        for (const rollup of cwdGuessRolledUpWhilePending) {
-          const seed = costSeedOf(
+        seedDrainedRollups(
+          cwdGuessRolledUpWhilePending.map((rollup) =>
             deserializeFullSessionSummary(rollup as unknown as SerializedFullSessionSummary),
-          );
-          costTracker.seedFromPersisted(seed.costTracker, 'drainedHere');
-          modelUsageTracker.seedFromPersisted(seed.modelBreakdown, 'drainedHere');
-        }
+          ),
+          costTracker,
+          modelUsageTracker,
+        );
         firstSaveBaselines.countRollupCost(guessId);
         refreshPriorCostBaseline();
         publishCost();
