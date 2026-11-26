@@ -492,13 +492,17 @@ export function replaySessionToActivityRecords(
   return { records, identities };
 }
 
+interface CachedReplay {
+  readonly key: string;
+  readonly replayed: ReplayedActivity;
+}
+
 /**
  * Memoizes `replaySessionToActivityRecords` per `sessionId`, for `'completed'`
- * sessions only. A completed session's file is write-once (only the terminal
- * shutdown save marks a session `'completed'` — a periodic mid-session
- * checkpoint always persists `'in progress'`, per `SessionStore.saveSession`),
- * so its replay result never changes and is safe to cache forever. This is
- * what makes the cache worth having: a cache hit skips
+ * sessions only. A resumed session that completes again saves a later
+ * `endTime` and `toolCallCount`, so the entry is keyed on those two fields and
+ * a changed pair replays the session again. A mid-session checkpoint is never
+ * cached. This is what makes the cache worth having: a cache hit skips
  * `identityResolver.resolve()` entirely, and that call spawns up to three
  * `git` subprocesses per unique historical working directory. The resolver
  * caches only per instance for 30s, and the dashboard builds a fresh resolver
@@ -506,27 +510,30 @@ export function replaySessionToActivityRecords(
  * on every poll.
  */
 export class ReplaySessionCache {
-  private readonly cache = new Map<string, ReplayedActivity>();
+  private readonly cache = new Map<string, CachedReplay>();
 
   replay(
     session: {
       readonly sessionId: string;
       readonly outcome?: string;
+      readonly endTime?: number;
+      readonly toolCallCount?: number;
       readonly timeline?: readonly ReplayTimelineEntry[];
       readonly repoName?: string | null;
     },
     identityResolver: WorktreeIdentityResolver,
   ): ReplayedActivity {
     const cacheable = session.outcome === 'completed';
+    const key = `${session.endTime ?? ''}:${session.toolCallCount ?? ''}`;
     if (cacheable) {
       const cached = this.cache.get(session.sessionId);
-      if (cached) return cached;
+      if (cached && cached.key === key) return cached.replayed;
     }
 
     const replayed = replaySessionToActivityRecords(session, identityResolver);
 
     if (cacheable) {
-      this.cache.set(session.sessionId, replayed);
+      this.cache.set(session.sessionId, { key, replayed });
     }
 
     return replayed;
