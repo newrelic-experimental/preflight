@@ -10,6 +10,7 @@ import { parseToolSpecificFields } from './hooks/tool-parsers.js';
 import { REDACTION_PATTERNS } from './redaction-patterns.js';
 
 const AWS_KEY = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+const PROSE = "Don't paste this: ";
 
 // [command, ...each part that is stored as [REDACTED]]. A command with no parts is stored as is.
 type Row = [string, ...string[]];
@@ -55,6 +56,9 @@ const KEEPS_COMMAND: Row[] = [
   ["echo 'a'X-Api-Key:b c ; rm -rf /tmp/x"],
   ["echo 'X-Api-Key:\"S3'CRET9 ; rm -rf /tmp/x", 'S3'],
   ['curl -HX-Api-Key:S3CRET9;rm -rf /tmp/x', 'X-Api-Key:S3CRET9'],
+  ['echo "$(curl -u "me:S3 CRET9" x)" ; rm -rf /tmp/x', '-u "me:S3 CRET9"'],
+  ["curl -u\\\n  'me:S3 CRET9' x && rm -rf /tmp/x", "-u\\\n  'me:S3 CRET9'"],
+  ["Don't paste: curl -u 'a ; rm -rf /tmp/x ; echo 'x"],
 ];
 
 const REDACTS: Row[] = [
@@ -214,6 +218,38 @@ const REDACTS: Row[] = [
   ['curl -H x'],
   ['curl -HX-Api-Keys:abc x'],
   ['curl -HAuthorization:Basically x'],
+  // The text's quote, as an apostrophe in prose or "$( opens it, reads the value's quote as a closer.
+  [`${PROSE}curl -u 'me:S3 CRET9' x`, "-u 'me:S3 CRET9'"],
+  [`${PROSE}curl --user 'me:S3 CRET9' x`, "--user 'me:S3 CRET9'"],
+  [`${PROSE}curl -H 'X-Api-Key: S3 CRET9' x`, 'X-Api-Key: S3 CRET9'],
+  [`${PROSE}curl -sH 'X-Api-Key: S3 CRET9' x`, ' S3 CRET9'],
+  [`${PROSE}curl -H\\\n  'X-Api-Key: S3 CRET9' x`, 'X-Api-Key: S3 CRET9'],
+  [`${PROSE}tool --password 'S3 CRET9' x`, "--password 'S3 CRET9'"],
+  [`${PROSE}API_KEY='S3 CRET9' x`, "API_KEY='S3 CRET9'"],
+  [`${PROSE}http x 'X-Api-Key: S3 CRET9'`, ' S3 CRET9'],
+  ['echo "$(curl -H "X-Api-Key: S3 CRET9" x)"', 'X-Api-Key: S3 CRET9'],
+  ['echo "$(curl -sH "X-Api-Key: S3 CRET9" x)"', ' S3 CRET9'],
+  ['echo "$(http x "X-Api-Key: S3 CRET9")"', ' S3 CRET9'],
+  [JSON.stringify(`${PROSE}curl -u 'me:S3 CRET9' x`), "-u 'me:S3 CRET9'"],
+  [JSON.stringify('echo "$(curl -H "X-Api-Key: S3 CRET9" x)"'), 'X-Api-Key: S3 CRET9'],
+  ["Don't run ls -u 'a b' x"],
+  [`${PROSE}curl -A 'Mozilla 5' x`],
+  ['echo "$(date -u "+%H %M")"'],
+  ['echo "$(ls -u "a b" x)"'],
+  // A line continuation at either end of a word only separates words.
+  ["curl x \\\n-u 'me:S3 CRET9' y", "-u 'me:S3 CRET9'"],
+  ["curl --user\\\n  'me:S3 CRET9' x", "--user\\\n  'me:S3 CRET9'"],
+  ['docker login -p\\\n  S3CRET9 r', '-p\\\n  S3CRET9'],
+  ['redis-cli -a\\\n  S3CRET9 ping', '-a\\\n  S3CRET9'],
+  ['sshpass -p\\\n  S3CRET9 ssh h', '-p\\\n  S3CRET9'],
+  [JSON.stringify("curl -u\\\n  'me:S3 CRET9' x"), "-u\\\\\\n  'me:S3 CRET9'"],
+  [JSON.stringify("curl x \\\n-u 'me:S3 CRET9' y"), "-u 'me:S3 CRET9'"],
+  [JSON.stringify("curl --user\\\n  'me:S3 CRET9' x"), "--user\\\\\\n  'me:S3 CRET9'"],
+  [JSON.stringify('docker login -p\\\n  S3CRET9 r'), '-p\\\\\\n  S3CRET9'],
+  // A JSON-escaped line break ends the command.
+  [JSON.stringify('curl x\nls -u f')],
+  [JSON.stringify('curl x\nls -lH api-key f')],
+  [JSON.stringify('curl x\r\nsort -t , -k2 f')],
   // Known over-redaction: no word boundary before the joined header name.
   ['grep -Hapi-key file', 'api-key file'],
   ['git log -Hauth-token x', 'auth-token x'],

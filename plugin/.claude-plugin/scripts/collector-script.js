@@ -45,6 +45,7 @@ var OPERATOR = charTable(OPERATORS);
 var SPECIAL = charTable(`	
 \v\f\r ${OPERATORS}"'\\$`);
 var isSpace = (c) => c === 32 || c >= 9 && c <= 13;
+var isBlank = (c) => c === 32 || c === 9;
 var isOperator = (c) => c >= 0 && c < 128 && OPERATOR[c] === 1;
 var isBlankOrOperator = (c) => isSpace(c) || isOperator(c);
 function cutAtWord(text, end) {
@@ -131,15 +132,17 @@ function bareWord(text, from, context) {
 }
 function valueEnd(text, from, quote) {
   let end = readValue(text, from, quote);
-  for (let run = quotedRun(text, end, quote); run > end; run = quotedRun(text, end, quote)) {
-    end = readValue(text, run, quote);
+  for (let close = reopenedClose(text, end, quote); close >= 0; ) {
+    end = readValue(text, close + 1, quote);
+    close = reopenedClose(text, end, quote);
   }
   return end;
 }
-function quotedRun(text, from, quote) {
-  const end = skipPlain(text, from + 1);
-  const run = quote !== "comment" && unitAt(text, from, quote) === CLOSE && text[end] === text[from];
-  return run ? end + 1 : from;
+function reopenedClose(text, at, quote) {
+  if (quote === "comment" || unitAt(text, at, quote) !== CLOSE) return -1;
+  let i = skipPlain(text, at + 1);
+  while (isBlank(text.charCodeAt(i)) && i - at <= MAX_QUOTED_PART) i = skipPlain(text, i + 1);
+  return text[i] === text[at] && i - at <= MAX_QUOTED_PART ? i : -1;
 }
 function plainPrefix(text, from) {
   let i = skipPlain(text, from);
@@ -208,11 +211,17 @@ var quoteOpenedBy = (opener, quote) => {
 };
 var headerValue = (text, match, quote, spans) => {
   const from = match.index + match[0].length;
-  const end = readValue(text, from, quote, quoteOpenedBy(match[2], quote));
+  const close = reopenedClose(text, match.index + match[1].length - (match[2]?.length ?? 0), quote);
+  const end = close >= 0 ? close : readValue(text, from, quote, quoteOpenedBy(match[2], quote));
   return pushValue(spans, match.index + match[1].length, from, end);
 };
 var headerWordValue = (text, match, quote, spans) => {
   const after = match[2];
+  const closed = quote === "none" ? quoteOpenedBy(match[1], "none") : "none";
+  if (closed !== "none") {
+    const close = reopenedClose(text, text.lastIndexOf(match[1], match.index), closed);
+    if (close >= 0) return pushValue(spans, match.index + 1, match.index + match[0].length, close);
+  }
   const before = quote === "none" ? void 0 : match[1];
   const beforeOpensQuote = quoteOpenedBy(before, "none") === (quote === "ansi" ? "single" : quote);
   const outside = after === void 0 && beforeOpensQuote ? "none" : quote;
@@ -250,7 +259,8 @@ var MYSQL = /(?:mysql(?:dump|admin)?|mariadb)\b/g;
 var ESCAPED_P = new RegExp(String.raw`(?<=${AFTER_ESCAPE})-p`, "y");
 var PORT_MAPPING = /[\d.]+:\d/y;
 var REDIRECT = /&>>?|[<>][<>&|]*/y;
-var ONLY_CONTINUATION = new RegExp(String.raw`^${CONTINUATION}$`);
+var CONTINUATION_AT = new RegExp(CONTINUATION, "y");
+var LAST_CONTINUATIONS = new RegExp(String.raw`(?:${CONTINUATION})+$`);
 var WORD_START = new RegExp(String.raw`(?<!\w)|(?<=${AFTER_ESCAPE})`, "y");
 function startsWord(text, index) {
   WORD_START.lastIndex = index;
@@ -260,8 +270,15 @@ function commandWords(text, match, quote, visit) {
   let i = match.index + match[0].length;
   if (!startsWord(text, match.index)) return i;
   for (; ; ) {
-    while (isSpace(unitAt(text, i, quote)) && text.charCodeAt(i) !== LF) {
+    CONTINUATION_AT.lastIndex = i;
+    if (text.charCodeAt(i) === BACKSLASH && CONTINUATION_AT.test(text)) {
+      i = CONTINUATION_AT.lastIndex;
+      continue;
+    }
+    const c = unitAt(text, i, quote);
+    if (isSpace(c) && c !== LF) {
       i += unitLength(text, i, quote);
+      continue;
     }
     REDIRECT.lastIndex = i;
     if ("<>&".includes(text[i]) && REDIRECT.test(text)) {
@@ -270,7 +287,9 @@ function commandWords(text, match, quote, visit) {
     }
     const end = valueEnd(text, i, quote);
     if (end === i) return i;
-    if (!ONLY_CONTINUATION.test(text.slice(i, end))) visit(i, end);
+    const last = text.charCodeAt(end - 1);
+    const continued = last === LF || last === 110 ? LAST_CONTINUATIONS.exec(text.slice(i, end)) : null;
+    visit(i, end - (continued?.[0].length ?? 0));
     i = end;
   }
 }

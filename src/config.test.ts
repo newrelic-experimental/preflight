@@ -3492,7 +3492,7 @@ describe('redactSensitive() — secrets passed as command arguments', () => {
     ['aws_secret_access_key', 'echo hi', `aws_secret_access_key=Zq7Xw9${'a'.repeat(34)}`],
   ])('a %s argument right after a letter or digit', (_rule, before, argument) => {
     it.each([
-      ['a JSON-escaped line break', JSON.stringify({ command: `${before}\n${argument}` })],
+      ['a JSON-escaped line continuation', JSON.stringify({ command: `${before}\\\n${argument}` })],
       ['a JSON-escaped tab', JSON.stringify({ command: `${before}\t${argument}` })],
       ['a JSON \\u escape', JSON.stringify({ command: `${before}\u0007${argument}` })],
       ['an ANSI colour code', `${before} \u001b[32m${argument}`],

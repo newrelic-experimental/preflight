@@ -57,6 +57,7 @@ const OPERATOR = charTable(OPERATORS);
 const SPECIAL = charTable(`\t\n\v\f\r ${OPERATORS}"'\\$`);
 
 const isSpace = (c: number): boolean => c === 0x20 || (c >= 0x09 && c <= 0x0d);
+const isBlank = (c: number): boolean => c === 0x20 || c === 0x09;
 const isOperator = (c: number): boolean => c >= 0 && c < 128 && OPERATOR[c] === 1;
 const isBlankOrOperator = (c: number): boolean => isSpace(c) || isOperator(c);
 
@@ -154,22 +155,26 @@ function bareWord(text: string, from: number, context: Quote): number {
   }
 }
 
-// Free text with an odd apostrophe, or a heredoc body, reads as an open quote. A value that reaches
-// that quote still takes each quoted run of plain characters after it, and the word that follows,
-// as in `'hunter2'`, `-p'hunter2'` or `'hunter'"2"`.
+// Free text with an odd apostrophe, a heredoc body or the " before $( reads as an open quote. A
+// value that reaches that quote still takes each quoted part after it, and the word that follows,
+// as in `'hunter 2'`, `-p'hunter2'` or `'hunter'"2"`.
 function valueEnd(text: string, from: number, quote: Quote): number {
   let end = readValue(text, from, quote);
-  for (let run = quotedRun(text, end, quote); run > end; run = quotedRun(text, end, quote)) {
-    end = readValue(text, run, quote);
+  for (let close = reopenedClose(text, end, quote); close >= 0;) {
+    end = readValue(text, close + 1, quote);
+    close = reopenedClose(text, end, quote);
   }
   return end;
 }
 
-function quotedRun(text: string, from: number, quote: Quote): number {
-  const end = skipPlain(text, from + 1);
-  const run =
-    quote !== 'comment' && unitAt(text, from, quote) === CLOSE && text[end] === text[from];
-  return run ? end + 1 : from;
+// Where the quote at `at` closes when it closes the quote the text is in but the command, read
+// alone, opens one there. The part must hold only plain characters and blanks, on one line, so
+// that hiding it whole cannot change how the rest of the text is read. -1 when it does not.
+function reopenedClose(text: string, at: number, quote: Quote): number {
+  if (quote === 'comment' || unitAt(text, at, quote) !== CLOSE) return -1;
+  let i = skipPlain(text, at + 1);
+  while (isBlank(text.charCodeAt(i)) && i - at <= MAX_QUOTED_PART) i = skipPlain(text, i + 1);
+  return text[i] === text[at] && i - at <= MAX_QUOTED_PART ? i : -1;
 }
 
 // A long quoted part may still close later, so the value stops before any quote or backslash, and
@@ -261,12 +266,19 @@ const quoteOpenedBy = (opener: string | undefined, quote: Quote): Quote => {
 
 const headerValue: Redact = (text, match, quote, spans) => {
   const from = match.index + match[0].length;
-  const end = readValue(text, from, quote, quoteOpenedBy(match[2], quote));
+  const close = reopenedClose(text, match.index + match[1].length - (match[2]?.length ?? 0), quote);
+  const end = close >= 0 ? close : readValue(text, from, quote, quoteOpenedBy(match[2], quote));
   return pushValue(spans, match.index + match[1].length, from, end);
 };
 
+// Outside a quote, a quote before the name closed one, so the word may reopen it.
 const headerWordValue: Redact = (text, match, quote, spans) => {
   const after: string | undefined = match[2];
+  const closed = quote === 'none' ? quoteOpenedBy(match[1], 'none') : 'none';
+  if (closed !== 'none') {
+    const close = reopenedClose(text, text.lastIndexOf(match[1], match.index), closed);
+    if (close >= 0) return pushValue(spans, match.index + 1, match.index + match[0].length, close);
+  }
   const before = quote === 'none' ? undefined : match[1];
   const beforeOpensQuote = quoteOpenedBy(before, 'none') === (quote === 'ansi' ? 'single' : quote);
   const outside = after === undefined && beforeOpensQuote ? 'none' : quote;
@@ -316,7 +328,8 @@ const MYSQL = /(?:mysql(?:dump|admin)?|mariadb)\b/g;
 const ESCAPED_P = new RegExp(String.raw`(?<=${AFTER_ESCAPE})-p`, 'y');
 const PORT_MAPPING = /[\d.]+:\d/y;
 const REDIRECT = /&>>?|[<>][<>&|]*/y;
-const ONLY_CONTINUATION = new RegExp(String.raw`^${CONTINUATION}$`);
+const CONTINUATION_AT = new RegExp(CONTINUATION, 'y');
+const LAST_CONTINUATIONS = new RegExp(String.raw`(?:${CONTINUATION})+$`);
 
 // A command name starts a word, possibly right after an escape that ends in a letter (\ncurl).
 const WORD_START = new RegExp(String.raw`(?<!\w)|(?<=${AFTER_ESCAPE})`, 'y');
@@ -327,8 +340,8 @@ function startsWord(text: string, index: number): boolean {
 }
 
 // When the match starts a word, visits each word after it up to the end of its command, and returns
-// that end. A redirection such as 2>&1 does not end the command, and a JSON-escaped line break only separates
-// words.
+// that end. A redirection such as 2>&1 does not end the command, a line break does, JSON-escaped or
+// not, and a line continuation at either end of a word only separates words.
 function commandWords(
   text: string,
   match: RegExpExecArray,
@@ -338,8 +351,15 @@ function commandWords(
   let i = match.index + match[0].length;
   if (!startsWord(text, match.index)) return i;
   for (;;) {
-    while (isSpace(unitAt(text, i, quote)) && text.charCodeAt(i) !== LF) {
+    CONTINUATION_AT.lastIndex = i;
+    if (text.charCodeAt(i) === BACKSLASH && CONTINUATION_AT.test(text)) {
+      i = CONTINUATION_AT.lastIndex;
+      continue;
+    }
+    const c = unitAt(text, i, quote);
+    if (isSpace(c) && c !== LF) {
       i += unitLength(text, i, quote);
+      continue;
     }
     REDIRECT.lastIndex = i;
     if ('<>&'.includes(text[i]) && REDIRECT.test(text)) {
@@ -348,7 +368,11 @@ function commandWords(
     }
     const end = valueEnd(text, i, quote);
     if (end === i) return i;
-    if (!ONLY_CONTINUATION.test(text.slice(i, end))) visit(i, end);
+    // A line continuation ends in a line break, raw or JSON-escaped (\n).
+    const last = text.charCodeAt(end - 1);
+    const continued =
+      last === LF || last === 0x6e ? LAST_CONTINUATIONS.exec(text.slice(i, end)) : null;
+    visit(i, end - (continued?.[0].length ?? 0));
     i = end;
   }
 }
