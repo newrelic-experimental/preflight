@@ -427,6 +427,8 @@ export interface ObservabilityHealthSnapshot {
 }
 
 export interface ApiHandlerDeps {
+  /** Git identity lookups for the git-efficiency routes. Defaults to a resolver of its own. */
+  readonly identityResolver?: WorktreeIdentityResolver;
   readonly sessionTracker?: { getMetrics: () => LiveSessionMetrics };
   readonly sessionStore?: {
     loadTodaySessions: () => FullSessionSummary[];
@@ -1674,8 +1676,9 @@ export function createApiHandler(
   // future /api/git-efficiency request, not on every poll.
   const gitReplayCache = new ReplaySessionCache();
   // Shared so each repo's identity (several `git` spawns) is resolved once per
-  // 30s TTL instead of once per request.
-  const gitIdentityResolver = new WorktreeIdentityResolver();
+  // 30s TTL instead of once per request. The caller passes the process's one
+  // resolver when it has one, so the dashboard reuses the startup entries.
+  const gitIdentityResolver = deps.identityResolver ?? new WorktreeIdentityResolver();
 
   routes.set('GET /api/session/current', (_req, res) => {
     if (!deps.sessionTracker) return unavailable(res, 'sessionTracker');

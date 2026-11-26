@@ -1,6 +1,13 @@
 import { describe, it, expect } from '@jest/globals';
-import { FirstSaveBaselines, costSeedOf, toolCallSeedOf } from './first-save-baselines.js';
-import type { FullSessionSummary } from '../storage/session-store.js';
+import {
+  FirstSaveBaselines,
+  costSeedOf,
+  seedDrainedRollups,
+  toolCallSeedOf,
+} from './first-save-baselines.js';
+import { buildContribution, type FullSessionSummary } from '../storage/session-store.js';
+import { CostTracker } from './cost-tracker.js';
+import { ModelUsageTracker } from './model-usage-tracker.js';
 import { ZERO_QUALITY_PROXY_COUNTS } from './quality-proxy-tracker.js';
 import { SessionTracker } from './session-tracker.js';
 
@@ -221,5 +228,45 @@ describe('toolCallSeedOf', () => {
     const metrics = tracker.getMetrics();
     expect(metrics.toolCallCount).toBe(1);
     expect(metrics.bashCommandsRun).toBe(1);
+  });
+});
+
+describe('seedDrainedRollups', () => {
+  const MODEL = 'claude-sonnet-4-6';
+  const rollup = makeSummary({
+    estimatedCostUsd: 0.6,
+    tokensInput: 100_000,
+    modelBreakdown: {
+      [MODEL]: {
+        requestCount: 1,
+        totalInputTokens: 100_000,
+        totalOutputTokens: 0,
+        totalCostUsd: 0.6,
+        totalCacheReadTokens: 0,
+        totalCacheCreationTokens: 0,
+        totalThinkingTokens: 0,
+      },
+    },
+  });
+
+  it("counts a rollup this process drained in its own contribution, beside the file's seed", () => {
+    const sessionTracker = new SessionTracker('sess-a');
+    const costTracker = new CostTracker(sessionTracker);
+    const modelUsageTracker = new ModelUsageTracker();
+    const other = costSeedOf(makeSummary({ estimatedCostUsd: 2, tokensInput: 9_000 }));
+    costTracker.seedFromPersisted(other.costTracker, 'alreadySaved');
+
+    seedDrainedRollups([rollup], costTracker, modelUsageTracker);
+    const own = buildContribution({
+      sessionTracker,
+      costTracker,
+      modelUsageTracker,
+      developer: 'alice',
+    }).summary;
+
+    expect(own.estimatedCostUsd).toBeCloseTo(0.6, 9);
+    expect(own.tokensInput).toBe(100_000);
+    expect(own.modelBreakdown[MODEL]).toMatchObject({ requestCount: 1, totalInputTokens: 100_000 });
+    expect(costTracker.getMetrics().sessionTotalCostUsd).toBeCloseTo(2.6, 9);
   });
 });

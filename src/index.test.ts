@@ -5357,6 +5357,94 @@ describe('stdio integration', () => {
         }
       }, 60000);
     });
+
+    it('a stdio engine saves the subagent attribution of a transcript that lands after intake', async () => {
+      const { storagePath, projectCwd, cleanup } = makeDirs();
+      const home = mkdtempSync(join(tmpdir(), 'nr-seed-subagent-home-'));
+      try {
+        const sessionId = 'd4e5f6a7-2222-4333-8444-555566667777';
+        const file = '/tmp/subagent-backfill/shared.ts';
+        const subagents = [
+          { agentId: 'a00000000000000b1', toolUseId: 'toolu_stdio_sub1' },
+          { agentId: 'a00000000000000b2', toolUseId: 'toolu_stdio_sub2' },
+          { agentId: 'a00000000000000b3', toolUseId: 'toolu_stdio_sub3' },
+        ];
+        const extraEnv = {
+          HOME: home,
+          USERPROFILE: home,
+          CLAUDE_CONFIG_DIR: join(home, '.claude'),
+        };
+        const subagentsDir = join(
+          home,
+          '.claude',
+          'projects',
+          '-tmp-subagent-backfill',
+          sessionId,
+          'subagents',
+        );
+
+        const engine = await startEngine(storagePath, projectCwd, extraEnv);
+        writeFileSync(ppidBreadcrumb(storagePath), sessionId);
+        expect(await engine.logged(ADOPTED)).toBe(true);
+
+        // Three Read pairs with no agent_id: at intake they are the parent's calls.
+        const buffer = join(storagePath, `buffer-${sessionId}.jsonl`);
+        subagents.forEach(({ toolUseId }, n) => {
+          const call = {
+            tool: 'Read',
+            timestamp: Date.now() + n,
+            sessionId,
+            toolUseId,
+            toolInput: { file_path: file },
+          };
+          appendToHookBuffer(buffer, JSON.stringify({ mode: 'pre', ...call }) + '\n');
+          appendToHookBuffer(
+            buffer,
+            JSON.stringify({ mode: 'post', ...call, success: true }) + '\n',
+          );
+        });
+        const redundantReads = (): number | undefined => {
+          const saved = new SessionStore({ storagePath }).loadSession(sessionId);
+          const metrics = saved?.toolSelectionMetrics;
+          return metrics?.totalCalls === 3 ? metrics.redundantReadCount : undefined;
+        };
+        expect(await waitUntil(() => redundantReads() !== undefined)).toBe(true);
+        expect(redundantReads()).toBe(1);
+
+        // Each subagent's transcript lands only now, after intake has run.
+        mkdirSync(subagentsDir, { recursive: true });
+        for (const { agentId, toolUseId } of subagents) {
+          const turn = {
+            type: 'assistant',
+            sessionId,
+            agentId,
+            isSidechain: true,
+            uuid: `uuid-${toolUseId}`,
+            timestamp: new Date().toISOString(),
+            message: {
+              id: `msg_${toolUseId}`,
+              model: 'claude-sonnet-4-5-20250929',
+              role: 'assistant',
+              stop_reason: 'tool_use',
+              content: [
+                { type: 'tool_use', id: toolUseId, name: 'Read', input: { file_path: file } },
+              ],
+              usage: {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+              },
+            },
+          };
+          writeFileSync(join(subagentsDir, `agent-${agentId}.jsonl`), JSON.stringify(turn) + '\n');
+        }
+        expect(await waitUntil(() => redundantReads() === 0)).toBe(true);
+      } finally {
+        await cleanup();
+        rmSync(home, { recursive: true, force: true });
+      }
+    }, 60000);
   });
 
   // The correction watch reads the parent level only off Linux and Windows,
@@ -6248,6 +6336,144 @@ describe('--local Today cache savings', () => {
       child.kill('SIGKILL');
       rmSync(tmpHome, { recursive: true, force: true });
       rmSync(tmpStoragePath, { recursive: true, force: true });
+    }
+  }, 40000);
+});
+
+describe('subagent attribution backfilled when a session is saved', () => {
+  const sessionId = 'c3d4e5f6-1111-4222-8333-444455556666';
+  const file = '/tmp/subagent-backfill/shared.ts';
+  const subagents = [
+    { agentId: 'a00000000000000a1', toolUseId: 'toolu_sub1' },
+    { agentId: 'a00000000000000a2', toolUseId: 'toolu_sub2' },
+    { agentId: 'a00000000000000a3', toolUseId: 'toolu_sub3' },
+  ];
+
+  /** One sidechain turn of a subagent transcript, whose single tool_use reads `file`. */
+  const subagentTurn = (agentId: string, toolUseId: string): string =>
+    JSON.stringify({
+      type: 'assistant',
+      sessionId,
+      agentId,
+      isSidechain: true,
+      uuid: `uuid-${toolUseId}`,
+      timestamp: new Date().toISOString(),
+      message: {
+        id: `msg_${toolUseId}`,
+        model: 'claude-sonnet-4-5-20250929',
+        role: 'assistant',
+        stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: toolUseId, name: 'Read', input: { file_path: file } }],
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      },
+    }) + '\n';
+
+  it('--local counts three subagents reading one file as no redundant reads', async () => {
+    const { spawn } = await import('node:child_process');
+    const { createServer: createNetServer } = await import('node:net');
+    const tmpHome = mkdtempSync(join(tmpdir(), 'nr-backfill-home-'));
+    const storage = mkdtempSync(join(tmpdir(), 'nr-backfill-storage-'));
+    const configPath = resolve(storage, 'config.json');
+    writeFileSync(configPath, JSON.stringify({ mode: 'local' }));
+    const projectDir = resolve(tmpHome, '.claude', 'projects', '-tmp-subagent-backfill');
+    const subagentsDir = resolve(projectDir, sessionId, 'subagents');
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      resolve(projectDir, `${sessionId}.jsonl`),
+      subagentTurn('parent', 'toolu_parent'),
+    );
+
+    // Three Read pairs with no agent_id: at intake they are the parent's calls.
+    const buffer = resolve(storage, `buffer-${sessionId}.jsonl`);
+    const ts = Date.now() - 60_000;
+    subagents.forEach(({ toolUseId }, n) => {
+      const call = {
+        tool: 'Read',
+        timestamp: ts + n,
+        sessionId,
+        toolUseId,
+        toolInput: { file_path: file },
+      };
+      appendToHookBuffer(buffer, JSON.stringify({ mode: 'pre', ...call }) + '\n');
+      appendToHookBuffer(buffer, JSON.stringify({ mode: 'post', ...call, success: true }) + '\n');
+    });
+
+    const port = await new Promise<number>((resolvePort, reject) => {
+      const srv = createNetServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as { port: number }).port;
+        srv.close((err) => (err ? reject(err) : resolvePort(p)));
+      });
+      srv.on('error', reject);
+    });
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: tmpHome,
+      USERPROFILE: tmpHome,
+      NEW_RELIC_AI_MCP_STORAGE_PATH: storage,
+      NR_AI_DASHBOARD_PORT: String(port),
+      NR_AI_MODE: 'local',
+      NR_AI_ALERTS_ENABLED: 'false',
+      NR_AI_SESSION_PERSIST_INTERVAL_MS: '500',
+      NEW_RELIC_LICENSE_KEY: '',
+      NEW_RELIC_ACCOUNT_ID: '',
+    };
+    for (const key of Object.keys(env)) if (key.startsWith('CLAUDE')) delete env[key];
+
+    const child = spawn(
+      process.execPath,
+      [resolve(__dirname, '..', 'dist', 'index.js'), '--local', '--config', configPath],
+      {
+        env,
+        stdio: 'ignore',
+      },
+    );
+
+    const sessionsDir = resolve(storage, 'sessions');
+    /** The saved redundant-read count once all three calls are in the file, else undefined. */
+    const savedRedundantReads = (): number | undefined => {
+      const name = existsSync(sessionsDir)
+        ? readdirSync(sessionsDir).find((f) => f.endsWith(`_${sessionId}.json`))
+        : undefined;
+      if (!name) return undefined;
+      const saved = JSON.parse(readFileSync(resolve(sessionsDir, name), 'utf-8')) as {
+        toolSelectionMetrics?: { totalCalls: number; redundantReadCount: number } | null;
+      };
+      return saved.toolSelectionMetrics?.totalCalls === 3
+        ? saved.toolSelectionMetrics.redundantReadCount
+        : undefined;
+    };
+    const waitFor = async (done: () => boolean): Promise<void> => {
+      for (let i = 0; i < 100 && !done(); i++) {
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    };
+
+    try {
+      // The three calls are saved as the parent's, so the third read is redundant.
+      await waitFor(() => savedRedundantReads() !== undefined);
+      expect(savedRedundantReads()).toBe(1);
+
+      // Each subagent's transcript lands only now, after intake has run.
+      mkdirSync(subagentsDir, { recursive: true });
+      for (const { agentId, toolUseId } of subagents) {
+        writeFileSync(
+          resolve(subagentsDir, `agent-${agentId}.jsonl`),
+          subagentTurn(agentId, toolUseId),
+        );
+      }
+      await waitFor(() => savedRedundantReads() === 0);
+
+      expect(savedRedundantReads()).toBe(0);
+    } finally {
+      child.kill('SIGKILL');
+      rmSync(tmpHome, { recursive: true, force: true });
+      rmSync(storage, { recursive: true, force: true });
     }
   }, 40000);
 });

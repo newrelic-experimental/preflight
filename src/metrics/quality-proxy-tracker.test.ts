@@ -394,3 +394,23 @@ describe('combineQualityProxyRawCounts', () => {
     expect(combined.testPassRate).toBe(metrics.testPassRate);
   });
 });
+
+describe('QualityProxyTracker own counts', () => {
+  it('adds a seed to every raw count and leaves it out of the own counts', () => {
+    const tracker = new QualityProxyTracker();
+    const seed = {
+      totalSignals: 21,
+      diffApplyCleanCount: 1,
+      diffFailCount: 2,
+      testPassCount: 3,
+      testFailCount: 4,
+      backtrackCount: 5,
+      selfCorrectionCount: 6,
+    };
+
+    tracker.seedFromPersisted(seed);
+
+    expect(tracker.getRawCounts()).toEqual(seed);
+    expect(tracker.getOwnRawCounts()).toEqual(ZERO_QUALITY_PROXY_COUNTS);
+  });
+});

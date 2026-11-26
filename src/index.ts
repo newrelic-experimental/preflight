@@ -77,7 +77,7 @@ import {
 import type { HeldSessionCost, UnbookedSeedCost } from './metrics/cost-tracker-seed.js';
 import { DecisionTracker } from './metrics/decision-tracker.js';
 import { EfficiencyScorer } from './metrics/efficiency-score.js';
-import { FirstSaveBaselines, costSeedOf } from './metrics/first-save-baselines.js';
+import { FirstSaveBaselines, seedDrainedRollups } from './metrics/first-save-baselines.js';
 import type { RepoContext } from './metrics/git-efficiency-tracker.js';
 import {
   GitEfficiencyTracker,
@@ -1430,7 +1430,12 @@ async function main(): Promise<void> {
     });
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
-    const gitWorkspaceReporter = new GitWorkspaceReporter();
+    // One identity resolver for the whole process: the live reporter, startup
+    // replay below and the dashboard all look up the same repos.
+    const gitWorkspaceIdentityResolver = new WorktreeIdentityResolver();
+    const gitWorkspaceReporter = new GitWorkspaceReporter({
+      identityResolver: gitWorkspaceIdentityResolver,
+    });
     // Day-boundary reset bookkeeping for gitEfficiencyTracker: the
     // tracker has a reset() method but, unlike costTracker/modelUsageTracker/
     // contextCompositionTracker/turnCostAttributor (reset at session
@@ -1645,10 +1650,6 @@ async function main(): Promise<void> {
     // worked on in a different repo earlier today doesn't get counted
     // against whichever repo this process's header currently names.
     const todaySessions = sessionStore.loadSessionsOverlappingToday();
-    // Shared across every session in this loop (not one fresh resolver per
-    // session) so its per-directory cache stays warm across sessions that
-    // touch the same worktree.
-    const gitWorkspaceIdentityResolver = new WorktreeIdentityResolver();
     for (const session of todaySessions) {
       if (session.sessionId === currentSessionId) continue;
       if (session.timeline && session.timeline.length > 0) {
@@ -2057,6 +2058,7 @@ async function main(): Promise<void> {
         bus: liveBus,
         staticDir,
         api: {
+          identityResolver: gitWorkspaceIdentityResolver,
           sessionTracker,
           auditTrailManager: auditTrail,
           artifactIndex: config.experimentalArtifacts ? createArtifactIndex(auditTrail) : undefined,
@@ -3048,13 +3050,13 @@ async function main(): Promise<void> {
     // adopting it. Never the file's other cost, which may be another session's.
     const takeCwdGuessRollup = (guessId: string): void => {
       try {
-        for (const rollup of cwdGuessRolledUpWhilePending) {
-          const seed = costSeedOf(
+        seedDrainedRollups(
+          cwdGuessRolledUpWhilePending.map((rollup) =>
             deserializeFullSessionSummary(rollup as unknown as SerializedFullSessionSummary),
-          );
-          costTracker.seedFromPersisted(seed.costTracker, 'drainedHere');
-          modelUsageTracker.seedFromPersisted(seed.modelBreakdown, 'drainedHere');
-        }
+          ),
+          costTracker,
+          modelUsageTracker,
+        );
         firstSaveBaselines.countRollupCost(guessId);
         refreshPriorCostBaseline();
         publishCost();
