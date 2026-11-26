@@ -1,6 +1,7 @@
 export interface CostEstimateParams {
   readonly estimateBytes: number;
   readonly reportCount: number;
+  readonly estimatesRetracted: boolean;
   /** The session the record belongs to, or null when the hook did not carry one. */
   readonly recordSessionId: string | null;
   /** The session this process currently owns; synthetic (`local-`/`pending-`) until resolved. */
@@ -21,7 +22,7 @@ export interface CostEstimateParams {
  */
 export function shouldApplyCostEstimate(params: CostEstimateParams): boolean {
   if (params.estimateBytes <= 0) return false;
-  if (params.reportCount !== 0) return false;
+  if (params.reportCount !== 0 || params.estimatesRetracted) return false;
   return isOwnSessionRecord(params.recordSessionId, params.ownSessionId);
 }
 

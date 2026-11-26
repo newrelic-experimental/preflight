@@ -2302,7 +2302,7 @@ describe('getOwnMetrics()', () => {
     const saved = savedSessionOf(before);
 
     const after = new CostTracker();
-    after.seedFromPersisted(buildCostTrackerSeed(saved), 'alreadySaved');
+    after.seedFromPersisted(buildCostTrackerSeed(saved));
     const ownTurn = after.recordTokenUsage(turn, MODEL);
 
     const own = after.getOwnMetrics();
@@ -2325,7 +2325,7 @@ describe('getOwnMetrics()', () => {
     const before = new CostTracker();
     before.recordTokenUsage(turn, MODEL, { workflowRunId: 'wf-1' });
     const after = new CostTracker();
-    after.seedFromPersisted(buildCostTrackerSeed(savedSessionOf(before)), 'alreadySaved');
+    after.seedFromPersisted(buildCostTrackerSeed(savedSessionOf(before)));
 
     const own = after.getOwnMetrics();
     expect(own.sessionTotalCostUsd).toBeNull();
@@ -2340,7 +2340,7 @@ describe('getOwnMetrics()', () => {
     const before = new CostTracker();
     before.recordEstimatedTokens(40_000, 8_000, MODEL);
     const after = new CostTracker();
-    after.seedFromPersisted(buildCostTrackerSeed(savedSessionOf(before)), 'alreadySaved');
+    after.seedFromPersisted(buildCostTrackerSeed(savedSessionOf(before)));
     const estimate = after.recordEstimatedTokens(4_000, 2_000, MODEL);
 
     expect(after.getOwnMetrics().byteEstimates?.costUsd).toBeCloseTo(estimate.totalUsd, 12);
@@ -2354,24 +2354,10 @@ describe('getOwnMetrics()', () => {
     expect(after.getMetrics().sessionTotalCostUsd).toBeCloseTo(exact.totalUsd, 12);
   });
 
-  it('counts a seed drained here as its own', () => {
-    const before = new CostTracker();
-    const drained = before.recordTokenUsage(turn, MODEL);
-    const after = new CostTracker();
-    after.seedFromPersisted(buildCostTrackerSeed(savedSessionOf(before)), 'drainedHere');
-    const ownTurn = after.recordTokenUsage(turn, MODEL);
-
-    const own = after.getOwnMetrics();
-    expect(own.sessionTotalCostUsd).toBeCloseTo(drained.totalUsd + ownTurn.totalUsd, 12);
-    expect(own.costByDayUsd[localDateKey()]).toBeCloseTo(drained.totalUsd + ownTurn.totalUsd, 12);
-    expect(own.totalInputTokens).toBe(4_000);
-  });
-
   it('anchors its own first spend today when the seed has none', () => {
     const tracker = new CostTracker();
     tracker.seedFromPersisted(
       makeSeed({ totalCostUsd: 2, parentCostUsd: 2, totalInputTokens: 10, dayCostUsd: 2 }),
-      'alreadySaved',
     );
     const at = Date.now();
     tracker.recordTokenUsage(turn, MODEL, { timestampMs: at });
@@ -2384,7 +2370,6 @@ describe('getOwnMetrics()', () => {
     const tracker = new CostTracker();
     tracker.seedFromPersisted(
       makeSeed({ totalCostUsd: 0.1, parentCostUsd: 0.1, totalInputTokens: 1 }),
-      'alreadySaved',
     );
     const small = makeUsage({ inputTokens: 100, totalTokens: 100 });
     const first = tracker.recordTokenUsage(small, MODEL).totalUsd;

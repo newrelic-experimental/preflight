@@ -78,8 +78,8 @@ function writer() {
       qualityProxyTracker.seedFromPersisted(calls.qualityProxy);
       taskDetector.seedFromPersisted(calls.taskDetector);
       if (calls.efficiency) efficiencyScorer.seedFromPersisted(calls.efficiency);
-      costTracker.seedFromPersisted(cost.costTracker, 'alreadySaved');
-      modelUsageTracker.seedFromPersisted(cost.modelBreakdown, 'alreadySaved');
+      costTracker.seedFromPersisted(cost.costTracker);
+      modelUsageTracker.seedFromPersisted(cost.modelBreakdown);
     },
     contribution: (): WriterContribution => buildContribution(sources),
   };

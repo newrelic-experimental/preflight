@@ -469,7 +469,7 @@ describe('ModelUsageTracker.getOwnRawBreakdown', () => {
 
   it('leaves an already-saved seed out of its own usage', () => {
     const t = new ModelUsageTracker();
-    t.seedFromPersisted(saved, 'alreadySaved');
+    t.seedFromPersisted(saved);
     t.recordUsage('claude-sonnet-5', ownUsage, 0.25);
 
     expect(t.getOwnRawBreakdown()).toEqual({
@@ -484,22 +484,6 @@ describe('ModelUsageTracker.getOwnRawBreakdown', () => {
       },
     });
     expect(t.getRawBreakdown()['claude-sonnet-5']?.requestCount).toBe(13);
-  });
-
-  it('counts a seed drained here as its own', () => {
-    const t = new ModelUsageTracker();
-    t.seedFromPersisted(saved, 'drainedHere');
-    t.recordUsage('claude-sonnet-5', ownUsage, 0.25);
-
-    expect(t.getOwnRawBreakdown()['claude-sonnet-5']).toEqual({
-      requestCount: 13,
-      totalInputTokens: 602,
-      totalOutputTokens: 6692,
-      totalCostUsd: 3.25,
-      totalCacheReadTokens: 110,
-      totalCacheCreationTokens: 50,
-      totalThinkingTokens: 7,
-    });
   });
 
   it('forgets its own usage on reset', () => {

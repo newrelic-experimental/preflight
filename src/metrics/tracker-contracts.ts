@@ -10,12 +10,3 @@
 export interface Resettable {
   reset(sessionId: string): void;
 }
-
-/**
- * Where a seed's totals come from. `alreadySaved` totals are in a session file
- * another writer saved (a previous process, another live one, or this
- * process's rollup save), so they stay out of `getOwnMetrics()`. `drainedHere`
- * totals are work this process drained that no file holds yet, so they count
- * as its own.
- */
-export type SeedOrigin = 'alreadySaved' | 'drainedHere';

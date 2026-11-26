@@ -60,7 +60,7 @@ interface MutableModelStats {
 }
 
 import type { TokenUsage } from '../core/tokens.js';
-import type { Resettable, SeedOrigin } from './tracker-contracts.js';
+import type { Resettable } from './tracker-contracts.js';
 
 function addModelStats(
   byModel: Map<string, MutableModelStats>,
@@ -189,16 +189,11 @@ export class ModelUsageTracker implements Resettable {
    *
    * Adds to current per-model state rather than overwriting, so callers must
    * invoke this at most once per (re)adopted session id, with totals this
-   * tracker has not already counted. `getOwnRawBreakdown()` includes only a
-   * `drainedHere` seed (see `SeedOrigin`).
+   * tracker has not already counted.
    */
-  seedFromPersisted(
-    breakdown: Readonly<Record<string, ModelBreakdownEntry>>,
-    origin: SeedOrigin = 'alreadySaved',
-  ): void {
+  seedFromPersisted(breakdown: Readonly<Record<string, ModelBreakdownEntry>>): void {
     for (const [model, entry] of Object.entries(breakdown)) {
       addModelStats(this.heldByModel, model, entry);
-      if (origin === 'drainedHere') addModelStats(this.ownByModel, model, entry);
     }
   }
 
@@ -234,7 +229,6 @@ export class ModelUsageTracker implements Resettable {
     return rawBreakdownOf(this.heldByModel);
   }
 
-  /** `getRawBreakdown()` without any `alreadySaved` seed. */
   getOwnRawBreakdown(): Readonly<Record<string, ModelBreakdownEntry>> {
     return rawBreakdownOf(this.ownByModel);
   }

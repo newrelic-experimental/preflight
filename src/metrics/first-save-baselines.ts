@@ -59,16 +59,15 @@ export function costSeedOf(summary: FullSessionSummary): CostSeed {
   };
 }
 
-/** Seeds the cost trackers with rollups this process drained, which count as its own. */
-export function seedDrainedRollups(
+export function seedSavedRollups(
   rollups: readonly FullSessionSummary[],
   costTracker: CostTracker,
   modelUsageTracker: ModelUsageTracker,
 ): void {
   for (const rollup of rollups) {
     const seed = costSeedOf(rollup);
-    costTracker.seedFromPersisted(seed.costTracker, 'drainedHere');
-    modelUsageTracker.seedFromPersisted(seed.modelBreakdown, 'drainedHere');
+    costTracker.seedFromPersisted(seed.costTracker);
+    modelUsageTracker.seedFromPersisted(seed.modelBreakdown);
   }
 }
 
