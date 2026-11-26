@@ -13,6 +13,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -242,6 +243,23 @@ describe('WorktreeIdentityResolver', () => {
     expect(identity1!.repoKey).toBe(identity2!.repoKey);
     expect(identity1!.worktreeKey).toBe(identity2!.worktreeKey);
     expect(identity1!.worktreeLabel).toBe(identity2!.worktreeLabel);
+  });
+
+  itPosix('keeps a symlink into another repo apart from the repo holding it', () => {
+    const repoA = join(tmpDir, 'repo-a');
+    const repoB = join(tmpDir, 'repo-b');
+    for (const dir of [repoA, repoB]) {
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      initGitRepo(dir);
+    }
+    const link = join(repoA, 'linkB');
+    symlinkSync(join(repoB, 'src'), link);
+
+    const linked = resolver.resolve(link);
+    const outer = resolver.resolve(repoA);
+    expect(linked!.repoKey).toBe(new WorktreeIdentityResolver().resolve(repoB)!.repoKey);
+    expect(outer!.repoKey).toBe(new WorktreeIdentityResolver().resolve(repoA)!.repoKey);
+    expect(outer!.repoKey).not.toBe(linked!.repoKey);
   });
 
   // Counts `git` processes with a logging shim first on PATH, so the test sees

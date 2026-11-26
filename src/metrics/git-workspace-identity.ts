@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, resolve as resolvePath } from 'node:path';
 
 import { parseGitRemote, repoNameFromRemote, type ParsedGitRemote } from '../lib/git-remote.js';
@@ -119,13 +119,10 @@ export function cacheKeyOf(dir: string): string {
   return process.platform === 'win32' ? abs.toLowerCase() : abs;
 }
 
-/** The nearest directory at or above `dir` holding a `.git` entry, found with
- *  stat calls and no `git` process, or null when there is none. A `dir` that
- *  no longer exists has no root of its own, so it keeps a key of its own too:
- *  its failed lookup must not stand for the repo it used to be in. */
-function repoRootOf(dir: string): string | null {
-  let current = resolvePath(dir);
-  if (!existsSync(current)) return null;
+/** The nearest directory at or above `real` holding a `.git` entry, found with
+ *  stat calls and no `git` process, or null when there is none. */
+function repoRootOf(real: string): string | null {
+  let current = real;
   for (;;) {
     if (existsSync(`${current}/.git`)) return current;
     const parent = dirname(current);
@@ -137,9 +134,19 @@ function repoRootOf(dir: string): string | null {
 /** The cache key for `dir`: its repo root when one is on disk, so every
  *  directory under one repo shares one entry and costs one set of `git`
  *  lookups. Worktree identity, remotes and the gh default are all repo-wide,
- *  so a subdirectory asks git for nothing its root does not already answer. */
+ *  so a subdirectory asks git for nothing its root does not already answer.
+ *  The walk follows symlinks the way `git -C` does. A `dir` that no longer
+ *  exists keeps a key of its own, so its failed lookup cannot stand for the
+ *  repo it used to be in. */
 function lookupKeyOf(dir: string): string {
-  return cacheKeyOf(repoRootOf(dir) ?? dir);
+  const abs = resolvePath(dir);
+  let real: string;
+  try {
+    real = realpathSync(abs);
+  } catch {
+    return cacheKeyOf(abs);
+  }
+  return cacheKeyOf(repoRootOf(real) ?? real);
 }
 
 interface Remotes {
