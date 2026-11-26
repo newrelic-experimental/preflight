@@ -5,6 +5,8 @@ import { estimatedFromOf } from '../__test-utils__/estimated-from.js';
 import type { TokenRecordContext, CostTrackerSeed } from './cost-tracker.js';
 import { localDateKey, localStartOfDay } from '../lib/date.js';
 import { SessionTracker } from './session-tracker.js';
+import { buildCostTrackerSeed } from './cost-tracker-seed.js';
+import { buildSessionSummary, type FullSessionSummary } from '../storage/session-store.js';
 import { MetricAggregator } from '../core/index.js';
 import type { ToolCallRecord } from '../storage/types.js';
 
@@ -656,6 +658,12 @@ describe('CostTracker', () => {
   });
 
   describe('estimatedByModel', () => {
+    it('does not count a family-priced call that carries no tokens', () => {
+      const tracker = new CostTracker();
+      tracker.recordTokenUsage(makeUsage(), 'claude-opus-5-9');
+      expect(tracker.getMetrics().estimatedByModel).toEqual({});
+    });
+
     it('counts a family-priced model, still adds its cost, and keeps it out of unpriced', () => {
       const tracker = new CostTracker();
       const usage = makeUsage({ inputTokens: 100, outputTokens: 50, totalTokens: 150 });
@@ -1273,6 +1281,17 @@ describe('subagent token support', () => {
     expect(tracker.getMetrics().reportCount).toBe(1);
   });
 
+  it('late arrival (>48h): keeps the turn out of its workflow run', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(
+      makeUsage({ inputTokens: 10_000, outputTokens: 2_000, totalTokens: 12_000 }),
+      'claude-sonnet-4',
+      { timestampMs: Date.now() - 49 * 60 * 60 * 1000, workflowRunId: 'wf-late', agentId: 'a1' },
+    );
+    expect(tracker.hasCostForWorkflowRun('wf-late')).toBe(false);
+    expect(tracker.getTokensForWorkflowRun('wf-late')).toBe(0);
+  });
+
   it('late arrival (>48h): totalCacheSavingsUsd still accumulates like every other session total', () => {
     const tracker = new CostTracker();
     const oldTs = Date.now() - 49 * 60 * 60 * 1000; // 49h ago
@@ -1692,6 +1711,15 @@ function makeSeed(overrides?: Partial<CostTrackerSeed>): CostTrackerSeed {
 }
 
 describe('seedFromPersisted()', () => {
+  it('marks today changed only when the seed books spend on it', () => {
+    const tracker = new CostTracker();
+    tracker.seedFromPersisted(makeSeed({ totalCostUsd: 4, parentCostUsd: 4, dayCostUsd: 0 }));
+    expect(tracker.getLastMutationMsForDay(localDateKey())).toBeNull();
+
+    tracker.seedFromPersisted(makeSeed({ totalCostUsd: 1, parentCostUsd: 1, dayCostUsd: 1 }));
+    expect(tracker.getLastMutationMsForDay(localDateKey())).not.toBeNull();
+  });
+
   it('restores a fresh tracker from a persisted checkpoint at realistic multi-day scale', () => {
     const tracker = new CostTracker();
 
@@ -2252,5 +2280,125 @@ describe('call counts by day', () => {
     expect(tracker.getMetrics().unpricedByDay).toEqual({
       '2026-11-06': { [UNPRICED]: { calls: 3, tokens: 30 } },
     });
+  });
+});
+
+describe('getOwnMetrics()', () => {
+  const MODEL = 'claude-sonnet-4';
+  const turn = makeUsage({ inputTokens: 2_000, outputTokens: 400, totalTokens: 2_400 });
+  const REPLAY = { replacesEstimates: true };
+
+  const savedSessionOf = (tracker: CostTracker): FullSessionSummary =>
+    buildSessionSummary({
+      sessionTracker: new SessionTracker('sess-own'),
+      costTracker: tracker,
+      developer: 'dev',
+    });
+
+  it('leaves a restored session out of the restarted process own cost', () => {
+    const before = new CostTracker();
+    before.recordTokenUsage(makeUsage({ inputTokens: 1_000, cacheReadTokens: 9_000 }), MODEL);
+    before.recordEstimatedTokens(8_000, 2_000, MODEL);
+    const saved = savedSessionOf(before);
+
+    const after = new CostTracker();
+    after.seedFromPersisted(buildCostTrackerSeed(saved), 'alreadySaved');
+    const ownTurn = after.recordTokenUsage(turn, MODEL);
+
+    const own = after.getOwnMetrics();
+    expect(own.sessionTotalCostUsd).toBeCloseTo(ownTurn.totalUsd, 12);
+    expect(own.totalInputTokens).toBe(2_000);
+    expect(own.totalOutputTokens).toBe(400);
+    expect(own.costByModel).toEqual({ [MODEL]: ownTurn.totalUsd });
+    expect(own.costByDayUsd).toEqual({ [localDateKey()]: ownTurn.totalUsd });
+    expect(own.reportCount).toBe(1);
+    expect(own.estimationCount).toBe(0);
+    expect(own.byteEstimates).toBeUndefined();
+    expect(own.cacheHitRate).toBeNull();
+    expect(after.getMetrics().sessionTotalCostUsd).toBeCloseTo(
+      (saved.estimatedCostUsd ?? 0) + ownTurn.totalUsd,
+      12,
+    );
+  });
+
+  it('reports no cost of its own before the process records anything', () => {
+    const before = new CostTracker();
+    before.recordTokenUsage(turn, MODEL, { workflowRunId: 'wf-1' });
+    const after = new CostTracker();
+    after.seedFromPersisted(buildCostTrackerSeed(savedSessionOf(before)), 'alreadySaved');
+
+    const own = after.getOwnMetrics();
+    expect(own.sessionTotalCostUsd).toBeNull();
+    expect(own.totalInputTokens).toBe(0);
+    expect(own.costByModel).toEqual({});
+    expect(own.costByDayUsd).toEqual({});
+    expect(own.costByWorkflowRunId).toEqual({});
+    expect(after.getMetrics().sessionTotalCostUsd).toBeGreaterThan(0);
+  });
+
+  it('keeps only its own estimates in its own ledger until a replay takes them out', () => {
+    const before = new CostTracker();
+    before.recordEstimatedTokens(40_000, 8_000, MODEL);
+    const after = new CostTracker();
+    after.seedFromPersisted(buildCostTrackerSeed(savedSessionOf(before)), 'alreadySaved');
+    const estimate = after.recordEstimatedTokens(4_000, 2_000, MODEL);
+
+    expect(after.getOwnMetrics().byteEstimates?.costUsd).toBeCloseTo(estimate.totalUsd, 12);
+    expect(after.getOwnMetrics().sessionTotalCostUsd).toBeCloseTo(estimate.totalUsd, 12);
+
+    const exact = after.recordTokenUsage(turn, MODEL, REPLAY);
+
+    const own = after.getOwnMetrics();
+    expect(own.sessionTotalCostUsd).toBeCloseTo(exact.totalUsd, 12);
+    expect(own.byteEstimates?.costUsd).toBe(0);
+    expect(after.getMetrics().sessionTotalCostUsd).toBeCloseTo(exact.totalUsd, 12);
+  });
+
+  it('counts a seed drained here as its own', () => {
+    const before = new CostTracker();
+    const drained = before.recordTokenUsage(turn, MODEL);
+    const after = new CostTracker();
+    after.seedFromPersisted(buildCostTrackerSeed(savedSessionOf(before)), 'drainedHere');
+    const ownTurn = after.recordTokenUsage(turn, MODEL);
+
+    const own = after.getOwnMetrics();
+    expect(own.sessionTotalCostUsd).toBeCloseTo(drained.totalUsd + ownTurn.totalUsd, 12);
+    expect(own.costByDayUsd[localDateKey()]).toBeCloseTo(drained.totalUsd + ownTurn.totalUsd, 12);
+    expect(own.totalInputTokens).toBe(4_000);
+  });
+
+  it('anchors its own first spend today when the seed has none', () => {
+    const tracker = new CostTracker();
+    tracker.seedFromPersisted(
+      makeSeed({ totalCostUsd: 2, parentCostUsd: 2, totalInputTokens: 10, dayCostUsd: 2 }),
+      'alreadySaved',
+    );
+    const at = Date.now();
+    tracker.recordTokenUsage(turn, MODEL, { timestampMs: at });
+
+    expect(tracker.getOwnMetrics().firstActivityByDayMs).toEqual({ [localDateKey(at)]: at });
+    expect(tracker.getMetrics().firstActivityByDayMs).toEqual({});
+  });
+
+  it('adds the session total in arrival order, not own plus seed on read', () => {
+    const tracker = new CostTracker();
+    tracker.seedFromPersisted(
+      makeSeed({ totalCostUsd: 0.1, parentCostUsd: 0.1, totalInputTokens: 1 }),
+      'alreadySaved',
+    );
+    const small = makeUsage({ inputTokens: 100, totalTokens: 100 });
+    const first = tracker.recordTokenUsage(small, MODEL).totalUsd;
+    const second = tracker.recordTokenUsage(small, MODEL).totalUsd;
+
+    expect(0.1 + first + second).not.toBe(0.1 + (first + second));
+    expect(tracker.getMetrics().sessionTotalCostUsd).toBe(0.1 + first + second);
+  });
+
+  it('forgets its own cost on reset', () => {
+    const tracker = new CostTracker();
+    tracker.recordTokenUsage(turn, MODEL);
+    tracker.reset('sess-own');
+    expect(tracker.getOwnMetrics().sessionTotalCostUsd).toBeNull();
+    expect(tracker.getOwnMetrics().costByModel).toEqual({});
   });
 });
