@@ -5024,6 +5024,38 @@ describe('stdio integration', () => {
         }
       }, 60000);
 
+      it('completes its resumed session when it exits having done nothing of its own', async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          const now = Date.now();
+          mkdirSync(resolve(storagePath, 'sessions'), { recursive: true });
+          writeFileSync(
+            resolve(
+              storagePath,
+              'sessions',
+              `${new Date(now).toISOString().slice(0, 10)}_idle-id.json`,
+            ),
+            JSON.stringify({
+              sessionId: 'idle-id',
+              startTime: now - 60_000,
+              endTime: now - 1_000,
+              toolCallCount: 3,
+              outcome: 'in progress',
+            }),
+          );
+          const engine = await startEngine(storagePath, projectCwd);
+          await adoptAll(storagePath, 'idle-id', [engine]);
+          await engine.close();
+
+          expect(new SessionStore({ storagePath }).loadSession('idle-id')).toMatchObject({
+            toolCallCount: 3,
+            outcome: 'completed',
+          });
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+
       it('adds the tasks it completes, and not one still open, to the ones its resumed session saved', async () => {
         const { storagePath, projectCwd, cleanup } = makeDirs();
         try {

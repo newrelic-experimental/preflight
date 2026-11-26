@@ -1725,7 +1725,7 @@ export class SessionStore {
   private saveContribution(writerId: string, contribution: WriterContribution): SaveResult {
     const { sessionId } = contribution.summary;
     if (!isValidSessionId(sessionId)) return { kind: 'skipped', reason: 'invalid-session-id' };
-    if (!hasRecordedUsage(contribution.summary)) {
+    if (!hasRecordedUsage(contribution.summary) && !this.loadSession(sessionId)) {
       return { kind: 'skipped', reason: 'no-recorded-usage' };
     }
     try {

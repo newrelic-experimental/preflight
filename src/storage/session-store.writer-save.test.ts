@@ -207,6 +207,18 @@ describe('SessionStore.writer', () => {
     expect(existsSync(sessionsDir)).toBe(false);
   });
 
+  it('saves a share with nothing in it into a session that has usage, so its outcome lands', () => {
+    store.writer('aggregator').save(own({ ...activity(ids('a', 2)), outcome: 'in progress' }));
+
+    const saved = store
+      .writer('engine')
+      .save(own({ ...activity([], { usd: 0, start: START + 5_000 }), outcome: 'completed' }));
+
+    expect(saved).toEqual({ kind: 'saved', retracted: false });
+    expect(totals(store.loadSession(SID))).toEqual({ calls: 2, usd: 0.2, input: 20 });
+    expect(store.loadSession(SID)?.outcome).toBe('completed');
+  });
+
   it('tells every writer the session is retracted once one writer retracts it', () => {
     const a = store.writer('aggregator');
     const b = store.writer('engine');
