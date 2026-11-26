@@ -255,6 +255,7 @@ export class TaskDetector implements Resettable {
   private completedTasks: AiCodingTask[] = [];
   private pendingEmission: AiCodingTask[] = [];
   private lifetimeCompletedCount = 0;
+  private seededTaskCount = 0;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Additive seed from a previous process's last checkpoint for this same
@@ -401,7 +402,12 @@ export class TaskDetector implements Resettable {
     this.seededBuildRun += seed.buildRun;
     this.seededBuildPassed += seed.buildPassed;
     this.seededAgentSpawns += seed.agentSpawns;
-    this.lifetimeCompletedCount += seed.taskCount;
+    this.seededTaskCount += seed.taskCount;
+  }
+
+  /** `getMetrics().totalTasksCompleted` without any seed. */
+  getOwnTasksCompleted(): number {
+    return this.lifetimeCompletedCount;
   }
 
   getMetrics(): TaskMetrics {
@@ -431,7 +437,7 @@ export class TaskDetector implements Resettable {
       this.seededAgentSpawns !== 0;
 
     return {
-      totalTasksCompleted: this.lifetimeCompletedCount,
+      totalTasksCompleted: this.lifetimeCompletedCount + this.seededTaskCount,
       currentTaskActive: this.activeTask !== null,
       currentTaskToolCalls: this.activeTask?.toolCallCount ?? 0,
       averageTaskDurationMs: avgDuration,
@@ -474,6 +480,7 @@ export class TaskDetector implements Resettable {
     this.costAtTaskStart = 0;
     this.tokensAtTaskStart = 0;
     this.lifetimeCompletedCount = 0;
+    this.seededTaskCount = 0;
     this.seededFilesRead.clear();
     this.seededFilesModified.clear();
     this.seededLinesAdded = 0;

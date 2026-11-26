@@ -57,7 +57,7 @@ import type {
   TokenBreakdown,
   UsdBreakdown,
 } from './types.js';
-import type { SessionTracker } from '../metrics/session-tracker.js';
+import type { CallCounts, SessionMetrics, SessionTracker } from '../metrics/session-tracker.js';
 import type {
   CostTracker,
   CostMetrics,
@@ -79,9 +79,13 @@ import type {
   TurnCostAttributor,
   CostAttributionMetrics,
 } from '../metrics/turn-cost-attributor.js';
-import type { TaskDetector } from '../metrics/task-detector.js';
+import type { TaskDetector, TaskMetrics, TaskSeedAggregate } from '../metrics/task-detector.js';
 import type { AntiPatternDetector } from '../metrics/anti-patterns.js';
-import type { EfficiencyScorer, EfficiencyScoreComponents } from '../metrics/efficiency-score.js';
+import type {
+  EfficiencyScore,
+  EfficiencyScorer,
+  EfficiencyScoreComponents,
+} from '../metrics/efficiency-score.js';
 import type { TranscriptMessageTracker } from '../metrics/transcript-message-tracker.js';
 import type { SessionOutcomeRecord } from '../metrics/instruction-drift-tracker.js';
 import type { AntiPattern } from '../metrics/anti-patterns.js';
@@ -2171,7 +2175,55 @@ function buildAttribution(
   };
 }
 
+/** How a summary reads each tracker: with every seed it holds, or only this writer's own work. */
+interface TrackerReads {
+  readonly calls: (tracker: SessionTracker, metrics: SessionMetrics) => CallCounts;
+  readonly cost: (tracker: CostTracker) => CostMetrics;
+  readonly models: (tracker: ModelUsageTracker) => Readonly<Record<string, ModelBreakdownEntry>>;
+  readonly quality: (tracker: QualityProxyTracker) => QualityProxyRawCounts;
+  readonly efficiency: (scorer: EfficiencyScorer) => [EfficiencyScore | null, number];
+  readonly tasksCompleted: (detector: TaskDetector, metrics: TaskMetrics) => number;
+  readonly seededTasks: (metrics: TaskMetrics) => TaskSeedAggregate | null;
+}
+
+const HELD: TrackerReads = {
+  calls: (_, metrics) => metrics,
+  cost: (tracker) => tracker.getMetrics(),
+  models: (tracker) => tracker.getRawBreakdown(),
+  quality: (tracker) => tracker.getRawCounts(),
+  efficiency: (scorer) => [scorer.getSessionAverage(), scorer.getSessionSampleCount()],
+  tasksCompleted: (_, metrics) => metrics.totalTasksCompleted,
+  seededTasks: (metrics) => metrics.seededAggregate,
+};
+
+const OWN: TrackerReads = {
+  calls: (tracker) => tracker.getOwnCallCounts(),
+  cost: (tracker) => tracker.getOwnMetrics(),
+  models: (tracker) => tracker.getOwnRawBreakdown(),
+  quality: (tracker) => tracker.getOwnRawCounts(),
+  efficiency: (scorer) => [scorer.getOwnSessionAverage(), scorer.getScores().length],
+  tasksCompleted: (detector) => detector.getOwnTasksCompleted(),
+  seededTasks: () => null,
+};
+
 export function buildSessionSummary(sources: BuildSessionSummarySources): FullSessionSummary {
+  return summaryOf(sources, HELD);
+}
+
+/**
+ * This writer's own share of the session, which is `buildSessionSummary`
+ * without any seed. Its start is the session tracker's own: a capture judges
+ * whether an older build's file may hold this writer by that start, and the
+ * session's saved start would lie in every such file's span.
+ */
+export function buildContribution(sources: BuildSessionSummarySources): WriterContribution {
+  return {
+    summary: summaryOf(sources, OWN),
+    retracted: sources.costTracker?.hasRetractedEstimates() ?? false,
+  };
+}
+
+function summaryOf(sources: BuildSessionSummarySources, reads: TrackerReads): FullSessionSummary {
   const {
     sessionTracker,
     costTracker,
@@ -2183,7 +2235,8 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
   } = sources;
 
   const sessionMetrics = sessionTracker.getMetrics();
-  const costMetrics = costTracker?.getMetrics() ?? null;
+  const calls = reads.calls(sessionTracker, sessionMetrics);
+  const costMetrics = costTracker ? reads.cost(costTracker) : null;
   const turnAttributionMetrics = sources.turnCostAttributor?.getMetrics() ?? null;
   const attribution =
     sources.costTracker || sources.turnCostAttributor
@@ -2225,16 +2278,17 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     // Fold in pre-restart totals recovered by TaskDetector.seedFromPersisted()
     // — see TaskMetrics.seededAggregate's doc comment for why these can't be
     // represented as a synthetic entry in completedTasks above.
-    if (taskMetrics.seededAggregate) {
-      for (const f of taskMetrics.seededAggregate.filesRead) allFilesRead.add(f);
-      for (const f of taskMetrics.seededAggregate.filesModified) allFilesModified.add(f);
-      totalLinesAdded += taskMetrics.seededAggregate.linesAdded;
-      totalLinesRemoved += taskMetrics.seededAggregate.linesRemoved;
-      totalTestsRun += taskMetrics.seededAggregate.testsRun;
-      totalTestsPassed += taskMetrics.seededAggregate.testsPassed;
-      totalBuildsRun += taskMetrics.seededAggregate.buildRun;
-      totalBuildsPassed += taskMetrics.seededAggregate.buildPassed;
-      totalAgentSpawns += taskMetrics.seededAggregate.agentSpawns;
+    const seeded = reads.seededTasks(taskMetrics);
+    if (seeded) {
+      for (const f of seeded.filesRead) allFilesRead.add(f);
+      for (const f of seeded.filesModified) allFilesModified.add(f);
+      totalLinesAdded += seeded.linesAdded;
+      totalLinesRemoved += seeded.linesRemoved;
+      totalTestsRun += seeded.testsRun;
+      totalTestsPassed += seeded.testsPassed;
+      totalBuildsRun += seeded.buildRun;
+      totalBuildsPassed += seeded.buildPassed;
+      totalAgentSpawns += seeded.agentSpawns;
     }
   }
 
@@ -2258,7 +2312,9 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
       : null;
 
   // Efficiency score
-  const efficiencyAvg = efficiencyScorer?.getSessionAverage() ?? null;
+  const [efficiencyAvg, efficiencySamples] = efficiencyScorer
+    ? reads.efficiency(efficiencyScorer)
+    : [null, 0];
 
   // Task success rate: ratio of test passes to test runs across all tasks
   const taskSuccessRate =
@@ -2306,10 +2362,10 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     // Recalculate durationMs from wall-clock times rather than trusting the
     // tracker's accumulated value, which can lag if polling is infrequent.
     durationMs: now - sessionMetrics.sessionStartTime,
-    toolCallCount: sessionMetrics.toolCallCount,
+    toolCallCount: calls.toolCallCount,
     developer,
     model: costMetrics?.model ?? null,
-    toolBreakdown: { ...sessionMetrics.toolCallCountByTool },
+    toolBreakdown: { ...calls.toolCallCountByTool },
     skillBreakdown: skillInvocationCounts(
       sources.turnCostAttributor?.getMetrics(sessionMetrics.sessionId),
     ),
@@ -2317,7 +2373,7 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     filesModified: [...allFilesModified].sort().map((f) => redactSensitive(f)),
     linesAdded: totalLinesAdded,
     linesRemoved: totalLinesRemoved,
-    bashCommandCount: sessionMetrics.bashCommandsRun,
+    bashCommandCount: calls.bashCommandsRun,
     testRunCount: totalTestsRun,
     testPassCount: totalTestsPassed,
     buildRunCount: totalBuildsRun,
@@ -2372,12 +2428,14 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     tokensCacheCreation: costMetrics?.totalCacheCreationTokens ?? 0,
     cacheSavingsUsd: costMetrics?.totalCacheSavingsUsd ?? 0,
     efficiencyScore: efficiencyAvg?.score ?? null,
-    efficiencyScoreSampleCount: efficiencyScorer?.getSessionSampleCount() ?? 0,
+    efficiencyScoreSampleCount: efficiencySamples,
     efficiencyScoreComponents: efficiencyAvg?.components ?? null,
     antiPatterns,
-    taskCount: (taskMetrics?.totalTasksCompleted ?? 0) + (taskMetrics?.currentTaskActive ? 1 : 0),
+    taskCount:
+      (taskDetector && taskMetrics ? reads.tasksCompleted(taskDetector, taskMetrics) : 0) +
+      (taskMetrics?.currentTaskActive ? 1 : 0),
     taskSuccessRate,
-    toolSuccessRate: sessionMetrics.toolSuccessRate,
+    toolSuccessRate: calls.toolSuccessRate,
     contextCompressions: 0,
     agentSpawns: totalAgentSpawns,
     userMessages: transcriptMessageMetrics?.userMessages ?? 0,
@@ -2388,9 +2446,11 @@ export function buildSessionSummary(sources: BuildSessionSummarySources): FullSe
     instructionPromptHash: sources.instructionPromptHash ?? null,
     timeline: timeline.length > 0 ? timeline : undefined,
     toolSelectionMetrics: toolSelectionResult,
-    modelBreakdown: sources.modelUsageTracker?.getRawBreakdown() ?? {},
+    modelBreakdown: sources.modelUsageTracker ? reads.models(sources.modelUsageTracker) : {},
     costByWorkflowRunId: costMetrics?.costByWorkflowRunId ?? {},
-    qualityProxy: sources.qualityProxyTracker?.getRawCounts() ?? ZERO_QUALITY_PROXY_COUNTS,
+    qualityProxy: sources.qualityProxyTracker
+      ? reads.quality(sources.qualityProxyTracker)
+      : ZERO_QUALITY_PROXY_COUNTS,
     attribution,
   };
 }

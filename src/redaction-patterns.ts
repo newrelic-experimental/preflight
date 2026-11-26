@@ -240,10 +240,13 @@ const QUOTE = String.raw`\\"|"|'`;
 const KEY_HEADER = String.raw`(?:x-)?(?:api-?key|auth-token|access-token)`;
 const AUTH_HEADER = String.raw`(?:proxy-)?authorization`;
 
+const CREDENTIAL_HEADER = String.raw`(?:${KEY_HEADER}(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|${AUTH_HEADER}[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`;
 const HEADER = new RegExp(
-  String.raw`((?:-H|--(?:proxy-)?header)(?:[\s=]|${CONTINUATION}){0,8}(${QUOTE})?)(?:${KEY_HEADER}(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|${AUTH_HEADER}[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
+  String.raw`((?:-H|--(?:proxy-)?header)(?:[\s=]|${CONTINUATION}){0,8}(${QUOTE})?)${CREDENTIAL_HEADER}`,
   'gi',
 );
+// The value of a curl -H that ends a bundle of short options, as in -sSH, with HEADER's groups.
+const CURL_HEADER = new RegExp(String.raw`((${QUOTE})?)${CREDENTIAL_HEADER}`, 'iy');
 
 // httpie takes a header as one Name:value word, as curl -H does, so its quote may open after the
 // colon.
@@ -426,14 +429,38 @@ function curlLongName(word: string): string {
   return (equals < 0 ? word : word.slice(0, equals)).replace(/["'\\]/g, '');
 }
 
+type CurlValue = 'credential' | 'header' | 'other';
+const CURL_SHORT_HEADER = 'H'.charCodeAt(0);
+const curlShortValue = (c: number): CurlValue => {
+  if (c === CURL_SHORT_HEADER) return 'header';
+  return CURL_CREDENTIAL[c] === 1 ? 'credential' : 'other';
+};
+
+// Not a closure in curlCredentials: one per curl command made 1 MB of curl -H commands 25% slower.
+function redactCurlValue(
+  text: string,
+  quote: Quote,
+  spans: number[],
+  kind: CurlValue,
+  start: number,
+  from: number,
+  end: number,
+): void {
+  if (kind === 'credential') spans.push(start, end);
+  if (kind !== 'header') return;
+  CURL_HEADER.lastIndex = from;
+  const header = CURL_HEADER.exec(text);
+  if (header !== null) headerValue(text, header, quote, spans);
+}
+
 // The values of -u, -U, -b, -t and the long credential options are redacted, in the same word
-// (-uuser:pw, -sSu user:pw, --user=user:pw) or the next. Another option's value, as in -o -t.txt,
-// is skipped.
+// (-uuser:pw, -sSu user:pw, --user=user:pw) or the next. So is a credential header after a bundled
+// -H (-sSH X-Api-Key:…, -sHX-Api-Key:…). Another option's value, as in -o -t.txt, is skipped.
 const curlCredentials: Redact = (text, match, quote, spans) => {
-  let pending: { start: number; credential: boolean } | undefined;
+  let pending: { start: number; kind: CurlValue } | undefined;
   return commandWords(text, match, quote, (from, end) => {
     if (pending !== undefined) {
-      if (pending.credential) spans.push(pending.start, end);
+      redactCurlValue(text, quote, spans, pending.kind, pending.start, from, end);
       pending = undefined;
       return;
     }
@@ -444,7 +471,7 @@ const curlCredentials: Redact = (text, match, quote, spans) => {
       if (word.includes('=')) {
         if (credential) spans.push(from, end);
       } else if (credential || CURL_LONG_TAKES_VALUE.has(name)) {
-        pending = { start: from, credential };
+        pending = { start: from, kind: credential ? 'credential' : 'other' };
       }
       return;
     }
@@ -453,10 +480,9 @@ const curlCredentials: Redact = (text, match, quote, spans) => {
       const c = word.charCodeAt(k);
       if (c >= 128 || CURL_TAKES_VALUE[c] !== 1) continue;
       const start = k === 1 ? from : from + k;
-      const credential = CURL_CREDENTIAL[c] === 1;
-      if (!ONLY_QUOTES.test(word.slice(k + 1))) {
-        if (credential) spans.push(start, end);
-      } else pending = { start, credential };
+      const kind = curlShortValue(c);
+      if (ONLY_QUOTES.test(word.slice(k + 1))) pending = { start, kind };
+      else redactCurlValue(text, quote, spans, kind, start, from + k + 1, end);
       return;
     }
   });
