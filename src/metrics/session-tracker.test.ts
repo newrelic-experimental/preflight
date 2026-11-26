@@ -1122,6 +1122,22 @@ describe('SessionTracker', () => {
       expect(tracker.getOwnCallCounts().toolCallCount).toBe(1);
     });
 
+    it('gives a pending tracker the own counts its metrics show', () => {
+      const tracker = new SessionTracker('pending-1');
+      tracker.recordToolCall(makeRecord({ sessionId: 'conv-a', toolName: 'Bash' }));
+      tracker.recordToolCall(makeRecord({ sessionId: 'conv-b' }));
+
+      const { toolCallCount, toolCallCountByTool, bashCommandsRun, toolSuccessRate } =
+        tracker.getMetrics();
+      expect(tracker.getOwnCallCounts()).toEqual({
+        toolCallCount,
+        toolCallCountByTool,
+        bashCommandsRun,
+        toolSuccessRate,
+      });
+      expect(toolCallCount).toBe(2);
+    });
+
     it('does not count a seeded call again when its record has no session id', () => {
       const tracker = new SessionTracker('sess-001');
       tracker.seedFromPersisted({

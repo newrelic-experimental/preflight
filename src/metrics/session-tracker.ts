@@ -463,6 +463,7 @@ export class SessionTracker implements Resettable {
 
   /** Every call this tracker drained itself, once each, including ones a seed also counted. */
   getOwnCallCounts(): CallCounts {
+    if (this.drainedWhilePending) return this.drainedWhilePending.getOwnCallCounts();
     const repeats = this.seededRepeats;
     const toolCallCountByTool = Object.fromEntries(this.toolCallCountByTool);
     for (const [tool, n] of repeats.byTool) {
@@ -569,8 +570,8 @@ export class SessionTracker implements Resettable {
   }
 
   /**
-   * Fold a resumed session's saved toolCallCount/bashCommandCount into this
-   * process's live counters, leaving out saved calls it already counted, such
+   * Fold a resumed session's saved toolCallCount/bashCommandCount into the
+   * counts getMetrics() reports, leaving out saved calls it already counted, such
    * as ones adoptSessionId() replayed. See SessionTrackerSeed's doc comment for
    * why this exists.
    */
