@@ -167,10 +167,8 @@ function valueEnd(text: string, from: number, quote: Quote): number {
   return end;
 }
 
-// Where the quote at `at` closes when it closes the quote the text is in but the command, read
-// alone, opens one there. -1 unless the part holds only plain characters and blanks on one line,
-// with no `#` that would start a comment after a blank, so that hiding it whole cannot change how
-// the rest of the text is read. A part with a blank is at most MAX_QUOTED_PART long.
+// Hiding a quoted part whose opening quote closes the text's quote leaves the rest read the same
+// only when it holds plain characters and blanks on one line, with no `#` after a blank.
 function reopenedClose(text: string, at: number, quote: Quote): number {
   if (quote === 'comment' || unitAt(text, at, quote) !== CLOSE) return -1;
   const limit = at + 1 + MAX_QUOTED_PART;
@@ -276,8 +274,6 @@ const headerValue: Redact = (text, match, quote, spans) => {
   return pushValue(spans, match.index + match[1].length, from, end);
 };
 
-// The quote after the colon, or the one before the name, may close the quote the text is in, and
-// the word may reopen it.
 const headerWordValue: Redact = (text, match, quote, spans) => {
   const after: string | undefined = match[2];
   const from = match.index + match[0].length;
@@ -343,7 +339,6 @@ const REDIRECT = /&>>?|[<>][<>&|]*/y;
 const CONTINUATION_AT = new RegExp(CONTINUATION, 'y');
 const CONTINUATION_END = new RegExp(String.raw`(?:${CONTINUATION})$`);
 
-// The length of the line continuation, raw or JSON-escaped, that ends at `end` after `from`, or 0.
 function continuationBefore(text: string, from: number, end: number): number {
   const last = text.charCodeAt(end - 1);
   if (last !== LF && last !== 0x6e) return 0;
@@ -359,9 +354,8 @@ function startsWord(text: string, index: number): boolean {
 }
 
 // When the match starts a word, visits each word after it up to the end of its command, and returns
-// that end. A redirection such as 2>&1 does not end the command, a JSON-escaped line break only
-// separates words, since bash keeps \n in a double-quoted string, and a line continuation at either
-// end of a word only separates words.
+// that end. A JSON-escaped line break only separates words, since bash keeps \n in a double-quoted
+// string.
 function commandWords(
   text: string,
   match: RegExpExecArray,

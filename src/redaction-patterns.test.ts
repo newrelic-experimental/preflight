@@ -221,7 +221,6 @@ const REDACTS: Row[] = [
   ['curl -H x'],
   ['curl -HX-Api-Keys:abc x'],
   ['curl -HAuthorization:Basically x'],
-  // The text's quote, as an apostrophe in prose or "$( opens it, reads the value's quote as a closer.
   [`${PROSE}curl -u 'me:S3 CRET9' x`, "-u 'me:S3 CRET9'"],
   [`${PROSE}curl --user 'me:S3 CRET9' x`, "--user 'me:S3 CRET9'"],
   [`${PROSE}curl -u 'me:S3\tCRET9' x`, "-u 'me:S3\tCRET9'"],
@@ -246,7 +245,6 @@ const REDACTS: Row[] = [
   [`${PROSE}curl -A 'Mozilla 5' x`],
   ['echo "$(date -u "+%H %M")"'],
   ['echo "$(ls -u "a b" x)"'],
-  // A line continuation at either end of a word only separates words.
   ["curl x \\\n-u 'me:S3 CRET9' y", "-u 'me:S3 CRET9'"],
   ["curl --user\\\n  'me:S3 CRET9' x", "--user\\\n  'me:S3 CRET9'"],
   ['docker login -p\\\n  S3CRET9 r', '-p\\\n  S3CRET9'],
