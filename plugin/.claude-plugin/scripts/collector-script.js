@@ -140,9 +140,13 @@ function valueEnd(text, from, quote) {
 }
 function reopenedClose(text, at, quote) {
   if (quote === "comment" || unitAt(text, at, quote) !== CLOSE) return -1;
-  let i = skipPlain(text, at + 1);
-  while (isBlank(text.charCodeAt(i)) && i - at <= MAX_QUOTED_PART) i = skipPlain(text, i + 1);
-  return text[i] === text[at] && i - at <= MAX_QUOTED_PART ? i : -1;
+  const limit = at + 1 + MAX_QUOTED_PART;
+  const word = skipPlain(text, at + 1);
+  let i = word;
+  while (i < limit && isBlank(text.charCodeAt(i)) && text.charCodeAt(i + 1) !== HASH) {
+    i = skipPlain(text, i + 1);
+  }
+  return text[i] === text[at] && (i === word || i <= limit) ? i : -1;
 }
 function plainPrefix(text, from) {
   let i = skipPlain(text, from);
@@ -217,18 +221,19 @@ var headerValue = (text, match, quote, spans) => {
 };
 var headerWordValue = (text, match, quote, spans) => {
   const after = match[2];
-  const closed = quote === "none" ? quoteOpenedBy(match[1], "none") : "none";
-  if (closed !== "none") {
-    const close = reopenedClose(text, text.lastIndexOf(match[1], match.index), closed);
-    if (close >= 0) return pushValue(spans, match.index + 1, match.index + match[0].length, close);
-  }
+  const from = match.index + match[0].length;
+  const start = match.index + 1 + (after?.length ?? 0);
+  const close = after !== void 0 ? reopenedClose(text, match.index + 1, quote) : quote === "none" && match[1] !== void 0 ? reopenedClose(
+    text,
+    text.lastIndexOf(match[1], match.index),
+    quoteOpenedBy(match[1], quote)
+  ) : -1;
+  if (close >= 0) return pushValue(spans, start, from, close);
   const before = quote === "none" ? void 0 : match[1];
   const beforeOpensQuote = quoteOpenedBy(before, "none") === (quote === "ansi" ? "single" : quote);
   const outside = after === void 0 && beforeOpensQuote ? "none" : quote;
   const inside = quoteOpenedBy(after ?? before, outside);
-  const from = match.index + match[0].length;
   if (inside === "none") return from;
-  const start = match.index + 1 + (after?.length ?? 0);
   return pushValue(spans, start, from, readValue(text, from, outside, inside));
 };
 var NAME = /(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-z])\s*[=:]\s*/gi;
@@ -260,7 +265,12 @@ var ESCAPED_P = new RegExp(String.raw`(?<=${AFTER_ESCAPE})-p`, "y");
 var PORT_MAPPING = /[\d.]+:\d/y;
 var REDIRECT = /&>>?|[<>][<>&|]*/y;
 var CONTINUATION_AT = new RegExp(CONTINUATION, "y");
-var LAST_CONTINUATIONS = new RegExp(String.raw`(?:${CONTINUATION})+$`);
+var CONTINUATION_END = new RegExp(String.raw`(?:${CONTINUATION})$`);
+function continuationBefore(text, from, end) {
+  const last = text.charCodeAt(end - 1);
+  if (last !== LF && last !== 110) return 0;
+  return CONTINUATION_END.exec(text.slice(Math.max(from, end - 4), end))?.[0].length ?? 0;
+}
 var WORD_START = new RegExp(String.raw`(?<!\w)|(?<=${AFTER_ESCAPE})`, "y");
 function startsWord(text, index) {
   WORD_START.lastIndex = index;
@@ -275,8 +285,7 @@ function commandWords(text, match, quote, visit) {
       i = CONTINUATION_AT.lastIndex;
       continue;
     }
-    const c = unitAt(text, i, quote);
-    if (isSpace(c) && c !== LF) {
+    if (isSpace(unitAt(text, i, quote)) && text.charCodeAt(i) !== LF) {
       i += unitLength(text, i, quote);
       continue;
     }
@@ -287,9 +296,11 @@ function commandWords(text, match, quote, visit) {
     }
     const end = valueEnd(text, i, quote);
     if (end === i) return i;
-    const last = text.charCodeAt(end - 1);
-    const continued = last === LF || last === 110 ? LAST_CONTINUATIONS.exec(text.slice(i, end)) : null;
-    visit(i, end - (continued?.[0].length ?? 0));
+    let last = end;
+    for (let n = continuationBefore(text, i, last); n > 0; n = continuationBefore(text, i, last)) {
+      last -= n;
+    }
+    visit(i, last);
     i = end;
   }
 }

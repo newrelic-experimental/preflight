@@ -59,6 +59,9 @@ const KEEPS_COMMAND: Row[] = [
   ['echo "$(curl -u "me:S3 CRET9" x)" ; rm -rf /tmp/x', '-u "me:S3 CRET9"'],
   ["curl -u\\\n  'me:S3 CRET9' x && rm -rf /tmp/x", "-u\\\n  'me:S3 CRET9'"],
   ["Don't paste: curl -u 'a ; rm -rf /tmp/x ; echo 'x"],
+  ["Don't paste: curl -u 'a\nrm -rf /tmp/x' y"],
+  ["Don't paste: curl -u 'me:a #b' x\nrm -rf /tmp/x"],
+  ["Don't paste: curl -H 'X-Api-Key: a #b' x\nrm -rf /tmp/x", 'X-Api-Key: a'],
 ];
 
 const REDACTS: Row[] = [
@@ -221,6 +224,13 @@ const REDACTS: Row[] = [
   // The text's quote, as an apostrophe in prose or "$( opens it, reads the value's quote as a closer.
   [`${PROSE}curl -u 'me:S3 CRET9' x`, "-u 'me:S3 CRET9'"],
   [`${PROSE}curl --user 'me:S3 CRET9' x`, "--user 'me:S3 CRET9'"],
+  [`${PROSE}curl -u 'me:S3\tCRET9' x`, "-u 'me:S3\tCRET9'"],
+  [`${PROSE}curl -u '${'a'.repeat(4094)} b' x`, `-u '${'a'.repeat(4094)} b'`],
+  [`${PROSE}curl -u '${'a'.repeat(4095)} b' x`],
+  [`${PROSE}tool --password '${'a'.repeat(4097)}' x`, `--password '${'a'.repeat(4097)}'`],
+  [`${PROSE}http x X-Api-Key:'S3 CRET9'`, 'S3 CRET9'],
+  [`${PROSE}curl -H X-Api-Key:'S3 CRET9' x`, 'S3 CRET9'],
+  ['echo "$(http x X-Api-Key:"S3 CRET9")"', 'S3 CRET9'],
   [`${PROSE}curl -H 'X-Api-Key: S3 CRET9' x`, 'X-Api-Key: S3 CRET9'],
   [`${PROSE}curl -sH 'X-Api-Key: S3 CRET9' x`, ' S3 CRET9'],
   [`${PROSE}curl -H\\\n  'X-Api-Key: S3 CRET9' x`, 'X-Api-Key: S3 CRET9'],
@@ -246,10 +256,8 @@ const REDACTS: Row[] = [
   [JSON.stringify("curl x \\\n-u 'me:S3 CRET9' y"), "-u 'me:S3 CRET9'"],
   [JSON.stringify("curl --user\\\n  'me:S3 CRET9' x"), "--user\\\\\\n  'me:S3 CRET9'"],
   [JSON.stringify('docker login -p\\\n  S3CRET9 r'), '-p\\\\\\n  S3CRET9'],
-  // A JSON-escaped line break ends the command.
-  [JSON.stringify('curl x\nls -u f')],
-  [JSON.stringify('curl x\nls -lH api-key f')],
-  [JSON.stringify('curl x\r\nsort -t , -k2 f')],
+  // Bash keeps \n in a double-quoted string, so it does not end the command there.
+  ['bash -c "curl x \\n -u me:S3CRET9"', '-u me:S3CRET9'],
   // Known over-redaction: no word boundary before the joined header name.
   ['grep -Hapi-key file', 'api-key file'],
   ['git log -Hauth-token x', 'auth-token x'],

@@ -168,13 +168,18 @@ function valueEnd(text: string, from: number, quote: Quote): number {
 }
 
 // Where the quote at `at` closes when it closes the quote the text is in but the command, read
-// alone, opens one there. The part must hold only plain characters and blanks, on one line, so
-// that hiding it whole cannot change how the rest of the text is read. -1 when it does not.
+// alone, opens one there. -1 unless the part holds only plain characters and blanks on one line,
+// with no `#` that would start a comment after a blank, so that hiding it whole cannot change how
+// the rest of the text is read. A part with a blank is at most MAX_QUOTED_PART long.
 function reopenedClose(text: string, at: number, quote: Quote): number {
   if (quote === 'comment' || unitAt(text, at, quote) !== CLOSE) return -1;
-  let i = skipPlain(text, at + 1);
-  while (isBlank(text.charCodeAt(i)) && i - at <= MAX_QUOTED_PART) i = skipPlain(text, i + 1);
-  return text[i] === text[at] && i - at <= MAX_QUOTED_PART ? i : -1;
+  const limit = at + 1 + MAX_QUOTED_PART;
+  const word = skipPlain(text, at + 1);
+  let i = word;
+  while (i < limit && isBlank(text.charCodeAt(i)) && text.charCodeAt(i + 1) !== HASH) {
+    i = skipPlain(text, i + 1);
+  }
+  return text[i] === text[at] && (i === word || i <= limit) ? i : -1;
 }
 
 // A long quoted part may still close later, so the value stops before any quote or backslash, and
@@ -271,21 +276,28 @@ const headerValue: Redact = (text, match, quote, spans) => {
   return pushValue(spans, match.index + match[1].length, from, end);
 };
 
-// Outside a quote, a quote before the name closed one, so the word may reopen it.
+// The quote after the colon may close the quote the text is in. Outside a quote, the quote before
+// the name closed one. Either way the word may reopen it.
 const headerWordValue: Redact = (text, match, quote, spans) => {
   const after: string | undefined = match[2];
-  const closed = quote === 'none' ? quoteOpenedBy(match[1], 'none') : 'none';
-  if (closed !== 'none') {
-    const close = reopenedClose(text, text.lastIndexOf(match[1], match.index), closed);
-    if (close >= 0) return pushValue(spans, match.index + 1, match.index + match[0].length, close);
-  }
+  const from = match.index + match[0].length;
+  const start = match.index + 1 + (after?.length ?? 0);
+  const close =
+    after !== undefined
+      ? reopenedClose(text, match.index + 1, quote)
+      : quote === 'none' && match[1] !== undefined
+        ? reopenedClose(
+            text,
+            text.lastIndexOf(match[1], match.index),
+            quoteOpenedBy(match[1], quote),
+          )
+        : -1;
+  if (close >= 0) return pushValue(spans, start, from, close);
   const before = quote === 'none' ? undefined : match[1];
   const beforeOpensQuote = quoteOpenedBy(before, 'none') === (quote === 'ansi' ? 'single' : quote);
   const outside = after === undefined && beforeOpensQuote ? 'none' : quote;
   const inside = quoteOpenedBy(after ?? before, outside);
-  const from = match.index + match[0].length;
   if (inside === 'none') return from;
-  const start = match.index + 1 + (after?.length ?? 0);
   return pushValue(spans, start, from, readValue(text, from, outside, inside));
 };
 
@@ -329,7 +341,14 @@ const ESCAPED_P = new RegExp(String.raw`(?<=${AFTER_ESCAPE})-p`, 'y');
 const PORT_MAPPING = /[\d.]+:\d/y;
 const REDIRECT = /&>>?|[<>][<>&|]*/y;
 const CONTINUATION_AT = new RegExp(CONTINUATION, 'y');
-const LAST_CONTINUATIONS = new RegExp(String.raw`(?:${CONTINUATION})+$`);
+const CONTINUATION_END = new RegExp(String.raw`(?:${CONTINUATION})$`);
+
+// The length of the line continuation, raw or JSON-escaped, that ends at `end` after `from`, or 0.
+function continuationBefore(text: string, from: number, end: number): number {
+  const last = text.charCodeAt(end - 1);
+  if (last !== LF && last !== 0x6e) return 0;
+  return CONTINUATION_END.exec(text.slice(Math.max(from, end - 4), end))?.[0].length ?? 0;
+}
 
 // A command name starts a word, possibly right after an escape that ends in a letter (\ncurl).
 const WORD_START = new RegExp(String.raw`(?<!\w)|(?<=${AFTER_ESCAPE})`, 'y');
@@ -340,8 +359,9 @@ function startsWord(text: string, index: number): boolean {
 }
 
 // When the match starts a word, visits each word after it up to the end of its command, and returns
-// that end. A redirection such as 2>&1 does not end the command, a line break does, JSON-escaped or
-// not, and a line continuation at either end of a word only separates words.
+// that end. A redirection such as 2>&1 does not end the command, a JSON-escaped line break only
+// separates words, since bash keeps \n in a double-quoted string, and a line continuation at either
+// end of a word only separates words.
 function commandWords(
   text: string,
   match: RegExpExecArray,
@@ -356,8 +376,7 @@ function commandWords(
       i = CONTINUATION_AT.lastIndex;
       continue;
     }
-    const c = unitAt(text, i, quote);
-    if (isSpace(c) && c !== LF) {
+    if (isSpace(unitAt(text, i, quote)) && text.charCodeAt(i) !== LF) {
       i += unitLength(text, i, quote);
       continue;
     }
@@ -368,11 +387,11 @@ function commandWords(
     }
     const end = valueEnd(text, i, quote);
     if (end === i) return i;
-    // A line continuation ends in a line break, raw or JSON-escaped (\n).
-    const last = text.charCodeAt(end - 1);
-    const continued =
-      last === LF || last === 0x6e ? LAST_CONTINUATIONS.exec(text.slice(i, end)) : null;
-    visit(i, end - (continued?.[0].length ?? 0));
+    let last = end;
+    for (let n = continuationBefore(text, i, last); n > 0; n = continuationBefore(text, i, last)) {
+      last -= n;
+    }
+    visit(i, last);
     i = end;
   }
 }
