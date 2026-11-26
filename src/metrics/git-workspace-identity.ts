@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname, resolve as resolvePath } from 'node:path';
 
 import { parseGitRemote, repoNameFromRemote, type ParsedGitRemote } from '../lib/git-remote.js';
@@ -58,8 +58,7 @@ const sshHostCache = new Map<string, { hostname: string | null; resolvedAt: numb
 /** The host an ssh remote's host name really reaches, as `ssh -G` reads it
  *  from `~/.ssh/config`, lowercased, or null when ssh can't say. `gh` resolves
  *  a remote the same way, so a `Host github-work` alias for github.com reads
- *  as github.com. Cached across resolvers, because the dashboard builds one
- *  per request. */
+ *  as github.com. Cached across resolvers, so every instance shares one answer. */
 export function sshConfiguredHostName(host: string): string | null {
   const now = Date.now();
   const cached = sshHostCache.get(host);
@@ -120,6 +119,29 @@ export function cacheKeyOf(dir: string): string {
   return process.platform === 'win32' ? abs.toLowerCase() : abs;
 }
 
+/** The nearest directory at or above `dir` holding a `.git` entry, found with
+ *  stat calls and no `git` process, or null when there is none. A `dir` that
+ *  no longer exists has no root of its own, so it keeps a key of its own too:
+ *  its failed lookup must not stand for the repo it used to be in. */
+function repoRootOf(dir: string): string | null {
+  let current = resolvePath(dir);
+  if (!existsSync(current)) return null;
+  for (;;) {
+    if (existsSync(`${current}/.git`)) return current;
+    const parent = dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+/** The cache key for `dir`: its repo root when one is on disk, so every
+ *  directory under one repo shares one entry and costs one set of `git`
+ *  lookups. Worktree identity, remotes and the gh default are all repo-wide,
+ *  so a subdirectory asks git for nothing its root does not already answer. */
+function lookupKeyOf(dir: string): string {
+  return cacheKeyOf(repoRootOf(dir) ?? dir);
+}
+
 interface Remotes {
   /** Every remote's lowercased `owner/name`, fetch and push URLs alike. */
   readonly names: readonly string[];
@@ -145,7 +167,7 @@ export class WorktreeIdentityResolver {
   resolve(dir: string | null | undefined): WorktreeIdentity | null {
     if (typeof dir !== 'string' || dir.length === 0) return null;
 
-    const key = cacheKeyOf(dir);
+    const key = lookupKeyOf(dir);
     const cached = this.cache.get(key);
     const now = Date.now();
 
@@ -208,7 +230,7 @@ export class WorktreeIdentityResolver {
   ghBaseRepoName(dir: string | null | undefined): string | null {
     const fetchNames = this.remotes(dir)?.fetchNameByRemote;
     if (!fetchNames || typeof dir !== 'string') return null;
-    const key = cacheKeyOf(dir);
+    const key = lookupKeyOf(dir);
     const now = Date.now();
     const cached = this.ghBaseCache.get(key);
     if (cached && now - cached.resolvedAt < this.ttlMs) return cached.name;
@@ -243,7 +265,7 @@ export class WorktreeIdentityResolver {
    *  not cached. */
   private remotes(dir: string | null | undefined): Remotes | null {
     if (typeof dir !== 'string' || dir.length === 0) return null;
-    const key = cacheKeyOf(dir);
+    const key = lookupKeyOf(dir);
     const now = Date.now();
     const cached = this.remotesCache.get(key);
     if (cached && now - cached.resolvedAt < this.ttlMs) return cached.remotes;

@@ -78,7 +78,7 @@ function stripRemotePrefix(ref: string): string {
  * and a short-TTL cache of each workspace's live branch/divergence state.
  */
 export class GitWorkspaceReporter {
-  private readonly identityResolver = new WorktreeIdentityResolver();
+  private readonly identityResolver: WorktreeIdentityResolver;
   private readonly store = new ActivityStore<GitActivityRecord>();
   private readonly recorder: GitActivityRecorder;
   private readonly liveStateTtlMs: number;
@@ -89,7 +89,12 @@ export class GitWorkspaceReporter {
   private readonly knownWorkspacesRegistry = new Map<string, WorktreeIdentity>();
   private readonly liveStateCache = new Map<string, WorktreeLiveState>();
 
-  constructor(config?: { readonly liveStateTtlMs?: number }) {
+  constructor(config?: {
+    readonly liveStateTtlMs?: number;
+    /** Shared with startup replay and the dashboard, so one repo is resolved once. */
+    readonly identityResolver?: WorktreeIdentityResolver;
+  }) {
+    this.identityResolver = config?.identityResolver ?? new WorktreeIdentityResolver();
     this.recorder = new GitActivityRecorder(this.store, this.identityResolver);
     this.liveStateTtlMs = config?.liveStateTtlMs ?? DEFAULT_LIVE_STATE_TTL_MS;
   }

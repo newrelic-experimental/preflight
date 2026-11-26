@@ -1430,7 +1430,12 @@ async function main(): Promise<void> {
     });
     const turnTracker = new TurnTracker();
     const gitEfficiencyTracker = new GitEfficiencyTracker();
-    const gitWorkspaceReporter = new GitWorkspaceReporter();
+    // One identity resolver for the whole process: the live reporter, startup
+    // replay below and the dashboard all look up the same repos.
+    const gitWorkspaceIdentityResolver = new WorktreeIdentityResolver();
+    const gitWorkspaceReporter = new GitWorkspaceReporter({
+      identityResolver: gitWorkspaceIdentityResolver,
+    });
     // Day-boundary reset bookkeeping for gitEfficiencyTracker: the
     // tracker has a reset() method but, unlike costTracker/modelUsageTracker/
     // contextCompositionTracker/turnCostAttributor (reset at session
@@ -1645,10 +1650,6 @@ async function main(): Promise<void> {
     // worked on in a different repo earlier today doesn't get counted
     // against whichever repo this process's header currently names.
     const todaySessions = sessionStore.loadSessionsOverlappingToday();
-    // Shared across every session in this loop (not one fresh resolver per
-    // session) so its per-directory cache stays warm across sessions that
-    // touch the same worktree.
-    const gitWorkspaceIdentityResolver = new WorktreeIdentityResolver();
     for (const session of todaySessions) {
       if (session.sessionId === currentSessionId) continue;
       if (session.timeline && session.timeline.length > 0) {
@@ -2057,6 +2058,7 @@ async function main(): Promise<void> {
         bus: liveBus,
         staticDir,
         api: {
+          identityResolver: gitWorkspaceIdentityResolver,
           sessionTracker,
           auditTrailManager: auditTrail,
           artifactIndex: config.experimentalArtifacts ? createArtifactIndex(auditTrail) : undefined,

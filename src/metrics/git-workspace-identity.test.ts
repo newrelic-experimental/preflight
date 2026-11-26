@@ -6,7 +6,15 @@ import {
   type SpawnSyncOptions,
   type SpawnSyncReturns,
 } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import {
@@ -64,6 +72,8 @@ function getCurrentBranch(dir: string): string {
 describe('WorktreeIdentityResolver', () => {
   let resolver: WorktreeIdentityResolver;
   let tmpDir: string;
+  // The fake git scripts are POSIX shell scripts, so there is nothing to run on win32.
+  const itPosix = process.platform === 'win32' ? it.skip : it;
 
   beforeEach(() => {
     resolver = new WorktreeIdentityResolver();
@@ -234,6 +244,47 @@ describe('WorktreeIdentityResolver', () => {
     expect(identity1!.worktreeLabel).toBe(identity2!.worktreeLabel);
   });
 
+  // Counts `git` processes with a logging shim first on PATH, so the test sees
+  // real spawns and needs no seam in the resolver.
+  itPosix('spawns git for one repo once, however many subdirectories it resolves', () => {
+    const repoDir = join(tmpDir, 'many-dirs-repo');
+    mkdirSync(repoDir);
+    initGitRepo(repoDir);
+    const subdirs = Array.from({ length: 20 }, (_, i) => join(repoDir, `pkg-${i}`, 'src'));
+    for (const subdir of subdirs) mkdirSync(subdir, { recursive: true });
+
+    const binDir = join(tmpDir, 'counting-git-bin');
+    mkdirSync(binDir);
+    const countFile = join(tmpDir, 'git-spawns.log');
+    const realGit = nodeSpawnSync('sh', ['-c', 'command -v git'], {
+      encoding: 'utf-8',
+    }).stdout.trim();
+    const fakeGit = join(binDir, 'git');
+    writeFileSync(fakeGit, `#!/bin/sh\necho x >> "${countFile}"\nexec "${realGit}" "$@"\n`);
+    chmodSync(fakeGit, 0o755);
+
+    const spawnsResolving = (dirs: readonly string[]): number => {
+      rmSync(countFile, { force: true });
+      const fresh = new WorktreeIdentityResolver();
+      for (const dir of dirs) {
+        expect(fresh.resolve(dir)).toMatchObject({ worktreeLabel: 'primary' });
+      }
+      return existsSync(countFile)
+        ? readFileSync(countFile, 'utf-8').split('\n').filter(Boolean).length
+        : 0;
+    };
+
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${binDir}${delimiter}${originalPath}`;
+    try {
+      const oneDirectory = spawnsResolving(subdirs.slice(0, 1));
+      expect(oneDirectory).toBeGreaterThan(0);
+      expect(spawnsResolving(subdirs)).toBe(oneDirectory);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
   it('handles resolve(null) gracefully', () => {
     const identity = resolver.resolve(null);
     expect(identity).toBeNull();
@@ -289,9 +340,6 @@ describe('WorktreeIdentityResolver', () => {
       done();
     }, 30_100);
   }, 40_000);
-
-  // The fake git is a POSIX shell script, so there is nothing to run on win32.
-  const itPosix = process.platform === 'win32' ? it.skip : it;
 
   itPosix(
     'does not cache a git timeout as a miss',
