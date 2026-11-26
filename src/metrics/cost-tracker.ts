@@ -555,6 +555,7 @@ export class CostTracker implements Resettable {
   private own = new CostBook();
   private currentModel: string | null = null;
   private latestCostBreakdown: CostBreakdown | null = null;
+  private retractedEstimates = false;
   /** Earliest start among the persisted sessions seeded into this tracker, so spend carried over from before a restart is not spread over only the new process's age. */
   private seededSessionStartMs: number | null = null;
   /**
@@ -619,11 +620,11 @@ export class CostTracker implements Resettable {
    * `agentId` for per-run and subagent/parent cost attribution.
    */
   recordTokenUsage(usage: TokenUsage, model: string, ctx?: TokenRecordContext): CostBreakdown {
+    const replaces = ctx?.replacesEstimates === true && ctx.agentId === undefined;
+    if (replaces && this.held.hasByteEstimateHistory) this.retractedEstimates = true;
     for (const book of this.books()) {
       book.reportCount++;
-      if (ctx?.replacesEstimates === true && ctx.agentId === undefined) {
-        book.discardByteEstimates();
-      }
+      if (replaces) book.discardByteEstimates();
     }
     return this.accumulateTokens(usage, model, ctx);
   }
@@ -937,6 +938,11 @@ export class CostTracker implements Resettable {
     return this.metricsOf(this.held);
   }
 
+  /** A real report replaced byte estimates this tracker held, seeded ones included. */
+  hasRetractedEstimates(): boolean {
+    return this.retractedEstimates;
+  }
+
   /** Only what this process produced itself, plus any `drainedHere` seed. */
   getOwnMetrics(): CostMetrics {
     return this.metricsOf(this.own);
@@ -1075,6 +1081,7 @@ export class CostTracker implements Resettable {
     this.own = new CostBook();
     this.currentModel = null;
     this.latestCostBreakdown = null;
+    this.retractedEstimates = false;
     this.subagentByAgentType = new Map();
     this.highContextCostUsd = 0;
     this.apiDurationMs = null;

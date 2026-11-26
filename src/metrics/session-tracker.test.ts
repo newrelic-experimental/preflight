@@ -1084,6 +1084,44 @@ describe('SessionTracker', () => {
       expect(tracker.getMetrics().toolCallCount).toBe(10_003);
     });
 
+    it('counts a seeded call it records once 10,000 later calls have pushed its id out', () => {
+      const tracker = new SessionTracker('test-session');
+      tracker.seedFromPersisted({
+        sessionId: 'sess-001',
+        toolCallCount: 1,
+        bashCommandCount: 0,
+        toolNameByUseId: new Map([['toolu_split', 'Read']]),
+      });
+      for (let i = 0; i < 10_000; i++)
+        tracker.recordToolCall(makeRecord({ toolUseId: `toolu_later${i}` }));
+
+      tracker.recordToolCall(makeRecord({ toolUseId: 'toolu_split' }));
+
+      expect(tracker.getMetrics().toolCallCount).toBe(10_002);
+    });
+
+    it('drops the seed and its repeated calls when it replaces a wrong guess', () => {
+      const tracker = new SessionTracker('sess-001');
+      tracker.seedFromPersisted({
+        sessionId: 'sess-001',
+        toolCallCount: 2,
+        bashCommandCount: 0,
+        toolNameByUseId: new Map([
+          ['toolu_a', 'Read'],
+          ['toolu_b', 'Read'],
+        ]),
+      });
+      tracker.recordToolCall(makeRecord({ toolUseId: 'toolu_a' }));
+
+      tracker.adoptSessionId('sess-001', [], true);
+      expect(tracker.getMetrics().toolCallCount).toBe(0);
+      expect(tracker.getOwnCallCounts().toolCallCount).toBe(0);
+      tracker.recordToolCall(makeRecord({ toolUseId: 'toolu_b' }));
+
+      expect(tracker.getMetrics().toolCallCount).toBe(1);
+      expect(tracker.getOwnCallCounts().toolCallCount).toBe(1);
+    });
+
     it('does not count a seeded call again when its record has no session id', () => {
       const tracker = new SessionTracker('sess-001');
       tracker.seedFromPersisted({

@@ -97,6 +97,25 @@ const DEFAULT_SPEED_BASELINE_LPS = 1; // 1 line per second = perfect speed
 
 const MAX_SCORES = 1_000;
 
+/** Each seeded value times its sample count, summed. */
+interface WeightedSums {
+  readonly score: number;
+  readonly speed: number;
+  readonly correctness: number;
+  readonly autonomy: number;
+  readonly firstAttempt: number;
+  readonly count: number;
+}
+
+const NO_SEED: WeightedSums = {
+  score: 0,
+  speed: 0,
+  correctness: 0,
+  autonomy: 0,
+  firstAttempt: 0,
+  count: 0,
+};
+
 // A single clarifying question on a genuinely ambiguous task is correct
 // behavior, not an efficiency failure, so it isn't penalized at all.
 // Hand-picked judgment call (not derived from data, like the other
@@ -138,12 +157,7 @@ export class EfficiencyScorer implements Resettable {
   // checkpoint is already itself an average (not raw per-task scores), so
   // seeding accumulates a weighted contribution (value * sampleCount) rather
   // than raw per-task totals like CostTracker.seedFromPersisted() does.
-  private seededScoreSum = 0;
-  private seededSpeedSum = 0;
-  private seededCorrectnessSum = 0;
-  private seededAutonomySum = 0;
-  private seededFirstAttemptSum = 0;
-  private seededSampleCount = 0;
+  private seeded: WeightedSums = { ...NO_SEED };
 
   constructor(options?: EfficiencyScoreOptions) {
     this.speedWeight = options?.speedWeight ?? DEFAULT_SPEED_WEIGHT;
@@ -201,26 +215,38 @@ export class EfficiencyScorer implements Resettable {
    */
   seedFromPersisted(seed: EfficiencyScoreSeed): void {
     if (seed.sampleCount <= 0) return;
-    this.seededScoreSum += seed.score * seed.sampleCount;
-    this.seededSpeedSum += seed.components.speed * seed.sampleCount;
-    this.seededCorrectnessSum += seed.components.correctness * seed.sampleCount;
-    this.seededAutonomySum += seed.components.autonomy * seed.sampleCount;
-    this.seededFirstAttemptSum += seed.components.firstAttemptQuality * seed.sampleCount;
-    this.seededSampleCount += seed.sampleCount;
+    const { score, components, sampleCount } = seed;
+    this.seeded = {
+      score: this.seeded.score + score * sampleCount,
+      speed: this.seeded.speed + components.speed * sampleCount,
+      correctness: this.seeded.correctness + components.correctness * sampleCount,
+      autonomy: this.seeded.autonomy + components.autonomy * sampleCount,
+      firstAttempt: this.seeded.firstAttempt + components.firstAttemptQuality * sampleCount,
+      count: this.seeded.count + sampleCount,
+    };
   }
 
   /**
    * Session-wide rolling average across all scored tasks.
    */
   getSessionAverage(): EfficiencyScore | null {
-    const n = this.scores.length + this.seededSampleCount;
+    return this.averageWith(this.seeded);
+  }
+
+  /** `getSessionAverage()` without any seed. Its sample count is `getScores().length`. */
+  getOwnSessionAverage(): EfficiencyScore | null {
+    return this.averageWith(NO_SEED);
+  }
+
+  private averageWith(seeded: WeightedSums): EfficiencyScore | null {
+    const n = this.scores.length + seeded.count;
     if (n === 0) return null;
 
-    let totalScore = this.seededScoreSum;
-    let totalSpeed = this.seededSpeedSum;
-    let totalCorrectness = this.seededCorrectnessSum;
-    let totalAutonomy = this.seededAutonomySum;
-    let totalFirstAttempt = this.seededFirstAttemptSum;
+    let totalScore = seeded.score;
+    let totalSpeed = seeded.speed;
+    let totalCorrectness = seeded.correctness;
+    let totalAutonomy = seeded.autonomy;
+    let totalFirstAttempt = seeded.firstAttempt;
 
     for (const s of this.scores) {
       totalScore += s.score;
@@ -253,7 +279,7 @@ export class EfficiencyScorer implements Resettable {
    * pairs with getSessionAverage()'s seed-inclusive score.
    */
   getSessionSampleCount(): number {
-    return this.scores.length + this.seededSampleCount;
+    return this.scores.length + this.seeded.count;
   }
 
   /**
@@ -313,12 +339,7 @@ export class EfficiencyScorer implements Resettable {
   reset(_sessionId: string): void {
     this.scores.length = 0;
     this.lastEmittedIndex = 0;
-    this.seededScoreSum = 0;
-    this.seededSpeedSum = 0;
-    this.seededCorrectnessSum = 0;
-    this.seededAutonomySum = 0;
-    this.seededFirstAttemptSum = 0;
-    this.seededSampleCount = 0;
+    this.seeded = { ...NO_SEED };
   }
 
   // ---------------------------------------------------------------------------

@@ -72,6 +72,12 @@ export interface SessionMetrics {
   timelineEntryCount: number;
 }
 
+/** What a session summary takes from a tracker's calls. */
+export type CallCounts = Pick<
+  SessionMetrics,
+  'toolCallCount' | 'toolCallCountByTool' | 'bashCommandsRun' | 'toolSuccessRate'
+>;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -160,6 +166,25 @@ export interface SessionTrackerSeed {
   readonly toolNameByUseId: ReadonlyMap<string, string>;
 }
 
+/**
+ * Calls this tracker drained whose toolUseId a seed already counted. Its
+ * metrics leave them out. Its own share counts them, because they are in its
+ * timeline and the fold takes each call two writers hold out once.
+ */
+class SeededRepeats {
+  count = 0;
+  bashCount = 0;
+  successCount = 0;
+  readonly byTool = new Map<string, number>();
+
+  add(record: ToolCallRecord, delta: 1 | -1): void {
+    this.count += delta;
+    if (record.toolName === 'Bash') this.bashCount += delta;
+    addCount(this.byTool, record.toolName, delta);
+    if (record.success) this.successCount += delta;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // SessionTracker
 // ---------------------------------------------------------------------------
@@ -201,6 +226,12 @@ export class SessionTracker implements Resettable {
   private readonly maxAmendable: number;
   /** The most recent calls counted, seeded ones included, so a call another process also drained counts once. */
   private readonly toolNameByCountedKey = new Map<string, string>();
+  /** Keys a seed added to the counted ones that this tracker has not drained. */
+  private readonly seededKeys = new Set<string>();
+  private seededToolCallCount = 0;
+  private seededBashCommandCount = 0;
+  private seededRepeats = new SeededRepeats();
+  private readonly amendableRepeats = new Map<string, ToolCallRecord>();
   /** What getMetrics() shows until this engine adopts a session, which some engines never do. */
   private drainedWhilePending: SessionTracker | null;
   /** Set by a pending or adopted id, whose engine also drains other sessions' calls. */
@@ -230,6 +261,12 @@ export class SessionTracker implements Resettable {
     }
     if (record.toolUseId) {
       const key = countedKey(record.sessionId ?? this.sessionId, record.toolUseId);
+      if (this.seededKeys.delete(key)) {
+        this.seededRepeats.add(record, 1);
+        if (isAwaitingLatePost(record))
+          this.keepAmendable(this.amendableRepeats, record.id, record);
+        return;
+      }
       if (this.toolNameByCountedKey.has(key)) return;
       this.rememberCounted(key, record.toolName);
     }
@@ -306,10 +343,13 @@ export class SessionTracker implements Resettable {
       success: record.success,
     });
     if (isAwaitingLatePost(record)) {
-      this.amendable.set(record.id, { record, timelineSequence });
-      if (this.amendable.size > this.maxAmendable)
-        this.amendable.delete(this.amendable.keys().next().value!);
+      this.keepAmendable(this.amendable, record.id, { record, timelineSequence });
     }
+  }
+
+  private keepAmendable<T>(records: Map<string, T>, id: string, value: T): void {
+    records.set(id, value);
+    if (records.size > this.maxAmendable) records.delete(records.keys().next().value!);
   }
 
   private applyOutcome(record: ToolCallRecord, delta: 1 | -1): void {
@@ -328,6 +368,13 @@ export class SessionTracker implements Resettable {
 
   amendToolCall(record: ToolCallRecord): void {
     this.drainedWhilePending?.amendToolCall(record);
+    const repeat = this.amendableRepeats.get(record.id);
+    if (repeat) {
+      this.amendableRepeats.delete(record.id);
+      this.seededRepeats.add(repeat, -1);
+      this.seededRepeats.add(record, 1);
+      return;
+    }
     const amended = this.amendable.get(record.id);
     if (!amended) return;
     this.amendable.delete(record.id);
@@ -385,8 +432,8 @@ export class SessionTracker implements Resettable {
       bashCallsByCategory[category] = count;
     }
 
-    const overallSuccessRate =
-      this.toolCallCount > 0 ? this.successCount / this.toolCallCount : null;
+    const toolCallCount = this.toolCallCount + this.seededToolCallCount;
+    const overallSuccessRate = toolCallCount > 0 ? this.successCount / toolCallCount : null;
 
     return {
       sessionId: this.sessionId,
@@ -395,7 +442,7 @@ export class SessionTracker implements Resettable {
       sessionIntent: this.sessionIntent,
       sessionStartTime: this.sessionStartTime,
       sessionDurationMs: Date.now() - this.sessionStartTime,
-      toolCallCount: this.toolCallCount,
+      toolCallCount,
       toolCallCountByTool,
       toolDurationMsByTool,
       toolSuccessRate: overallSuccessRate,
@@ -404,13 +451,30 @@ export class SessionTracker implements Resettable {
       toolErrorsByType,
       uniqueFilesRead: this.filesRead.size,
       uniqueFilesWritten: this.filesWritten.size,
-      bashCommandsRun: this.bashCommandsRun,
+      bashCommandsRun: this.bashCommandsRun + this.seededBashCommandCount,
       bashExitCodes,
       bashCallsByCategory,
       searchQueries: this.searchQueries,
       toolCallTimeline: [...this.timeline],
       timelineTruncated: this.timelineEntryCount > this.timeline.length,
       timelineEntryCount: this.timelineEntryCount,
+    };
+  }
+
+  /** Every call this tracker drained itself, once each, including ones a seed also counted. */
+  getOwnCallCounts(): CallCounts {
+    const repeats = this.seededRepeats;
+    const toolCallCountByTool = Object.fromEntries(this.toolCallCountByTool);
+    for (const [tool, n] of repeats.byTool) {
+      toolCallCountByTool[tool] = (toolCallCountByTool[tool] ?? 0) + n;
+    }
+    const toolCallCount = this.toolCallCount + repeats.count;
+    return {
+      toolCallCount,
+      toolCallCountByTool,
+      bashCommandsRun: this.bashCommandsRun + repeats.bashCount,
+      toolSuccessRate:
+        toolCallCount > 0 ? (this.successCount + repeats.successCount) / toolCallCount : null,
     };
   }
 
@@ -524,15 +588,21 @@ export class SessionTracker implements Resettable {
       if (toolName === 'Bash') bashCalls--;
     }
     // Remembering them only now keeps a full map from evicting the live ids the loop has yet to reach.
-    for (const [key, toolName] of unseen) this.rememberCounted(key, toolName);
+    for (const [key, toolName] of unseen) {
+      this.rememberCounted(key, toolName);
+      this.seededKeys.add(key);
+    }
     // A max-merged file can hold more ids than its count, so the overlap can exceed it.
-    this.toolCallCount += Math.max(0, calls);
-    this.bashCommandsRun += Math.max(0, bashCalls);
+    this.seededToolCallCount += Math.max(0, calls);
+    this.seededBashCommandCount += Math.max(0, bashCalls);
   }
 
   private rememberCounted(key: string, toolName: string): void {
-    if (this.toolNameByCountedKey.size >= MAX_TIMELINE_ENTRIES)
-      this.toolNameByCountedKey.delete(this.toolNameByCountedKey.keys().next().value!);
+    if (this.toolNameByCountedKey.size >= MAX_TIMELINE_ENTRIES) {
+      const oldest = this.toolNameByCountedKey.keys().next().value!;
+      this.toolNameByCountedKey.delete(oldest);
+      this.seededKeys.delete(oldest);
+    }
     this.toolNameByCountedKey.set(key, toolName);
   }
 
@@ -569,5 +639,10 @@ export class SessionTracker implements Resettable {
     this.timelineEntryCount = 0;
     this.amendable.clear();
     this.toolNameByCountedKey.clear();
+    this.seededKeys.clear();
+    this.seededToolCallCount = 0;
+    this.seededBashCommandCount = 0;
+    this.seededRepeats = new SeededRepeats();
+    this.amendableRepeats.clear();
   }
 }

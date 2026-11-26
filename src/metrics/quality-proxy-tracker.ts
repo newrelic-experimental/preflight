@@ -257,16 +257,29 @@ export class QualityProxyTracker {
   // session file never stores a stale derived rate; rates are always
   // recomputed at read time via getMetrics()/combineQualityProxyRawCounts().
   getRawCounts(): QualityProxyRawCounts {
+    const own = this.getOwnRawCounts();
+    const seeded = this.seededCounts;
     return {
-      totalSignals: this.events.length + this.seededCounts.totalSignals,
-      diffApplyCleanCount:
-        this.countBySignal('diff_applied_clean') + this.seededCounts.diffApplyCleanCount,
-      diffFailCount: this.countBySignal('diff_failed') + this.seededCounts.diffFailCount,
-      testPassCount: this.countBySignal('test_pass') + this.seededCounts.testPassCount,
-      testFailCount: this.countBySignal('test_fail') + this.seededCounts.testFailCount,
-      backtrackCount: this.countBySignal('backtrack') + this.seededCounts.backtrackCount,
-      selfCorrectionCount:
-        this.countBySignal('self_correction') + this.seededCounts.selfCorrectionCount,
+      totalSignals: own.totalSignals + seeded.totalSignals,
+      diffApplyCleanCount: own.diffApplyCleanCount + seeded.diffApplyCleanCount,
+      diffFailCount: own.diffFailCount + seeded.diffFailCount,
+      testPassCount: own.testPassCount + seeded.testPassCount,
+      testFailCount: own.testFailCount + seeded.testFailCount,
+      backtrackCount: own.backtrackCount + seeded.backtrackCount,
+      selfCorrectionCount: own.selfCorrectionCount + seeded.selfCorrectionCount,
+    };
+  }
+
+  /** `getRawCounts()` without any seed. */
+  getOwnRawCounts(): QualityProxyRawCounts {
+    return {
+      totalSignals: this.events.length,
+      diffApplyCleanCount: this.countBySignal('diff_applied_clean'),
+      diffFailCount: this.countBySignal('diff_failed'),
+      testPassCount: this.countBySignal('test_pass'),
+      testFailCount: this.countBySignal('test_fail'),
+      backtrackCount: this.countBySignal('backtrack'),
+      selfCorrectionCount: this.countBySignal('self_correction'),
     };
   }
 

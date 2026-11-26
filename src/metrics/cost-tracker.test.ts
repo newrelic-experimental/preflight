@@ -2402,3 +2402,30 @@ describe('getOwnMetrics()', () => {
     expect(tracker.getOwnMetrics().costByModel).toEqual({});
   });
 });
+
+describe('CostTracker.hasRetractedEstimates()', () => {
+  it('stays retracted after more estimates, until reset', () => {
+    const tracker = new CostTracker();
+    tracker.recordEstimatedTokens(4000, 1000, 'claude-sonnet-4-5-20250929');
+    tracker.recordTokenUsage(makeUsage(), 'claude-sonnet-4-5-20250929', {
+      replacesEstimates: true,
+    });
+    tracker.recordEstimatedTokens(4000, 1000, 'claude-sonnet-4-5-20250929');
+    expect(tracker.hasRetractedEstimates()).toBe(true);
+
+    tracker.reset('sess-1');
+
+    expect(tracker.hasRetractedEstimates()).toBe(false);
+  });
+
+  it('does not retract on a subagent report', () => {
+    const tracker = new CostTracker();
+    tracker.recordEstimatedTokens(4000, 1000, 'claude-sonnet-4-5-20250929');
+    tracker.recordTokenUsage(makeUsage(), 'claude-sonnet-4-5-20250929', {
+      replacesEstimates: true,
+      agentId: 'agent-1',
+    });
+
+    expect(tracker.hasRetractedEstimates()).toBe(false);
+  });
+});
