@@ -205,7 +205,10 @@ var HEADER = new RegExp(
   String.raw`((?:-H|--(?:proxy-)?header)(?:[\s=]|${CONTINUATION}){0,8}(${QUOTE})?)${CREDENTIAL_HEADER}`,
   "gi"
 );
-var CURL_HEADER = new RegExp(String.raw`((${QUOTE})?)${CREDENTIAL_HEADER}`, "iy");
+var CURL_HEADER = new RegExp(
+  String.raw`((?:${CONTINUATION})*(${QUOTE})?)${CREDENTIAL_HEADER}`,
+  "iy"
+);
 var UNESCAPED_QUOTE = String.raw`(?:(?<!\\)(${QUOTE}))`;
 var HEADER_WORD = new RegExp(
   String.raw`:(?<=${UNESCAPED_QUOTE}?(?:${KEY_HEADER}|${AUTH_HEADER}):)(${QUOTE})?(?:(?<=${KEY_HEADER}:(?:${QUOTE})?)|[ \t]{0,4}basic[ \t]{1,4})`,

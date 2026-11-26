@@ -253,8 +253,12 @@ const HEADER = new RegExp(
   String.raw`((?:-H|--(?:proxy-)?header)(?:[\s=]|${CONTINUATION}){0,8}(${QUOTE})?)${CREDENTIAL_HEADER}`,
   'gi',
 );
-// The value of a curl -H that ends a bundle of short options, as in -sSH, with HEADER's groups.
-const CURL_HEADER = new RegExp(String.raw`((${QUOTE})?)${CREDENTIAL_HEADER}`, 'iy');
+// The value of a curl -H that ends a bundle of short options, as in -sSH, with HEADER's groups. A
+// line continuation glued to the -H joins the two words.
+const CURL_HEADER = new RegExp(
+  String.raw`((?:${CONTINUATION})*(${QUOTE})?)${CREDENTIAL_HEADER}`,
+  'iy',
+);
 
 // httpie takes a header as one Name:value word, as curl -H does, so its quote may open after the
 // colon.
