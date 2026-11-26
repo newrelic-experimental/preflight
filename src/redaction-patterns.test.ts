@@ -62,6 +62,7 @@ const KEEPS_COMMAND: Row[] = [
   ["Don't paste: curl -u 'a\nrm -rf /tmp/x' y"],
   ["Don't paste: curl -u 'me:a #b' x\nrm -rf /tmp/x"],
   ["Don't paste: curl -H 'X-Api-Key: a #b' x\nrm -rf /tmp/x", 'X-Api-Key: a'],
+  ['curl -sHX-Api-Key:S3CRET9;rm -rf /tmp/x', 'X-Api-Key:S3CRET9'],
 ];
 
 const REDACTS: Row[] = [
@@ -231,13 +232,13 @@ const REDACTS: Row[] = [
   [`${PROSE}curl -H X-Api-Key:'S3 CRET9' x`, 'S3 CRET9'],
   ['echo "$(http x X-Api-Key:"S3 CRET9")"', 'S3 CRET9'],
   [`${PROSE}curl -H 'X-Api-Key: S3 CRET9' x`, 'X-Api-Key: S3 CRET9'],
-  [`${PROSE}curl -sH 'X-Api-Key: S3 CRET9' x`, ' S3 CRET9'],
+  [`${PROSE}curl -sH 'X-Api-Key: S3 CRET9' x`, 'X-Api-Key: S3 CRET9'],
   [`${PROSE}curl -H\\\n  'X-Api-Key: S3 CRET9' x`, 'X-Api-Key: S3 CRET9'],
   [`${PROSE}tool --password 'S3 CRET9' x`, "--password 'S3 CRET9'"],
   [`${PROSE}API_KEY='S3 CRET9' x`, "API_KEY='S3 CRET9'"],
   [`${PROSE}http x 'X-Api-Key: S3 CRET9'`, ' S3 CRET9'],
   ['echo "$(curl -H "X-Api-Key: S3 CRET9" x)"', 'X-Api-Key: S3 CRET9'],
-  ['echo "$(curl -sH "X-Api-Key: S3 CRET9" x)"', ' S3 CRET9'],
+  ['echo "$(curl -sH "X-Api-Key: S3 CRET9" x)"', 'X-Api-Key: S3 CRET9'],
   ['echo "$(http x "X-Api-Key: S3 CRET9")"', ' S3 CRET9'],
   [JSON.stringify(`${PROSE}curl -u 'me:S3 CRET9' x`), "-u 'me:S3 CRET9'"],
   [JSON.stringify('echo "$(curl -H "X-Api-Key: S3 CRET9" x)"'), 'X-Api-Key: S3 CRET9'],
@@ -258,6 +259,31 @@ const REDACTS: Row[] = [
   [JSON.stringify('docker login -p\\\n  S3CRET9 r'), '-p\\\\\\n  S3CRET9'],
   // Bash keeps \n in a double-quoted string, so it does not end the command there.
   ['bash -c "curl x \\n -u me:S3CRET9"', '-u me:S3CRET9'],
+  ['curl -sSH X-Api-Key:S3CRET9 x', 'X-Api-Key:S3CRET9'],
+  ['curl -sHX-Api-Key:S3CRET9 x', 'X-Api-Key:S3CRET9'],
+  ['curl -sSH "X-Api-Key: S3CRET9" x', 'X-Api-Key: S3CRET9'],
+  ["curl -sSH 'X-Api-Key: S3CRET9' x", 'X-Api-Key: S3CRET9'],
+  ['curl -sH"X-Api-Key: S3CRET9" x', 'X-Api-Key: S3CRET9'],
+  ['curl -sH X-Api-Key: S3CRET9 x', 'X-Api-Key: S3CRET9'],
+  ['curl -sSH "Authorization: Basic YQ==" x', ' Basic YQ=='],
+  ['curl -sH "Proxy-Authorization: Basic YQ==" x', ' Basic YQ=='],
+  ['curl -u "Authorization: Basic YQ=="x"', '-u "Authorization: Basic YQ=="x"'],
+  [JSON.stringify('curl -u x" TOKEN="N8 AM8"'), '-u x\\"', 'TOKEN=\\"N8 AM8\\"'],
+  ['curl -sHProxy-Authorization:Basic YQ== x', 'Proxy-Authorization:Basic YQ=='],
+  ['curl -o out.txt -sSH X-Api-Key:S3CRET9 x', 'X-Api-Key:S3CRET9'],
+  [JSON.stringify('curl -sSH X-Api-Key:S3CRET9 x'), 'X-Api-Key:S3CRET9'],
+  [JSON.stringify('curl -sHX-Api-Key:S3CRET9 x'), 'X-Api-Key:S3CRET9'],
+  [JSON.stringify('curl -sSH "X-Api-Key: S3CRET9" x'), 'X-Api-Key: S3CRET9'],
+  [JSON.stringify('curl -sHProxy-Authorization:Basic YQ== x'), 'Proxy-Authorization:Basic YQ=='],
+  ['grep -rH api-key file'],
+  ['du -sH x'],
+  ['ls -lH'],
+  ['curl -sS x'],
+  ['curl -sH foo:bar x'],
+  ['curl -sHs X-Api-Key:S3CRET9 x'],
+  ['curl -o -sH X-Api-Key:S3CRET9 x'],
+  ['curl -sA X-Api-Key:S3CRET9 x'],
+  ['curl --user-agent X-Api-Key:S3CRET9 x'],
   // Known over-redaction: no word boundary before the joined header name.
   ['grep -Hapi-key file', 'api-key file'],
   ['git log -Hauth-token x', 'auth-token x'],
@@ -372,6 +398,7 @@ describe('secret arguments', () => {
       ],
       ['http x Authorization:"Basic YQ=="', '{"command":"http x Authorization:\\"[REDACTED]\\""}'],
       ['curl -HX-Api-Key:S3CRET9 x', '{"command":"curl -H[REDACTED] x"}'],
+      ['curl -sSH X-Api-Key:S3CRET9 x', '{"command":"curl -sSH [REDACTED] x"}'],
     ])('records the content of %j with its password redacted', (command, content) => {
       process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
       expect(save(command).inputContent).toBe(content);

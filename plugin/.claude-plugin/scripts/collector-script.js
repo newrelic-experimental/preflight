@@ -200,10 +200,12 @@ function pushValue(spans, spanStart, from, end) {
 var QUOTE = String.raw`\\"|"|'`;
 var KEY_HEADER = String.raw`(?:x-)?(?:api-?key|auth-token|access-token)`;
 var AUTH_HEADER = String.raw`(?:proxy-)?authorization`;
+var CREDENTIAL_HEADER = String.raw`(?:${KEY_HEADER}(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|${AUTH_HEADER}[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`;
 var HEADER = new RegExp(
-  String.raw`((?:-H|--(?:proxy-)?header)(?:[\s=]|${CONTINUATION}){0,8}(${QUOTE})?)(?:${KEY_HEADER}(?:[ \t]{0,4}:[ \t]{0,4}|[ \t]{1,4})|${AUTH_HEADER}[ \t]{0,4}:[ \t]{0,4}basic[ \t]{1,4})`,
+  String.raw`((?:-H|--(?:proxy-)?header)(?:[\s=]|${CONTINUATION}){0,8}(${QUOTE})?)${CREDENTIAL_HEADER}`,
   "gi"
 );
+var CURL_HEADER = new RegExp(String.raw`((${QUOTE})?)${CREDENTIAL_HEADER}`, "iy");
 var UNESCAPED_QUOTE = String.raw`(?:(?<!\\)(${QUOTE}))`;
 var HEADER_WORD = new RegExp(
   String.raw`:(?<=${UNESCAPED_QUOTE}?(?:${KEY_HEADER}|${AUTH_HEADER}):)(${QUOTE})?(?:(?<=${KEY_HEADER}:(?:${QUOTE})?)|[ \t]{0,4}basic[ \t]{1,4})`,
@@ -360,11 +362,23 @@ function curlLongName(word) {
   const equals = word.indexOf("=");
   return (equals < 0 ? word : word.slice(0, equals)).replace(/["'\\]/g, "");
 }
+var CURL_SHORT_HEADER = "H".charCodeAt(0);
+var curlShortValue = (c) => {
+  if (c === CURL_SHORT_HEADER) return "header";
+  return CURL_CREDENTIAL[c] === 1 ? "credential" : "other";
+};
+function redactCurlValue(text, quote, spans, kind, start, from, end) {
+  if (kind === "credential") spans.push(start, end);
+  if (kind !== "header") return;
+  CURL_HEADER.lastIndex = from;
+  const header = CURL_HEADER.exec(text);
+  if (header !== null) headerValue(text, header, quote, spans);
+}
 var curlCredentials = (text, match, quote, spans) => {
   let pending;
   return commandWords(text, match, quote, (from, end) => {
     if (pending !== void 0) {
-      if (pending.credential) spans.push(pending.start, end);
+      redactCurlValue(text, quote, spans, pending.kind, pending.start, from, end);
       pending = void 0;
       return;
     }
@@ -375,7 +389,7 @@ var curlCredentials = (text, match, quote, spans) => {
       if (word.includes("=")) {
         if (credential) spans.push(from, end);
       } else if (credential || CURL_LONG_TAKES_VALUE.has(name)) {
-        pending = { start: from, credential };
+        pending = { start: from, kind: credential ? "credential" : "other" };
       }
       return;
     }
@@ -384,10 +398,9 @@ var curlCredentials = (text, match, quote, spans) => {
       const c = word.charCodeAt(k);
       if (c >= 128 || CURL_TAKES_VALUE[c] !== 1) continue;
       const start = k === 1 ? from : from + k;
-      const credential = CURL_CREDENTIAL[c] === 1;
-      if (!ONLY_QUOTES.test(word.slice(k + 1))) {
-        if (credential) spans.push(start, end);
-      } else pending = { start, credential };
+      const kind = curlShortValue(c);
+      if (ONLY_QUOTES.test(word.slice(k + 1))) pending = { start, kind };
+      else redactCurlValue(text, quote, spans, kind, start, from + k + 1, end);
       return;
     }
   });
