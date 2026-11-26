@@ -1093,6 +1093,18 @@ describe('SessionStore', () => {
     expect(sessions.map((s) => s.sessionId)).toEqual(['today-1', 'today-2']);
   });
 
+  it('loadTodaySessions drops a session that started just before local midnight in any timezone', () => {
+    const store = new SessionStore({ storagePath: tmpDir });
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayMs = today.getTime();
+
+    store.saveSession(makeSummary({ sessionId: 'before', startTime: todayMs - 30 * 60_000 }));
+    store.saveSession(makeSummary({ sessionId: 'after', startTime: todayMs + 30 * 60_000 }));
+
+    expect(store.loadTodaySessions().map((s) => s.sessionId)).toEqual(['after']);
+  });
+
   it('loadSessionsOverlappingToday includes cross-midnight and endTime=0 sessions, excludes yesterday-only sessions', () => {
     const store = new SessionStore({ storagePath: tmpDir });
 

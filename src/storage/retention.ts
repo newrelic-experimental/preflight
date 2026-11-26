@@ -1,4 +1,4 @@
-import { rmSync, statSync, unlinkSync } from 'node:fs';
+import { rmSync, statSync, unlinkSync, utimesSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createLogger } from '../core/index.js';
 import { parseSessionFilename } from './session-store.js';
@@ -7,6 +7,7 @@ import { listDirOrEmpty, WRITERS_DIR } from './session-writers.js';
 const logger = createLogger('retention');
 
 const PURGED_SUFFIXES = ['.json', '.corrupt', '.merged', '.tmp'];
+const STALE_WRITER_TMP_DAYS = 1 / 24;
 
 /**
  * Delete every `PURGED_SUFFIXES` file in `<storagePath>/<subdir>` whose mtime
@@ -73,17 +74,34 @@ export function purgeOldSessions(storagePath: string, retainDays: number): numbe
   }
   const writerDirs = listDirOrEmpty(writersDir);
   const hasWriters = new Set(writerDirs);
+  let deleted = 0;
   for (const sessionId of writerDirs) {
     const dir = join(writersDir, sessionId);
     for (const path of [dir, ...listDirOrEmpty(dir).map((name) => join(dir, name))])
       seen(sessionId, path);
+    const dirMtime = new Date(mtimeOf(dir));
+    const swept = purgeOldFiles(
+      storagePath,
+      join('sessions', WRITERS_DIR, sessionId),
+      STALE_WRITER_TMP_DAYS,
+      'writer temp',
+      (file) => !file.endsWith('.tmp'),
+    );
+    if (swept > 0) {
+      try {
+        utimesSync(dir, dirMtime, dirMtime);
+      } catch (err) {
+        logger.warn('Failed to restore a writer directory time', { sessionId, error: String(err) });
+      }
+    }
+    deleted += swept;
   }
   const isLiveWriterSession = (sessionId: string | undefined) =>
     sessionId !== undefined &&
     hasWriters.has(sessionId) &&
     (newest.get(sessionId) ?? 0) >= cutoffMs;
 
-  let deleted = purgeOldFiles(storagePath, 'sessions', retainDays, 'session', (file) =>
+  deleted += purgeOldFiles(storagePath, 'sessions', retainDays, 'session', (file) =>
     isLiveWriterSession(parseSessionFilename(file)?.sessionId),
   );
   for (const sessionId of writerDirs.filter((id) => !isLiveWriterSession(id))) {
