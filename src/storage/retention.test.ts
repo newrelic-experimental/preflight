@@ -14,6 +14,7 @@ import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { purgeOldSessions, purgeOldWeeklySummaries } from './retention.js';
+import { writeAtomic } from './session-writers.js';
 
 let stderrSpy: ReturnType<typeof jest.spyOn>;
 
@@ -197,6 +198,102 @@ describe('purgeOldSessions with writer files', () => {
     expect(purgeOldSessions(dir, 30)).toBe(1);
     expect(existsSync(older)).toBe(false);
     expect(existsSync(newer)).toBe(true);
+  });
+
+  it('deletes a writer temp file once it is an hour old, and keeps the session', () => {
+    const dir = makeTempDir();
+    writeIndex(dir, 's1', false);
+    const writers = writeWriterFiles(dir, 's1', false);
+    const stale = join(writers, '.engine.1.a.b.json.41.0badf00d.tmp');
+    const inFlight = join(writers, '.engine.1.a.b.json.42.c0ffee00.tmp');
+    for (const [path, ageMs] of [
+      [join(writers, 'engine.1.a.b.json'), 2 * 60 * 60 * 1000],
+      [stale, 61 * 60 * 1000],
+      [inFlight, 59 * 60 * 1000],
+    ] as const) {
+      writeFileSync(path, '{}');
+      const at = new Date(Date.now() - ageMs);
+      utimesSync(path, at, at);
+    }
+
+    expect(purgeOldSessions(dir, 30)).toBe(1);
+    expect(readdirSync(writers).sort()).toEqual([
+      '.engine.1.a.b.json.42.c0ffee00.tmp',
+      'engine.1.a.b.json',
+      'legacy.0123456789abcdef.json',
+    ]);
+  });
+
+  it('deletes an old session whose writer left a temp file', () => {
+    const dir = makeTempDir();
+    const index = writeIndex(dir, 's1', true);
+    const writers = writeWriterFiles(dir, 's1', false);
+    const stale = join(writers, '.engine.1.a.b.json.41.0badf00d.tmp');
+    writeFileSync(stale, '{}');
+    for (const name of [...readdirSync(writers), '']) utimesSync(join(writers, name), old, old);
+
+    expect(purgeOldSessions(dir, 30)).toBe(4);
+    expect(existsSync(index)).toBe(false);
+    expect(existsSync(writers)).toBe(false);
+  });
+
+  describe('across two sweeps a day apart', () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    function sessionWithStaleTemp(dir: string, { saved = true } = {}) {
+      const index = writeIndex(dir, 's1', false);
+      const writers = writeWriterFiles(dir, 's1', false);
+      if (!saved) for (const name of readdirSync(writers)) rmSync(join(writers, name));
+      writeFileSync(join(writers, '.engine.1.a.b.json.41.0badf00d.tmp'), '{}');
+      const at = new Date(Date.now() - 29.5 * DAY_MS);
+      for (const path of [index, ...readdirSync(writers).map((n) => join(writers, n)), writers])
+        utimesSync(path, at, at);
+      return { index, writers };
+    }
+
+    function ageOneDay(index: string, writers: string) {
+      for (const path of [index, ...readdirSync(writers).map((n) => join(writers, n)), writers]) {
+        const at = new Date(lstatSync(path).mtimeMs - DAY_MS);
+        utimesSync(path, at, at);
+      }
+    }
+
+    it('deletes the session once it passes retention, though the first sweep removed its temp file', () => {
+      const dir = makeTempDir();
+      const { index, writers } = sessionWithStaleTemp(dir);
+
+      expect(purgeOldSessions(dir, 30)).toBe(1);
+      ageOneDay(index, writers);
+
+      expect(purgeOldSessions(dir, 30)).toBe(3);
+      expect(existsSync(index)).toBe(false);
+      expect(existsSync(writers)).toBe(false);
+    });
+
+    it('deletes the session once it passes retention, though its only writer file was a temp file', () => {
+      const dir = makeTempDir();
+      const { index, writers } = sessionWithStaleTemp(dir, { saved: false });
+
+      expect(purgeOldSessions(dir, 30)).toBe(1);
+      ageOneDay(index, writers);
+
+      expect(purgeOldSessions(dir, 30)).toBe(1);
+      expect(existsSync(index)).toBe(false);
+      expect(existsSync(writers)).toBe(false);
+    });
+
+    it('keeps the session when a writer saves between the sweeps', () => {
+      const dir = makeTempDir();
+      const { index, writers } = sessionWithStaleTemp(dir);
+
+      expect(purgeOldSessions(dir, 30)).toBe(1);
+      ageOneDay(index, writers);
+      writeAtomic(join(writers, 'engine.1.a.b.json'), '{}');
+
+      expect(purgeOldSessions(dir, 30)).toBe(0);
+      expect(existsSync(index)).toBe(true);
+      expect(readdirSync(writers)).toHaveLength(2);
+    });
   });
 
   it('deletes writer files with no index once they are old', () => {
