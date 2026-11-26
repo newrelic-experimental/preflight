@@ -2576,25 +2576,67 @@ describe('setupWizard retention preset', () => {
     expect(writtenConfig().retentionPolicy).toBe('hipaa-audit-typo');
   });
 
-  it('leaves an explicit retainSessionsDays alone and says it still wins', async () => {
+  it('Enter leaves an explicit retainSessionsDays alone and says it still wins', async () => {
+    mockedFs.readFileSync.mockReturnValue(JSON.stringify({ retainSessionsDays: 30 }));
+    answersWithRetention('');
+
+    await runSetupWizard();
+
+    expect(writtenConfig().retainSessionsDays).toBe(30);
+    expect(outputText()).toContain(
+      'config.json already sets retainSessionsDays (30 days). It is unchanged and takes precedence over any retentionPolicy.',
+    );
+  });
+
+  it('--retention removes an explicit retainSessionsDays and says so', async () => {
     mockedFs.readFileSync.mockReturnValue(JSON.stringify({ retainSessionsDays: 30 }));
     answersWithRetention('');
 
     await runSetupWizard({ retention: 'soc2-audit' });
 
     const written = writtenConfig();
-    expect(written.retainSessionsDays).toBe(30);
+    expect(written).not.toHaveProperty('retainSessionsDays');
     expect(written.retentionPolicy).toBe('soc2-audit');
     expect(outputText()).toContain(
-      'config.json already sets retainSessionsDays (30 days). It is unchanged and takes precedence over any retentionPolicy.',
+      'Removed retainSessionsDays (30 days) from config.json, so the soc2-audit preset sets retention.',
     );
+    expect(outputText()).not.toContain('already sets retainSessionsDays');
   });
 
-  it('reports an explicit null retainSessionsDays as disabled', async () => {
+  it('a typed preset removes an explicit retainSessionsDays', async () => {
+    mockedFs.readFileSync.mockReturnValue(JSON.stringify({ retainSessionsDays: 30 }));
+    answersWithRetention('hipaa-audit');
+
+    await runSetupWizard();
+
+    expect(writtenConfig()).not.toHaveProperty('retainSessionsDays');
+    expect(writtenConfig().retentionPolicy).toBe('hipaa-audit');
+  });
+
+  it('an unknown typed name keeps an explicit retainSessionsDays', async () => {
+    mockedFs.readFileSync.mockReturnValue(JSON.stringify({ retainSessionsDays: 30 }));
+    answersWithRetention('gdpr');
+
+    await runSetupWizard();
+
+    expect(writtenConfig().retainSessionsDays).toBe(30);
+  });
+
+  it('--retention removes an explicit null retainSessionsDays', async () => {
     mockedFs.readFileSync.mockReturnValue(JSON.stringify({ retainSessionsDays: null }));
     answersWithRetention('');
 
     await runSetupWizard({ retention: 'minimal' });
+
+    expect(writtenConfig()).not.toHaveProperty('retainSessionsDays');
+    expect(outputText()).toContain('Removed retainSessionsDays (disabled (null))');
+  });
+
+  it('Enter keeps an explicit null retainSessionsDays and reports it as disabled', async () => {
+    mockedFs.readFileSync.mockReturnValue(JSON.stringify({ retainSessionsDays: null }));
+    answersWithRetention('');
+
+    await runSetupWizard();
 
     expect(writtenConfig().retainSessionsDays).toBeNull();
     expect(outputText()).toContain('retainSessionsDays (disabled (null))');
@@ -2630,6 +2672,15 @@ describe('buildConfig retentionPolicy', () => {
   it('leaves an existing retentionPolicy alone when none is passed', () => {
     const result = buildConfig({ retentionPolicy: 'minimal' }, base);
     expect(result.retentionPolicy).toBe('minimal');
+  });
+
+  it('drops a file retainSessionsDays when retentionChosen is set', () => {
+    const result = buildConfig(
+      { retainSessionsDays: 30 },
+      { ...base, retentionPolicy: 'soc2-audit', retentionChosen: true },
+    );
+    expect(result).not.toHaveProperty('retainSessionsDays');
+    expect(result.retentionPolicy).toBe('soc2-audit');
   });
 
   it('never writes a retainSessionsDays of its own', () => {
