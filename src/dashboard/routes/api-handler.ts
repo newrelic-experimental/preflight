@@ -1482,6 +1482,8 @@ function prRepoKey(
   return `${repo}#${record.prEvent.prNumber}`;
 }
 
+const PR_LOOKBACK_MS = 86_400_000;
+
 interface PrMergeTime {
   readonly timestamp: number;
   readonly hasRef: boolean;
@@ -1598,7 +1600,10 @@ function computeSessionStatusAggregate(input: SessionStatusAggregateInput): {
   }
   const prRecordsBySession = new Map<string, PrRecord[]>();
   const merges = new PrMergeIndex(repoKeyByWorkspace);
-  for (const record of activityStore.query({ since: startMs, until: now })) {
+  // Yesterday's creates and merges count too, so a PR created yesterday shows
+  // as ready for review until it merges. Only sessions with activity today are
+  // replayed, so a merge from a session that ended before midnight isn't seen.
+  for (const record of activityStore.query({ since: startMs - PR_LOOKBACK_MS, until: now })) {
     if (!isPrRecord(record)) continue;
     const list = prRecordsBySession.get(record.sessionId);
     if (list) list.push(record);
@@ -2017,20 +2022,48 @@ export function createApiHandler(
         toolCallCount?: number;
         estimatedCostUsd?: number | null;
         antiPatterns?: ReadonlyArray<unknown>;
-        timeline?: ReadonlyArray<{
-          timestamp: number;
-          durationMs: number | null;
-          toolName: string;
-        }>;
       };
       if (typeof session.sessionId === 'string') sessionsSeen.add(session.sessionId);
       // Cost is summed in a separate pass below so cross-midnight sessions
       // (loaded via loadSessionsOverlappingToday) contribute their today
       // portion only. See "(2b) cost from sessions overlapping today" below.
       antiPatternCount += session.antiPatterns?.length ?? 0;
+    }
 
-      // Walk timeline entries within today. Persisted timelines and the
-      // buffer cover disjoint time ranges by construction (persistence
+    // (2b) cost from sessions overlapping today (separate pass so cross-
+    // midnight sessions started yesterday but ending after midnight contribute
+    // their today portion to spend, while NOT inflating tool-call or
+    // anti-pattern counts above which are already today-bounded by timeline).
+    //
+    // Why a separate loader: loadTodaySessions() keeps only sessions that
+    // started today, so it drops sessions that started yesterday and ended
+    // today. The cost and tool-call paths both need them.
+    const liveSid = deps.sessionTracker?.getMetrics().sessionId;
+    // Prefer overlapping-today loader (catches yesterday→today sessions).
+    // When the store doesn't implement it (older tests/fakes), reuse the
+    // already-loaded `todaySessions` rather than re-invoking
+    // loadTodaySessions — keeps disk reads at one per request and preserves
+    // the cache-hit assertions in api-handler.test.ts.
+    // loadSessionsWithActivityToday() also returns a session resumed from an
+    // older start date (its filename keeps that date). Every cost and token
+    // figure below is clamped to today, so widening the set adds only today's
+    // share.
+    const overlappingTodaySessions =
+      deps.sessionStore?.loadSessionsWithActivityToday?.() ??
+      deps.sessionStore?.loadSessionsOverlappingToday?.() ??
+      todaySessions;
+    // Walk timeline entries within today, over the overlapping set so a session
+    // that started before midnight still counts its calls from today.
+    for (const raw of overlappingTodaySessions) {
+      const session = raw as {
+        sessionId?: string;
+        timeline?: ReadonlyArray<{
+          timestamp: number;
+          durationMs: number | null;
+          toolName: string;
+        }>;
+      };
+      // Persisted timelines and the buffer cover disjoint time ranges by construction (persistence
       // runs at shutdown, after all events have been processed; buffer
       // contents are undrained events). Even in the resume-after-shutdown
       // case, the persisted JSON holds pre-shutdown events while the
@@ -2055,30 +2088,6 @@ export function createApiHandler(
         }
       }
     }
-
-    // (2b) cost from sessions overlapping today (separate pass so cross-
-    // midnight sessions started yesterday but ending after midnight contribute
-    // their today portion to spend, while NOT inflating tool-call or
-    // anti-pattern counts above which are already today-bounded by timeline).
-    //
-    // Why a separate loader: loadTodaySessions() filters by file-name date
-    // (= start date), so it drops sessions that started yesterday and ended
-    // today. The cost path needs them; the tool-call path doesn't (its
-    // timeline filter would skip pre-midnight entries anyway).
-    const liveSid = deps.sessionTracker?.getMetrics().sessionId;
-    // Prefer overlapping-today loader (catches yesterday→today sessions).
-    // When the store doesn't implement it (older tests/fakes), reuse the
-    // already-loaded `todaySessions` rather than re-invoking
-    // loadTodaySessions — keeps disk reads at one per request and preserves
-    // the cache-hit assertions in api-handler.test.ts.
-    // loadSessionsWithActivityToday() also returns a session resumed from an
-    // older start date (its filename keeps that date). Every cost and token
-    // figure below is clamped to today, so widening the set adds only today's
-    // share.
-    const overlappingTodaySessions =
-      deps.sessionStore?.loadSessionsWithActivityToday?.() ??
-      deps.sessionStore?.loadSessionsOverlappingToday?.() ??
-      todaySessions;
     // Local-day key for "today", shared by the persisted-session loop below and
     // the live top-up further down. Sessions persisted with per-day cost buckets
     // (costByDayUsd) let us sum a session's REAL today-spend instead of
