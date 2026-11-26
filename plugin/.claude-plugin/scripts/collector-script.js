@@ -143,7 +143,7 @@ function reopenedClose(text, at, quote) {
   const limit = at + 1 + MAX_QUOTED_PART;
   const word = skipPlain(text, at + 1);
   let i = word;
-  while (i < limit && isBlank(text.charCodeAt(i)) && text.charCodeAt(i + 1) !== HASH) {
+  while (isBlank(text.charCodeAt(i)) && text.charCodeAt(i + 1) !== HASH) {
     i = skipPlain(text, i + 1);
   }
   return text[i] === text[at] && (i === word || i <= limit) ? i : -1;
@@ -223,7 +223,7 @@ var headerWordValue = (text, match, quote, spans) => {
   const after = match[2];
   const from = match.index + match[0].length;
   const start = match.index + 1 + (after?.length ?? 0);
-  const close = after !== void 0 ? reopenedClose(text, match.index + 1, quote) : quote === "none" && match[1] !== void 0 ? reopenedClose(
+  const close = after !== void 0 ? reopenedClose(text, match.index + 1, quote) : match[1] !== void 0 ? reopenedClose(
     text,
     text.lastIndexOf(match[1], match.index),
     quoteOpenedBy(match[1], quote)

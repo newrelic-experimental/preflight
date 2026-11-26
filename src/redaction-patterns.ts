@@ -176,7 +176,7 @@ function reopenedClose(text: string, at: number, quote: Quote): number {
   const limit = at + 1 + MAX_QUOTED_PART;
   const word = skipPlain(text, at + 1);
   let i = word;
-  while (i < limit && isBlank(text.charCodeAt(i)) && text.charCodeAt(i + 1) !== HASH) {
+  while (isBlank(text.charCodeAt(i)) && text.charCodeAt(i + 1) !== HASH) {
     i = skipPlain(text, i + 1);
   }
   return text[i] === text[at] && (i === word || i <= limit) ? i : -1;
@@ -276,8 +276,8 @@ const headerValue: Redact = (text, match, quote, spans) => {
   return pushValue(spans, match.index + match[1].length, from, end);
 };
 
-// The quote after the colon may close the quote the text is in. Outside a quote, the quote before
-// the name closed one. Either way the word may reopen it.
+// The quote after the colon, or the one before the name, may close the quote the text is in, and
+// the word may reopen it.
 const headerWordValue: Redact = (text, match, quote, spans) => {
   const after: string | undefined = match[2];
   const from = match.index + match[0].length;
@@ -285,7 +285,7 @@ const headerWordValue: Redact = (text, match, quote, spans) => {
   const close =
     after !== undefined
       ? reopenedClose(text, match.index + 1, quote)
-      : quote === 'none' && match[1] !== undefined
+      : match[1] !== undefined
         ? reopenedClose(
             text,
             text.lastIndexOf(match[1], match.index),

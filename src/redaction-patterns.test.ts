@@ -252,6 +252,8 @@ const REDACTS: Row[] = [
   ['docker login -p\\\n  S3CRET9 r', '-p\\\n  S3CRET9'],
   ['redis-cli -a\\\n  S3CRET9 ping', '-a\\\n  S3CRET9'],
   ['sshpass -p\\\n  S3CRET9 ssh h', '-p\\\n  S3CRET9'],
+  ['curl -u\\\n\\\n  me:S3CRET9 x', '-u\\\n\\\n  me:S3CRET9'],
+  ['curl x \\"y -u me:S3CRET9 \\\n z', '-u me:S3CRET9'],
   [JSON.stringify("curl -u\\\n  'me:S3 CRET9' x"), "-u\\\\\\n  'me:S3 CRET9'"],
   [JSON.stringify("curl x \\\n-u 'me:S3 CRET9' y"), "-u 'me:S3 CRET9'"],
   [JSON.stringify("curl --user\\\n  'me:S3 CRET9' x"), "--user\\\\\\n  'me:S3 CRET9'"],
