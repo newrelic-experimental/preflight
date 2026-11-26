@@ -689,6 +689,49 @@ describe('ReplaySessionCache', () => {
     expect(second.records.map((r) => r.recordId)).toEqual(first.records.map((r) => r.recordId));
   });
 
+  it('replays the later calls of a session that completes again after a resume', () => {
+    const repoDir = join(tmpDir, 'resumed-repo');
+    execSync(`mkdir -p "${repoDir}"`);
+    initGitRepo(repoDir);
+
+    const firstCall: ReplayTimelineEntry = {
+      timestamp: 1000,
+      toolName: 'Bash',
+      durationMs: 50,
+      success: true,
+      command: 'git commit -m "before resume"',
+      cwd: repoDir,
+    };
+    const laterCall: ReplayTimelineEntry = {
+      timestamp: 3000,
+      toolName: 'Bash',
+      durationMs: 50,
+      success: true,
+      command: 'git commit -m "after resume"',
+      cwd: repoDir,
+    };
+    const completedFirst = {
+      sessionId: 'sess-resumed',
+      outcome: 'completed',
+      endTime: 1500,
+      toolCallCount: 1,
+      timeline: [firstCall],
+    };
+    const completedAgain = {
+      sessionId: 'sess-resumed',
+      outcome: 'completed',
+      endTime: 3500,
+      toolCallCount: 2,
+      timeline: [firstCall, laterCall],
+    };
+
+    const identityResolver = new WorktreeIdentityResolver();
+    const cache = new ReplaySessionCache();
+
+    expect(cache.replay(completedFirst, identityResolver).records).toHaveLength(1);
+    expect(cache.replay(completedAgain, identityResolver).records).toHaveLength(2);
+  });
+
   it('always re-replays a session that is not yet completed, since its file can still be rewritten', () => {
     const repoDir = join(tmpDir, 'in-progress-repo');
     execSync(`mkdir -p "${repoDir}"`);

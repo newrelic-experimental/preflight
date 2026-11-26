@@ -1,5 +1,7 @@
 // Prints the AiToolCall and AiTurnCost bodies the built emitters produce for a
-// Skill call, a Read inside its run, a slash run, and a call after the run ends.
+// Skill call, a Read inside its run, a slash run, a call after the run ends,
+// and text-only replies that a following prompt cuts across, in both drain
+// orders (the report read before or after the prompt).
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 
@@ -31,6 +33,8 @@ function call(toolName, timestamp, extra = {}) {
   events.push(toolCallToNrEvent(record, attrs));
 }
 
+// Reads a token report stamped with its transcript timestamp, as index.ts does,
+// so the run comes from the time the reply was written, not the drain time.
 function tokens(timestamp, sid = sessionId) {
   const turn = attributor.recordTokenEvent(
     {
@@ -43,28 +47,77 @@ function tokens(timestamp, sid = sessionId) {
       cacheCreationTokens: 0,
       model: 'claude-sonnet-4-5-20250929',
     },
-    skills.openRun(sid),
+    skills.runAt(sid, timestamp),
   );
-  events.push(...turnCostToNrEvents(turn, attrs));
+  const rows = turnCostToNrEvents(turn, attrs);
+  events.push(...rows);
+  return rows;
 }
 
-skills.recordPrompt(sessionId, null);
+// A text-only reply written at replyAt, then a prompt at promptAt that closes
+// its run or opens a slash run. promptDrainsFirst picks the drain order: the
+// prompt is read before the reply's report (the transcript poll lags by up to
+// 2 s), or after it (the usual order).
+function replyThenPrompt(sid, { replyAt, promptAt, command, promptDrainsFirst }) {
+  if (promptDrainsFirst) {
+    skills.recordPrompt(sid, command, promptAt);
+    return tokens(replyAt, sid);
+  }
+  const rows = tokens(replyAt, sid);
+  skills.recordPrompt(sid, command, promptAt);
+  return rows;
+}
+
+skills.recordPrompt(sessionId, null, 500);
 call('Skill', 1000, { skillName: 'code-review', skillArgsLength: 1 });
 call('Read', 1500, { filePath: '/x' });
 tokens(2000);
-skills.recordPrompt(sessionId, 'simplify');
+skills.recordPrompt(sessionId, 'simplify', 9000);
 call('Edit', 10000);
 tokens(11000);
-skills.recordPrompt(sessionId, null);
+skills.recordPrompt(sessionId, null, 19000);
 call('Bash', 20000, { command: 'npm test' });
 tokens(21000);
 
-const textOnly = 'sess-2';
-skills.recordPrompt(textOnly, 'review');
-tokens(30000, textOnly);
-tokens(31000, textOnly);
-skills.recordPrompt(textOnly, null);
-tokens(40000, textOnly);
+const plainPromptFirst = 'sess-2';
+skills.recordPrompt(plainPromptFirst, 'review', 30000);
+const plainReplyPromptFirst = replyThenPrompt(plainPromptFirst, {
+  replyAt: 31000,
+  promptAt: 32000,
+  command: null,
+  promptDrainsFirst: true,
+});
+const plainAfterPromptFirst = tokens(40000, plainPromptFirst);
+
+const plainTokenFirst = 'sess-3';
+skills.recordPrompt(plainTokenFirst, 'review', 30000);
+const plainReplyTokenFirst = replyThenPrompt(plainTokenFirst, {
+  replyAt: 31000,
+  promptAt: 32000,
+  command: null,
+  promptDrainsFirst: false,
+});
+tokens(40000, plainTokenFirst);
+
+const slashPromptFirst = 'sess-4';
+skills.recordPrompt(slashPromptFirst, null, 50000);
+const slashReplyPromptFirst = replyThenPrompt(slashPromptFirst, {
+  replyAt: 51000,
+  promptAt: 52000,
+  command: 'simplify',
+  promptDrainsFirst: true,
+});
+const slashAfterPromptFirst = tokens(53000, slashPromptFirst);
+
+const slashTokenFirst = 'sess-5';
+skills.recordPrompt(slashTokenFirst, null, 50000);
+const slashReplyTokenFirst = replyThenPrompt(slashTokenFirst, {
+  replyAt: 51000,
+  promptAt: 52000,
+  command: 'simplify',
+  promptDrainsFirst: false,
+});
+tokens(53000, slashTokenFirst);
 
 const pick = (e) => ({
   eventType: e.eventType,
@@ -78,6 +131,10 @@ const pick = (e) => ({
 for (const e of events) console.log(JSON.stringify(pick(e)));
 
 const byTool = (type, tool) => events.find((e) => e.eventType === type && e.tool === tool);
+const onlyRow = (rows) => {
+  assert.equal(rows.length, 1, 'a text-only reply yields one AiTurnCost row');
+  return rows[0];
+};
 assert.equal(
   byTool('AiToolCall', 'Read').skill_name,
   'code-review',
@@ -90,16 +147,38 @@ assert.equal(
 );
 assert.equal(byTool('AiTurnCost', 'Edit').skill_source, 'slash', 'slash run reaches AiTurnCost');
 assert.equal(byTool('AiToolCall', 'Bash').skill_name, undefined, 'run closes on the next prompt');
-const textOnlyRows = events.filter((e) => e.eventType === 'AiTurnCost').slice(-3);
+
+const plainRows = [onlyRow(plainReplyPromptFirst), onlyRow(plainReplyTokenFirst)];
 assert.deepEqual(
-  textOnlyRows.map((e) => e.skill_name),
-  ['review', 'review', undefined],
-  'text-only replies carry the slash run until the next prompt',
+  plainRows.map((e) => e.skill_name),
+  ['review', 'review'],
+  'a reply before a plain prompt keeps the run it was written in, whichever drains first',
+);
+assert.ok(
+  plainRows.every((e) => typeof e.skill_run_id === 'string'),
+  'a stamped reply carries its run id',
 );
 assert.equal(
-  textOnlyRows[0].skill_run_id,
-  textOnlyRows[1].skill_run_id,
-  'text-only replies share one run id',
+  onlyRow(plainAfterPromptFirst).skill_name,
+  undefined,
+  'a reply after the plain prompt has no run',
+);
+
+const slashRows = [onlyRow(slashReplyPromptFirst), onlyRow(slashReplyTokenFirst)];
+assert.deepEqual(
+  slashRows.map((e) => e.skill_name),
+  [undefined, undefined],
+  'a reply before a /simplify prompt does not take its stamp, whichever drains first',
+);
+assert.equal(
+  onlyRow(slashAfterPromptFirst).skill_name,
+  'simplify',
+  'a reply after a /simplify prompt takes its run',
+);
+assert.equal(
+  onlyRow(slashAfterPromptFirst).skill_source,
+  'slash',
+  'the slash run reaches the reply that follows it',
 );
 assert.ok(
   events.every((e) => !('skillName' in e)),

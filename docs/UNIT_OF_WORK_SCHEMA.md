@@ -67,7 +67,6 @@ Each status means one of the following:
 
 These gaps affect the questions a shared skill library asks. None has a fix inside this schema, because each needs an emitter change.
 
-- **A reply at the end of a run can miss it or land on the next one.** A response row takes the run open when Preflight reads its report, which can lag the reply by about 2 seconds. A prompt sent inside that window can leave the last reply of the previous run without the stamp, or give it the stamp of a `/<skill>` the prompt opened.
 - **A run with no tool calls has a duration only on `AiWorkUnit`.** Its `AiSkillRun` row names it, and its `AiTurnCost` response rows carry its cost and tokens, which its `AiWorkUnit` row leaves out. It has no `AiToolCall` row, so the duration recipe leaves it out. Count runs from `AiToolCall` and `AiSkillRun` together.
 - **Subagent spend is not on the skill.** `AiSubagentTurn` has no `skill_*` attributes. The only link is `AiToolCall`, where a subagent's calls carry both `agent_id` and `skill_run_id`. A subagent that made no tool call, or whose calls had no `agent_id` when Preflight processed them, has no link. A subagent that opens its own skill links to two runs.
 - **`AiTurnCost` rows on subagent calls hold main-agent cost.** Subagent tool calls enter the same burst as main-agent calls, so they take a share of the main agent's next response. The subagent's own spend is on `AiSubagentTurn`. The session total holds, but the split between skills can shift.
