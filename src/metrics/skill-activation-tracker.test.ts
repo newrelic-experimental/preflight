@@ -570,6 +570,73 @@ describe('SkillActivationTracker.openRun', () => {
   });
 });
 
+describe('SkillActivationTracker.runAt', () => {
+  it('keeps a reply in the run open when it was written, whether or not the next prompt has drained', () => {
+    const t = new SkillActivationTracker();
+    const run = t.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }),
+    );
+
+    expect(t.runAt('s1', 3000)).toEqual(run);
+    t.recordPrompt('s1', null, 5000);
+    expect(t.runAt('s1', 3000)).toEqual(run);
+    expect(t.runAt('s1', 6000)).toBeNull();
+  });
+
+  it('does not stamp a reply written before a slash prompt with that skill', () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', null, 1000);
+    t.recordPrompt('s1', 'simplify', 5000);
+
+    expect(t.runAt('s1', 3000)).toBeNull();
+    expect(t.runAt('s1', 6000)?.name).toBe('simplify');
+  });
+
+  it('places a Skill call that arrives after a later prompt by its own timestamp', () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', null, 2000);
+    const run = t.recordToolCall(
+      makeRecord({ toolName: 'Skill', skillName: 'eslint', timestamp: 1000 }),
+    );
+
+    expect(t.runAt('s1', 1500)).toEqual(run);
+    expect(t.runAt('s1', 2500)).toBeNull();
+  });
+
+  it('returns no run for a reply older than the first recorded change', () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', 'review', 5000);
+
+    expect(t.runAt('s1', 1000)).toBeNull();
+  });
+
+  it('returns the live run when no timestamp is given', () => {
+    const t = new SkillActivationTracker();
+    const run = t.recordPrompt('s1', 'review', 1000);
+
+    expect(t.runAt('s1', undefined)).toEqual(run);
+  });
+
+  it('returns the live run for any timestamp once a prompt arrives without one', () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', 'review', 1000);
+    const live = t.recordPrompt('s1', 'simplify');
+
+    expect(live?.name).toBe('simplify');
+    expect(t.runAt('s1', 500)).toEqual(live);
+    expect(t.runAt('s1', 2000)).toEqual(live);
+  });
+
+  it('returns the live run for a reply older than the bounded history keeps', () => {
+    const t = new SkillActivationTracker();
+    t.recordPrompt('s1', 'first', 1000);
+    for (let i = 0; i < 40; i++) t.recordPrompt('s1', null, 2000 + i * 100);
+    const live = t.recordPrompt('s1', 'last', 9000);
+
+    expect(t.runAt('s1', 1500)).toEqual(live);
+  });
+});
+
 describe('SkillActivationTracker.recordToolStart', () => {
   it('stamps a call recorded after a later prompt with the run open when it started', () => {
     const t = new SkillActivationTracker();
