@@ -5358,7 +5358,7 @@ describe('stdio integration', () => {
       }, 60000);
     });
 
-    it('a stdio engine saves the subagent attribution of a transcript that lands after intake (#1252)', async () => {
+    it('a stdio engine saves the subagent attribution of a transcript that lands after intake', async () => {
       const { storagePath, projectCwd, cleanup } = makeDirs();
       const home = mkdtempSync(join(tmpdir(), 'nr-seed-subagent-home-'));
       try {
@@ -6340,7 +6340,7 @@ describe('--local Today cache savings', () => {
   }, 40000);
 });
 
-describe('subagent attribution backfilled when a session is saved (#1252)', () => {
+describe('subagent attribution backfilled when a session is saved', () => {
   const sessionId = 'c3d4e5f6-1111-4222-8333-444455556666';
   const file = '/tmp/subagent-backfill/shared.ts';
   const subagents = [
