@@ -433,7 +433,7 @@ Homelab forwarding (`homelabServerUrl`, see [homelab.md](./homelab.md)) is a sep
 
 Presets set only how long Preflight keeps its local session, weekly summary, and ledger files. They do not change data already sent to New Relic. They are defaults to start from, not compliance advice. Check the retention your own obligations require with your compliance or legal team.
 
-`preflight setup --retention <policy>` writes the preset without the prompt. The setup wizard also asks for it, and Enter keeps the current value.
+`preflight setup --retention <policy>` writes the preset without the prompt. The setup wizard also asks for it, and Enter keeps the current value. A preset picked in either place (flag or typed) removes a `retainSessionsDays` already in `config.json`, because the explicit preset is the newer choice. The wizard prints the removed value. Enter leaves `retainSessionsDays` in place, and it still takes precedence.
 
 To use a custom value, set `retainSessionsDays` to a positive integer in `config.json`, or export `NEW_RELIC_AI_RETAIN_SESSIONS_DAYS`. Set it to `null` to turn deletion off. Explicit day counts always win over a preset at the same level. Precedence, highest first:
 

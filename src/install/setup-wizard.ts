@@ -206,6 +206,8 @@ export function buildConfig(
     nrApiKeyCommand?: readonly string[] | null;
     /** Left untouched in the file when undefined. An explicit `retainSessionsDays` still outranks it at load. */
     retentionPolicy?: RetentionPolicy;
+    /** True when the user picked `retentionPolicy` this run (flag or typed). Drops a file-level `retainSessionsDays`, which would otherwise outrank the new preset. */
+    retentionChosen?: boolean;
   },
 ): Partial<z.infer<typeof ConfigFileSchema>> {
   const mode = inputs.mode ?? 'cloud';
@@ -243,6 +245,9 @@ export function buildConfig(
     delete config.nrApiKey;
   } else if (inputs.nrApiKey) {
     delete config.nrApiKeyCommand;
+  }
+  if (inputs.retentionChosen) {
+    delete config.retainSessionsDays;
   }
   return config;
 }
@@ -570,15 +575,17 @@ export async function runSetupWizard(
     }
 
     // Step 5a: Retention preset. --retention pre-selects and skips the question.
-    // The preset only sets how long local files are kept; an explicit
-    // retainSessionsDays already in the file keeps winning, so it is left alone.
-    // Enter with no valid existing preset writes nothing, so a config that never
-    // chose one stays without the key.
+    // A preset picked here (flag or typed) is the newer choice, so it replaces a
+    // retainSessionsDays already in the file, which would otherwise outrank it.
+    // Enter keeps the file as it is. Enter with no valid existing preset writes
+    // nothing, so a config that never chose one stays without the key.
     const existingRetention: RetentionPolicy | undefined =
       parseRetentionAnswer(existing.retentionPolicy ?? '') ?? undefined;
     let retentionPolicy: RetentionPolicy | undefined;
+    let retentionChosen = false;
     if (opts.retention) {
       retentionPolicy = opts.retention;
+      retentionChosen = true;
       print(`Retention: ${retentionPolicy} (--retention flag)`);
     } else {
       print('\nRetention — how long local session, weekly summary and ledger files are kept:');
@@ -593,6 +600,7 @@ export async function runSetupWizard(
       ).trim();
       const answered = retentionRaw === '' ? null : parseRetentionAnswer(retentionRaw);
       retentionPolicy = answered ?? existingRetention;
+      retentionChosen = answered !== null;
       if (retentionRaw !== '' && answered === null) {
         print(
           `  ⚠ Unknown retention policy "${retentionRaw}" — ${retentionPolicy ? `keeping ${retentionPolicy}` : 'leaving it unset'}`,
@@ -609,9 +617,15 @@ export async function runSetupWizard(
         existing.retainSessionsDays === null
           ? 'disabled (null)'
           : `${existing.retainSessionsDays} days`;
-      print(
-        `  ℹ config.json already sets retainSessionsDays (${explicit}). It is unchanged and takes precedence over any retentionPolicy.`,
-      );
+      if (retentionChosen && retentionPolicy) {
+        print(
+          `  ℹ Removed retainSessionsDays (${explicit}) from config.json, so the ${retentionPolicy} preset sets retention.`,
+        );
+      } else {
+        print(
+          `  ℹ config.json already sets retainSessionsDays (${explicit}). It is unchanged and takes precedence over any retentionPolicy.`,
+        );
+      }
     }
 
     // Step 5b: Dashboard port (local/both only)
@@ -665,6 +679,7 @@ export async function runSetupWizard(
       licenseKeyCommand,
       nrApiKeyCommand,
       retentionPolicy,
+      retentionChosen,
     });
 
     writeJsonFile(CONFIG_PATH, config, DEFAULT_STORAGE_PATH);
