@@ -263,9 +263,15 @@ var headerWordValue = (text, match, quote, spans) => {
   pushValue(spans, start, from, end);
   return close >= 0 || closesQuote(text, end, outside, inside) ? pushGlued(text, spans, end, outside) : end;
 };
-var NAME = /(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-z])\s*[=:]\s*/gi;
+var SECRET_NAME = String.raw`(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)`;
+var SECRET_WORD = String.raw`(?:token|password|passwd|secret|(?:api|access|secret|private)[-_]?key)`;
+var SECRET_KEY = new RegExp(
+  String.raw`(?:${SECRET_NAME}|${SECRET_WORD}|${AUTH_HEADER})$`,
+  "i"
+);
+var NAME = new RegExp(String.raw`${SECRET_NAME}(?![a-z])\s*[=:]\s*`, "gi");
 var FLAG = new RegExp(
-  String.raw`-(?<=(?:^|[^\w-]|${AFTER_ESCAPE})-)-?(?:[a-z0-9]+[-_])*(?:token|password|passwd|secret|(?:api|access|secret|private)[-_]?key)(?:=[ \t]*|(?:[ \t]|${CONTINUATION})+(?![ \t-]|${CONTINUATION}))`,
+  String.raw`-(?<=(?:^|[^\w-]|${AFTER_ESCAPE})-)-?(?:[a-z0-9]+[-_])*${SECRET_WORD}(?:=[ \t]*|(?:[ \t]|${CONTINUATION})+(?![ \t-]|${CONTINUATION}))`,
   "gi"
 );
 var wordValue = (text, match, quote, spans) => {
@@ -1561,31 +1567,73 @@ function truncate(value, maxLen) {
   return value.slice(0, maxLen) + TRUNCATED;
 }
 function recordedContent(value, maxLen) {
-  const redactUpTo = () => {
+  const budget = () => {
     let left = maxLen;
-    return (text) => {
-      const kept = left > 0 ? redact(text) : TRUNCATED;
-      left -= text.length + 2;
-      return kept;
+    return {
+      left: () => left,
+      redact: (text) => {
+        const kept = left > 0 ? redact(text) : TRUNCATED;
+        left -= text.length + 2;
+        return kept;
+      }
     };
   };
-  const redactValue = redactUpTo();
-  const redactKey = redactUpTo();
-  const content = typeof value === "string" ? redactValue(value) : JSON.stringify(value, (_key, v) => {
-    if (typeof v === "string") return redactValue(v);
-    if (v === null || typeof v !== "object" || Array.isArray(v)) return v;
+  const values = budget();
+  const names = budget();
+  const content = typeof value === "string" ? values.redact(value) : JSON.stringify(value, (_key, v) => {
+    if (typeof v === "string") return values.redact(v);
+    if (v === null || typeof v !== "object") return v;
+    if (Array.isArray(v)) return hideArgs(v, values.left());
     const keys = /* @__PURE__ */ new Set();
     return Object.fromEntries(
       Object.entries(v).map(([k, x]) => {
-        const base = redactKey(k);
+        const base = names.redact(k);
         let key = base;
         for (let n = 2; keys.has(key); n++) key = `${base} (${n})`;
         keys.add(key);
-        return [key, x];
+        const secret = (typeof x === "string" || typeof x === "number") && SECRET_KEY.test(k);
+        return [key, secret ? REDACTED : x];
       })
     );
   });
   return truncate(content, maxLen);
+}
+var REDACTED = "[REDACTED]";
+var SHELL_SPECIAL = /[\s"'\\$;|&()<>`#]/;
+var shellWord = (arg) => arg !== "" && !SHELL_SPECIAL.test(arg) ? arg : `'${arg.replaceAll("'", `'\\''`)}'`;
+var MAX_ARG_PROBE_CHARS = 262144;
+function hideArgs(value, room) {
+  const strings = value.flatMap(
+    (arg) => typeof arg === "string" || typeof arg === "number" ? [String(arg)] : []
+  );
+  if (strings.length < value.length) return value;
+  let count = 0;
+  for (let left = room; count < strings.length && left > 0; count++) {
+    if (typeof value[count] === "string") left -= strings[count].length + 2;
+  }
+  const args = strings.slice(0, count);
+  const words = args.map(shellWord);
+  const command = words.join(" ");
+  const hidden = redact(command);
+  if (hidden === command) return value;
+  const alone = args.map((arg) => shellWord(redact(arg)));
+  let first = 0;
+  for (let at = 0; hidden.startsWith(`${alone[first]} `, at); first++) {
+    at += alone[first].length + 1;
+  }
+  let last = args.length - 1;
+  for (let at = hidden.length; last > first && hidden.endsWith(` ${alone[last]}`, at); last--) {
+    at -= alone[last].length + 1;
+  }
+  let [end, probed] = [-1, 0];
+  return value.map((arg, j) => {
+    if (j >= args.length) return arg;
+    end += 1 + words[j].length;
+    if (j === 0 || j < first || j > last) return arg;
+    probed += end;
+    if (probed > MAX_ARG_PROBE_CHARS) return REDACTED;
+    return redact(command.slice(0, end)).endsWith(` ${alone[j]}`) ? arg : REDACTED;
+  });
 }
 function countLines(text) {
   if (text === "") return 0;

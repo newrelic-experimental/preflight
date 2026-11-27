@@ -355,13 +355,21 @@ const headerWordValue: Redact = (text, match, quote, spans) => {
     : end;
 };
 
+const SECRET_NAME = String.raw`(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)`;
+const SECRET_WORD = String.raw`(?:token|password|passwd|secret|(?:api|access|secret|private)[-_]?key)`;
+
+export const SECRET_KEY = new RegExp(
+  String.raw`(?:${SECRET_NAME}|${SECRET_WORD}|${AUTH_HEADER})$`,
+  'i',
+);
+
 // An = or : takes the next word even after a space or a line break, as the earlier rule did,
 // because free text such as PASSWORD = "x" in a config file looks the same as an empty value.
-const NAME = /(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-z])\s*[=:]\s*/gi;
+const NAME = new RegExp(String.raw`${SECRET_NAME}(?![a-z])\s*[=:]\s*`, 'gi');
 
 // --password-file and --token-stdin name where the secret is, so the flag must end in a name.
 const FLAG = new RegExp(
-  String.raw`-(?<=(?:^|[^\w-]|${AFTER_ESCAPE})-)-?(?:[a-z0-9]+[-_])*(?:token|password|passwd|secret|(?:api|access|secret|private)[-_]?key)(?:=[ \t]*|(?:[ \t]|${CONTINUATION})+(?![ \t-]|${CONTINUATION}))`,
+  String.raw`-(?<=(?:^|[^\w-]|${AFTER_ESCAPE})-)-?(?:[a-z0-9]+[-_])*${SECRET_WORD}(?:=[ \t]*|(?:[ \t]|${CONTINUATION})+(?![ \t-]|${CONTINUATION}))`,
   'gi',
 );
 

@@ -17,7 +17,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, utimesSyn
 import { resolve, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { cutAtWord, redactSecrets } from '../redaction-patterns.js';
+import { cutAtWord, redactSecrets, SECRET_KEY } from '../redaction-patterns.js';
 import { resolveRecordContent } from '../record-content-gate.js';
 import { CLAUDE_CODE_PLATFORM_NAME } from '../platforms/claude-code-adapter.js';
 import { hookEventFromArg } from '../hook-subcommands.js';
@@ -225,34 +225,86 @@ function truncate(value: string, maxLen: number): string {
 // plus its two quotes. Values and keys each count toward their own cap, because serialization visits
 // each kind in order. Keys that redact to the same text are numbered so no entry is dropped.
 function recordedContent(value: unknown, maxLen: number): string {
-  const redactUpTo = (): ((text: string) => string) => {
+  const budget = () => {
     let left = maxLen;
-    return (text) => {
-      const kept = left > 0 ? redact(text) : TRUNCATED;
-      left -= text.length + 2;
-      return kept;
+    return {
+      left: () => left,
+      redact: (text: string): string => {
+        const kept = left > 0 ? redact(text) : TRUNCATED;
+        left -= text.length + 2;
+        return kept;
+      },
     };
   };
-  const redactValue = redactUpTo();
-  const redactKey = redactUpTo();
+  const values = budget();
+  const names = budget();
   const content =
     typeof value === 'string'
-      ? redactValue(value)
+      ? values.redact(value)
       : JSON.stringify(value, (_key, v: unknown) => {
-          if (typeof v === 'string') return redactValue(v);
-          if (v === null || typeof v !== 'object' || Array.isArray(v)) return v;
+          if (typeof v === 'string') return values.redact(v);
+          if (v === null || typeof v !== 'object') return v;
+          if (Array.isArray(v)) return hideArgs(v, values.left());
           const keys = new Set<string>();
           return Object.fromEntries(
             Object.entries(v).map(([k, x]) => {
-              const base = redactKey(k);
+              const base = names.redact(k);
               let key = base;
               for (let n = 2; keys.has(key); n++) key = `${base} (${n})`;
               keys.add(key);
-              return [key, x];
+              const secret = (typeof x === 'string' || typeof x === 'number') && SECRET_KEY.test(k);
+              return [key, secret ? REDACTED : x];
             }),
           );
         });
   return truncate(content, maxLen);
+}
+
+const REDACTED = '[REDACTED]';
+const SHELL_SPECIAL = /[\s"'\\$;|&()<>`#]/;
+
+const shellWord = (arg: string): string =>
+  arg !== '' && !SHELL_SPECIAL.test(arg) ? arg : `'${arg.replaceAll("'", `'\\''`)}'`;
+
+// Redacting every prefix of the command is quadratic, so past this many prefix characters the
+// remaining words are hidden unread.
+const MAX_ARG_PROBE_CHARS = 262_144;
+
+// A flag and its value can be separate strings, as in ["curl", "-u", "me:pw"].
+function hideArgs(value: unknown[], room: number): unknown[] {
+  const strings = value.flatMap((arg) =>
+    typeof arg === 'string' || typeof arg === 'number' ? [String(arg)] : [],
+  );
+  if (strings.length < value.length) return value;
+  // Strings that start past the cap are stored as the truncation marker, so they are not read.
+  let count = 0;
+  for (let left = room; count < strings.length && left > 0; count++) {
+    if (typeof value[count] === 'string') left -= strings[count].length + 2;
+  }
+  const args = strings.slice(0, count);
+  const words = args.map(shellWord);
+  const command = words.join(' ');
+  const hidden = redact(command);
+  if (hidden === command) return value;
+  const alone = args.map((arg) => shellWord(redact(arg)));
+  // A word is matched whole, so a value that ends like [REDACTED] is not taken for the marker.
+  let first = 0;
+  for (let at = 0; hidden.startsWith(`${alone[first]} `, at); first++) {
+    at += alone[first].length + 1;
+  }
+  let last = args.length - 1;
+  for (let at = hidden.length; last > first && hidden.endsWith(` ${alone[last]}`, at); last--) {
+    at -= alone[last].length + 1;
+  }
+  let [end, probed] = [-1, 0];
+  return value.map((arg, j) => {
+    if (j >= args.length) return arg;
+    end += 1 + words[j].length;
+    if (j === 0 || j < first || j > last) return arg;
+    probed += end;
+    if (probed > MAX_ARG_PROBE_CHARS) return REDACTED;
+    return redact(command.slice(0, end)).endsWith(` ${alone[j]}`) ? arg : REDACTED;
+  });
 }
 
 function countLines(text: string): number {

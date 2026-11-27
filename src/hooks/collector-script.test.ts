@@ -29,6 +29,7 @@ import {
   writeCwdBreadcrumb,
   writePpidBreadcrumb,
 } from './collector-script.js';
+import { redactSensitive } from '../config.js';
 import { CLAUDE_CODE_ENV_SIGNALS } from '../platforms/claude-code-adapter.js';
 import { createDefaultRegistry } from '../platforms/platform-registry.js';
 import { PLATFORM_NAMES } from '../platforms/platform-names.js';
@@ -1704,6 +1705,175 @@ describe('collector-script', () => {
           b: '...[truncated]',
           c: '...[truncated]',
         });
+      });
+    });
+
+    describe('redacts a secret split across argv or named by its key', () => {
+      const recorded = (value: Record<string, unknown>): unknown[] => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        processHook(makePreToolUse({ tool_input: value }));
+        processHook(makePostToolUse({ tool_response: value }));
+        const [pre, post] = readBufferEvents();
+        return [pre!.inputContent, post!.outputContent].map((c) => JSON.parse(c as string));
+      };
+
+      const words = Array.from({ length: 40 }, (_, i) => `file-${i}.ts`);
+      const many = Array.from({ length: 3000 }, (_, i) => `src/module-${i}/index.ts`);
+      const argv: [string[], string[]][] = [
+        [
+          ['curl', '-u', 'me:hunter2'],
+          ['curl', '-u', '[REDACTED]'],
+        ],
+        [
+          ['--password', 'hunter2'],
+          ['--password', '[REDACTED]'],
+        ],
+        [
+          ['curl', '-s', '-H', 'X-Api-Key: hunter2', 'https://x'],
+          ['curl', '-s', '-H', '[REDACTED]', 'https://x'],
+        ],
+        [
+          ['mysql', '-phunter2', 'db'],
+          ['mysql', '[REDACTED]', 'db'],
+        ],
+        [
+          ['docker', 'login', '-p', 'hunter2', 'it\'s "quoted"'],
+          ['docker', 'login', '-p', '[REDACTED]', 'it\'s "quoted"'],
+        ],
+        [
+          ['redis-cli', '-a', 'hunter2', 'ping'],
+          ['redis-cli', '-a', '[REDACTED]', 'ping'],
+        ],
+        [
+          ['curl', '-A', "it's me", '-u', 'me:hunter2', 'https://x'],
+          ['curl', '-A', "it's me", '-u', '[REDACTED]', 'https://x'],
+        ],
+        [
+          ['--password', '', 'next'],
+          ['--password', '[REDACTED]', 'next'],
+        ],
+        [
+          ['--token', 'hunter2', ...words, '--password', 'hunter2', 'last'],
+          ['--token', '[REDACTED]', ...words, '--password', '[REDACTED]', 'last'],
+        ],
+        [
+          [...words, '--password', 'hunter2'],
+          [...words, '--password', '[REDACTED]'],
+        ],
+        [
+          ['--password', 'ACTED]'],
+          ['--password', '[REDACTED]'],
+        ],
+        [
+          ['--token', 'hunter2', 'API_TOKEN=hunter2', '--password', 'hunter2'],
+          ['--token', '[REDACTED]', 'API_[REDACTED]', '--password', '[REDACTED]'],
+        ],
+      ];
+
+      it.each(argv)('hides the value in %j as the command string would', (args, stored) => {
+        expect(recorded({ args })).toEqual([{ args: stored }, { args: stored }]);
+        expect(redactSensitive(args.join(' '))).not.toContain('hunter2');
+      });
+
+      it('reads numbers as words of the command and keeps them', () => {
+        const args = ['curl', '-u', 'me:hunter2', '--max-time', 5, 'https://x'];
+
+        expect(recorded({ args })).toEqual([
+          { args: ['curl', '-u', '[REDACTED]', '--max-time', 5, 'https://x'] },
+          { args: ['curl', '-u', '[REDACTED]', '--max-time', 5, 'https://x'] },
+        ]);
+      });
+
+      it.each([
+        ['--token', 'hunter2', ...many],
+        [...many, '--password', 'hunter2'],
+      ])('reads only the words of a long array that redact differently', (...args) => {
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '1048576';
+        const stored = args.map((arg) => (arg === 'hunter2' ? '[REDACTED]' : arg));
+        expect(recorded({ args })).toEqual([{ args: stored }, { args: stored }]);
+      });
+
+      it('reads the words of an array up to the content cap', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        processHook(
+          makePostToolUse({ tool_response: { args: ['--password', 'hunter2', ...many] } }),
+        );
+
+        const stored = readBufferEvents()[0]!.outputContent as string;
+        expect(stored).toMatch(/^\{"args":\["--password","\[REDACTED\]","src\/module-0/);
+        expect(stored).toMatch(/\.\.\.\[truncated\]$/);
+      });
+
+      it('reads every string the cap keeps, however many numbers come first', () => {
+        process.env.NEW_RELIC_AI_MCP_RECORD_CONTENT = 'true';
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '256';
+        const args = [...Array.from({ length: 100 }, () => 1), '--password', 'hunter2'];
+        processHook(makePostToolUse({ tool_response: { args } }));
+
+        const stored = readBufferEvents()[0]!.outputContent as string;
+        expect(stored).toContain('"--password","[REDACTED]"');
+      });
+
+      it('keeps the objects of an array that is not a command', () => {
+        const [input] = recorded({ args: ['--password', { a: 1 }, 'hunter2'] });
+        expect((input as { args: unknown[] }).args[1]).toEqual({ a: 1 });
+      });
+
+      it('hides the words it has no budget to read in a long array with secrets at both ends', () => {
+        process.env.NEW_RELIC_AI_MCP_MAX_CONTENT_LENGTH = '1048576';
+        const [input] = recorded({
+          args: ['--token', 'hunter2', ...many, '--password', 'hunter2'],
+        });
+        expect(JSON.stringify(input)).not.toContain('hunter2');
+      });
+
+      it('keeps a curl -d value whose quote and options are its own text', () => {
+        const args = ['curl', '-d', "it's -u me:hunter2", 'https://x'];
+        expect(recorded({ args })).toEqual([{ args }, { args }]);
+      });
+
+      it.each([
+        ['echo', '--password-file', 'hunter2'],
+        ['rg', '-u', 'hunter2'],
+        ['--password', '-v'],
+        ['git', 'commit', '-m', 'rotate the token'],
+      ])('keeps %j, which the command string keeps too', (...args) => {
+        expect(recorded({ args })).toEqual([{ args }, { args }]);
+        expect(redactSensitive(args.join(' '))).toBe(args.join(' '));
+      });
+
+      it.each([
+        { password: 'hunter2' },
+        { env: { API_TOKEN: 'hunter2' } },
+        { aws_secret_access_key: 'hunter2' },
+        { apiKey: 'hunter2' },
+        { 'X-Api-Key': 'hunter2' },
+        { client_secret: 'hunter2' },
+        { passphrase: 'hunter2' },
+        { stripeApiKey: 'hunter2' },
+        { headers: { Authorization: 'Basic aHVudGVyMg==' } },
+        { pin: { PASSWORD: 123456 } },
+      ])('hides the value of a key that names a secret in %j', (value) => {
+        const [input, output] = recorded(value);
+        expect(input).toEqual(output);
+        expect(JSON.stringify(input)).not.toMatch(/hunter2|aHVudGVyMg|123456/);
+        expect(JSON.stringify(input)).toContain('"[REDACTED]"');
+      });
+
+      it('keeps keys that only mention a secret, and values that are not strings or numbers', () => {
+        const value = {
+          passwordPolicy: 'strict',
+          password_file: '/etc/pw',
+          tokenizer: 'bpe',
+          max_tokens: 1024,
+          token_count: 7,
+          apiKeyId: 'key-1',
+          authorization_url: 'https://x',
+          password: true,
+          token: null,
+        };
+
+        expect(recorded(value)).toEqual([value, value]);
       });
     });
 
