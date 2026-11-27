@@ -1,5 +1,5 @@
 import type { TransportOptions, TransportResult } from './types.js';
-import { sendWithRetry, resolveRegion, getLogsApiUrl } from './http-client.js';
+import { sendWithRetry, resolveRegion, getLogsApiUrl, commonBlock } from './http-client.js';
 
 export interface NrLogEntry {
   timestamp: number;
@@ -13,11 +13,10 @@ export interface NrLogEntry {
  * Body shape: `[{ logs: [...] }]` — the "Detailed JSON"
  * format documented at
  * https://docs.newrelic.com/docs/logs/log-api/introduction-log-api/.
- * NR also accepts a top-level `common` block sibling to `logs` for shared
- * attributes (e.g. `[{ common: { attributes: {…} }, logs: [...] }]`); we
- * don't use it because each log entry already carries its own `attributes`
- * map, but the option is open if a future caller wants to deduplicate
- * across-batch attributes.
+ * When `options.commonAttributes` is non-empty it goes in the top-level
+ * `common` block sibling to `logs`
+ * (`[{ common: { attributes: {…} }, logs: [...] }]`); each entry's own
+ * `attributes` map still carries its per-entry fields.
  *
  * **⚠️ Standalone transport helper — no harvest-scheduler integration.**
  * Unlike `sendEvents` and `sendMetrics`, this function is NOT wired into
@@ -41,7 +40,7 @@ export async function sendLogs(
 
   return sendWithRetry({
     url,
-    body: [{ logs }],
+    body: [{ ...commonBlock(options), logs }],
     licenseKey,
     maxRetries: options.maxRetries ?? 3,
     baseDelayMs: options.baseDelayMs ?? 1000,

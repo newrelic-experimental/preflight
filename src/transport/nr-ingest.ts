@@ -59,14 +59,16 @@ import type { ResolvedTier } from './tier-types.js';
 import { TierLocalWriter } from '../storage/tier-local-writer.js';
 
 /**
- * Stamped onto every event leaving `routeEvent()` so downstream consumers can
- * tell Preflight-emitted events apart from other instrumentation.
+ * Stamped onto every event leaving `routeEvent()`, and sent as the
+ * `common.attributes` of every Metric API and Logs API batch, so downstream
+ * consumers can tell Preflight-emitted telemetry apart from other
+ * instrumentation.
  */
-const INSTRUMENTATION_ATTRIBUTES: NrEventData = {
+const INSTRUMENTATION_ATTRIBUTES = {
   'instrumentation.provider': 'preflight',
   'instrumentation.name': 'preflight',
   'instrumentation.version': VERSION,
-};
+} as const;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1272,6 +1274,7 @@ export class NrIngestManager {
       ...options.transportOptions,
       clientName: 'newrelic-preflight',
       clientVersion: VERSION,
+      commonAttributes: INSTRUMENTATION_ATTRIBUTES,
     };
 
     // Absent/empty tiers → one implicit tier reproducing the existing

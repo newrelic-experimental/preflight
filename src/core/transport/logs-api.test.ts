@@ -152,4 +152,24 @@ const HAS_NR_CREDS = process.env.NEW_RELIC_LICENSE_KEY && process.env.NEW_RELIC_
     expect(result.success).toBe(true);
     expect(result.statusCode).toBe(200);
   });
+
+  describe('sendLogs common attributes', () => {
+    it('sends commonAttributes in the common.attributes block', async () => {
+      const commonAttributes = { 'instrumentation.provider': 'preflight' };
+      await sendLogs(testLogs, 'us01xxTESTKEY', { ...baseOptions, commonAttributes });
+
+      const body = fetchSpy.mock.calls[0][1]!.body as Buffer;
+      const payload = JSON.parse((await gunzipAsync(body)).toString());
+      expect(payload[0].common).toEqual({ attributes: commonAttributes });
+      expect(payload[0].logs).toHaveLength(2);
+    });
+
+    it('omits the common block when commonAttributes is absent', async () => {
+      await sendLogs(testLogs, 'us01xxTESTKEY', baseOptions);
+
+      const body = fetchSpy.mock.calls[0][1]!.body as Buffer;
+      const payload = JSON.parse((await gunzipAsync(body)).toString());
+      expect(payload[0]).not.toHaveProperty('common');
+    });
+  });
 });

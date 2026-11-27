@@ -312,6 +312,66 @@
               }
             ]
           }
+        },
+        {
+          "title": "Cache Hit Rate",
+          "layout": {
+            "column": 1,
+            "row": 10,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM Metric SELECT sum(ai.cost.tokens_cache_read) / (sum(ai.cost.tokens_input) + sum(ai.cost.tokens_cache_read)) * 100 AS 'Cache Hit %' WHERE developer = {{developer}} SINCE 7 days ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Cache Hit Rate Trend",
+          "layout": {
+            "column": 5,
+            "row": 10,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.line"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM Metric SELECT sum(ai.cost.tokens_cache_read) / (sum(ai.cost.tokens_input) + sum(ai.cost.tokens_cache_read)) * 100 AS 'Cache Hit %' WHERE developer = {{developer}} SINCE 8 weeks ago TIMESERIES 1 week"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Cost Avoided by Caching",
+          "layout": {
+            "column": 9,
+            "row": 10,
+            "width": 4,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM Metric SELECT sum(ai.cost.cache_savings_usd) / (sum(ai.cost.session_total_usd) + sum(ai.cost.cache_savings_usd)) * 100 AS 'Savings % of Spend' WHERE developer = {{developer}} SINCE 7 days ago"
+              }
+            ]
+          }
         }
       ]
     },

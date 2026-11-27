@@ -2,7 +2,7 @@ import { gzip } from 'node:zlib';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { createLogger } from '../logger.js';
-import type { HttpSendOptions, TransportResult } from './types.js';
+import type { HttpSendOptions, TransportOptions, TransportResult } from './types.js';
 import { buildUserAgent } from './otlp-shared.js';
 import { validateSsrfUrl } from '../security/ssrf.js';
 
@@ -182,6 +182,18 @@ const NR_INGEST_HOSTS: Readonly<
  * The Events API endpoint without an account ID. The license key alone selects
  * the destination account, and a wrong ID in the path fails with an empty 403.
  */
+/**
+ * The `common` block shared by Metric API and Logs API payloads, or nothing
+ * when the caller set no `commonAttributes`.
+ */
+export function commonBlock(options: TransportOptions): {
+  common?: { attributes: Readonly<Record<string, string | number | boolean>> };
+} {
+  const attributes = options.commonAttributes;
+  if (attributes === undefined || Object.keys(attributes).length === 0) return {};
+  return { common: { attributes } };
+}
+
 export function getEventsApiUrl(region: Region, collectorHost?: string | null): string {
   if (isLiteralHostname(collectorHost)) {
     return `https://${collectorHost}/v1/accounts/events`;

@@ -110,6 +110,12 @@ export interface TransportOptions {
   readonly clientName?: string;
   /** Version of the consuming client for the `User-Agent` header. */
   readonly clientVersion?: string;
+  /**
+   * Attributes sent once per batch in the `common.attributes` block of the
+   * Metric API and Logs API payloads. Ignored by the Events API, whose
+   * callers stamp each event themselves.
+   */
+  readonly commonAttributes?: Readonly<Record<string, string | number | boolean>>;
 }
 
 export interface TransportResult {
