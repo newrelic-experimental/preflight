@@ -423,7 +423,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "FROM Metric SELECT sum(ai.cost.tokens_cache_read) / (sum(ai.cost.tokens_input) + sum(ai.cost.tokens_cache_read)) * 100 AS 'Cache Hit %' SINCE 7 days ago"
+                "query": "FROM Metric SELECT sum(ai.cost.tokens_cache_read) / (sum(ai.cost.tokens_input) + sum(ai.cost.tokens_cache_read) + sum(ai.cost.tokens_cache_creation)) * 100 AS 'Cache Hit %' SINCE 7 days ago"
               }
             ],
             "platformOptions": {
@@ -1556,7 +1556,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "FROM Metric SELECT sum(ai.cost.tokens_cache_read) / (sum(ai.cost.tokens_input) + sum(ai.cost.tokens_cache_read)) * 100 AS 'Cache Hit %' SINCE 8 weeks ago TIMESERIES 1 week"
+                "query": "FROM Metric SELECT sum(ai.cost.tokens_cache_read) / (sum(ai.cost.tokens_input) + sum(ai.cost.tokens_cache_read) + sum(ai.cost.tokens_cache_creation)) * 100 AS 'Cache Hit %' SINCE 8 weeks ago TIMESERIES 1 week"
               }
             ],
             "platformOptions": {
@@ -2108,7 +2108,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "FROM Metric SELECT sum(ai.cost.tokens_cache_read) / (sum(ai.cost.tokens_input) + sum(ai.cost.tokens_cache_read)) * 100 AS 'Cache Hit %' FACET model SINCE 7 days ago"
+                "query": "FROM Metric SELECT sum(ai.cost.tokens_cache_read) / (sum(ai.cost.tokens_input) + sum(ai.cost.tokens_cache_read) + sum(ai.cost.tokens_cache_creation)) * 100 AS 'Cache Hit %' FACET model SINCE 7 days ago"
               }
             ],
             "platformOptions": {
