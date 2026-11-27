@@ -3493,6 +3493,7 @@ describe('redactSensitive() — secrets passed as command arguments', () => {
   ])('a %s argument right after a letter or digit', (_rule, before, argument) => {
     it.each([
       ['a JSON-escaped line break', JSON.stringify({ command: `${before}\n${argument}` })],
+      ['a JSON-escaped line continuation', JSON.stringify({ command: `${before}\\\n${argument}` })],
       ['a JSON-escaped tab', JSON.stringify({ command: `${before}\t${argument}` })],
       ['a JSON \\u escape', JSON.stringify({ command: `${before}\u0007${argument}` })],
       ['an ANSI colour code', `${before} \u001b[32m${argument}`],
@@ -3508,6 +3509,7 @@ describe('redactSensitive() — secrets passed as command arguments', () => {
     ['repeated quoted mysql -p flags', `mysql${' " -p'.repeat(209_000)}`],
     ['a mysql -e quote that never closes', `mysql -e "${'x -p '.repeat(209_000)}`],
     ['repeated line continuations', `mysql${' \\\n -p'.repeat(150_000)}`],
+    ['one word of glued line continuations', `mysql x${'\\\n'.repeat(400_000)}n`],
     ['repeated unclosed --token quotes', '--token "'.repeat(116_000)],
     ['a chain of hyphenated flag words', '--a-'.repeat(262_000)],
     ['repeated unclosed escaped header quotes', '-H \\"Api-Key: '.repeat(75_000)],
