@@ -168,16 +168,40 @@ function valueEnd(text: string, from: number, quote: Quote): number {
 }
 
 // Hiding a quoted part whose opening quote closes the text's quote leaves the rest read the same
-// only when it holds plain characters and blanks on one line, with no `#` after a blank.
+// only when it is a plain part.
 function reopenedClose(text: string, at: number, quote: Quote): number {
   if (quote === 'comment' || unitAt(text, at, quote) !== CLOSE) return -1;
-  const limit = at + 1 + MAX_QUOTED_PART;
-  const word = skipPlain(text, at + 1);
+  return plainPartClose(text, at, 1);
+}
+
+// Where the quote `width` characters long at `at` closes, when the part holds plain characters and
+// blanks on one line, with no `#` after a blank. Otherwise -1.
+function plainPartClose(text: string, at: number, width: number): number {
+  const limit = at + width + MAX_QUOTED_PART;
+  const word = skipPlain(text, at + width);
   let i = word;
   while (isBlank(text.charCodeAt(i)) && text.charCodeAt(i + 1) !== HASH) {
     i = skipPlain(text, i + 1);
   }
-  return text[i] === text[at] && (i === word || i <= limit) ? i : -1;
+  const closes = text.slice(i, i + width) === text.slice(at, at + width);
+  return closes && (i === word || i <= limit) ? i : -1;
+}
+
+// Where the plain characters and plain parts that start a word's rest end. Hiding them leaves the
+// rest read the same, inside bash -c too, which a value read to the end of its word may not.
+function plainTail(text: string, from: number, quote: Quote): number {
+  for (let end = skipPlain(text, from); ;) {
+    const c = text.charCodeAt(end);
+    const width =
+      quote === 'double' && c === BACKSLASH && text.charCodeAt(end + 1) === DOUBLE_QUOTE
+        ? 2
+        : c === SINGLE_QUOTE || c === DOUBLE_QUOTE
+          ? 1
+          : 0;
+    const close = width === 0 ? -1 : plainPartClose(text, end, width);
+    if (close < 0) return end;
+    end = skipPlain(text, close + width);
+  }
 }
 
 // A long quoted part may still close later, so the value stops before any quote or backslash, and
@@ -274,11 +298,27 @@ const quoteOpenedBy = (opener: string | undefined, quote: Quote): Quote => {
   return opener === '"' || (opener === '\\"' && quote === 'double') ? 'double' : 'none';
 };
 
+const closesQuote = (text: string, end: number, outside: Quote, inside: Quote): boolean =>
+  inside !== 'none' &&
+  unitAt(text, end, outside) === (inside === 'double' ? DOUBLE_QUOTE : SINGLE_QUOTE);
+
+// A header's quote may close before its word ends, as in 'X-Api-Key: a b'"c". Its plain tail, in
+// the quote outside the header's, is redacted after the closing quote, which stays.
+function pushGlued(text: string, spans: number[], close: number, outside: Quote): number {
+  const next = close + unitLength(text, close, outside);
+  return pushValue(spans, next, next, plainTail(text, next, outside));
+}
+
 const headerValue: Redact = (text, match, quote, spans) => {
+  const start = match.index + match[1].length;
   const from = match.index + match[0].length;
-  const close = reopenedClose(text, match.index + match[1].length - (match[2]?.length ?? 0), quote);
-  const end = close >= 0 ? close : readValue(text, from, quote, quoteOpenedBy(match[2], quote));
-  return pushValue(spans, match.index + match[1].length, from, end);
+  const inside = quoteOpenedBy(match[2], quote);
+  const close = reopenedClose(text, start - (match[2]?.length ?? 0), quote);
+  const end = close >= 0 ? close : readValue(text, from, quote, inside);
+  pushValue(spans, start, from, end);
+  return close >= 0 || closesQuote(text, end, quote, inside)
+    ? pushGlued(text, spans, end, quote)
+    : end;
 };
 
 const headerWordValue: Redact = (text, match, quote, spans) => {
@@ -295,13 +335,24 @@ const headerWordValue: Redact = (text, match, quote, spans) => {
             quoteOpenedBy(match[1], quote),
           )
         : -1;
-  if (close >= 0) return pushValue(spans, start, from, close);
   const before = quote === 'none' ? undefined : match[1];
   const beforeOpensQuote = quoteOpenedBy(before, 'none') === (quote === 'ansi' ? 'single' : quote);
-  const outside = after === undefined && beforeOpensQuote ? 'none' : quote;
+  // A quote before the name that closes the text's quote opens it again after the word.
+  const outside =
+    after !== undefined
+      ? quote
+      : before === undefined
+        ? quoteOpenedBy(match[1], quote)
+        : beforeOpensQuote
+          ? 'none'
+          : quote;
   const inside = quoteOpenedBy(after ?? before, outside);
-  if (inside === 'none') return from;
-  return pushValue(spans, start, from, readValue(text, from, outside, inside));
+  if (close < 0 && inside === 'none') return from;
+  const end = close >= 0 ? close : readValue(text, from, outside, inside);
+  pushValue(spans, start, from, end);
+  return close >= 0 || closesQuote(text, end, outside, inside)
+    ? pushGlued(text, spans, end, outside)
+    : end;
 };
 
 // An = or : takes the next word even after a space or a line break, as the earlier rule did,

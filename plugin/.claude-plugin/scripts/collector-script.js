@@ -140,13 +140,26 @@ function valueEnd(text, from, quote) {
 }
 function reopenedClose(text, at, quote) {
   if (quote === "comment" || unitAt(text, at, quote) !== CLOSE) return -1;
-  const limit = at + 1 + MAX_QUOTED_PART;
-  const word = skipPlain(text, at + 1);
+  return plainPartClose(text, at, 1);
+}
+function plainPartClose(text, at, width) {
+  const limit = at + width + MAX_QUOTED_PART;
+  const word = skipPlain(text, at + width);
   let i = word;
   while (isBlank(text.charCodeAt(i)) && text.charCodeAt(i + 1) !== HASH) {
     i = skipPlain(text, i + 1);
   }
-  return text[i] === text[at] && (i === word || i <= limit) ? i : -1;
+  const closes = text.slice(i, i + width) === text.slice(at, at + width);
+  return closes && (i === word || i <= limit) ? i : -1;
+}
+function plainTail(text, from, quote) {
+  for (let end = skipPlain(text, from); ; ) {
+    const c = text.charCodeAt(end);
+    const width = quote === "double" && c === BACKSLASH && text.charCodeAt(end + 1) === DOUBLE_QUOTE ? 2 : c === SINGLE_QUOTE || c === DOUBLE_QUOTE ? 1 : 0;
+    const close = width === 0 ? -1 : plainPartClose(text, end, width);
+    if (close < 0) return end;
+    end = skipPlain(text, close + width);
+  }
 }
 function plainPrefix(text, from) {
   let i = skipPlain(text, from);
@@ -218,11 +231,19 @@ var quoteOpenedBy = (opener, quote) => {
   if (opener === "'") return "single";
   return opener === '"' || opener === '\\"' && quote === "double" ? "double" : "none";
 };
+var closesQuote = (text, end, outside, inside) => inside !== "none" && unitAt(text, end, outside) === (inside === "double" ? DOUBLE_QUOTE : SINGLE_QUOTE);
+function pushGlued(text, spans, close, outside) {
+  const next = close + unitLength(text, close, outside);
+  return pushValue(spans, next, next, plainTail(text, next, outside));
+}
 var headerValue = (text, match, quote, spans) => {
+  const start = match.index + match[1].length;
   const from = match.index + match[0].length;
-  const close = reopenedClose(text, match.index + match[1].length - (match[2]?.length ?? 0), quote);
-  const end = close >= 0 ? close : readValue(text, from, quote, quoteOpenedBy(match[2], quote));
-  return pushValue(spans, match.index + match[1].length, from, end);
+  const inside = quoteOpenedBy(match[2], quote);
+  const close = reopenedClose(text, start - (match[2]?.length ?? 0), quote);
+  const end = close >= 0 ? close : readValue(text, from, quote, inside);
+  pushValue(spans, start, from, end);
+  return close >= 0 || closesQuote(text, end, quote, inside) ? pushGlued(text, spans, end, quote) : end;
 };
 var headerWordValue = (text, match, quote, spans) => {
   const after = match[2];
@@ -233,13 +254,14 @@ var headerWordValue = (text, match, quote, spans) => {
     text.lastIndexOf(match[1], match.index),
     quoteOpenedBy(match[1], quote)
   ) : -1;
-  if (close >= 0) return pushValue(spans, start, from, close);
   const before = quote === "none" ? void 0 : match[1];
   const beforeOpensQuote = quoteOpenedBy(before, "none") === (quote === "ansi" ? "single" : quote);
-  const outside = after === void 0 && beforeOpensQuote ? "none" : quote;
+  const outside = after !== void 0 ? quote : before === void 0 ? quoteOpenedBy(match[1], quote) : beforeOpensQuote ? "none" : quote;
   const inside = quoteOpenedBy(after ?? before, outside);
-  if (inside === "none") return from;
-  return pushValue(spans, start, from, readValue(text, from, outside, inside));
+  if (close < 0 && inside === "none") return from;
+  const end = close >= 0 ? close : readValue(text, from, outside, inside);
+  pushValue(spans, start, from, end);
+  return close >= 0 || closesQuote(text, end, outside, inside) ? pushGlued(text, spans, end, outside) : end;
 };
 var NAME = /(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-z])\s*[=:]\s*/gi;
 var FLAG = new RegExp(
