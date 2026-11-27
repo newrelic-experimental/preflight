@@ -541,6 +541,7 @@ var CLAUDE_CODE_ENV_SIGNALS = [
 var HOOK_EVENT_TYPES = [
   "PreToolUse",
   "PostToolUse",
+  "PostToolUseFailure",
   "PermissionRequest",
   "PermissionDenied",
   "StopFailure"
@@ -548,6 +549,7 @@ var HOOK_EVENT_TYPES = [
 var HOOK_SUBCOMMANDS = {
   PreToolUse: "pre-tool",
   PostToolUse: "post-tool",
+  PostToolUseFailure: "post-tool-failure",
   PermissionRequest: "permission-request",
   PermissionDenied: "permission-denied",
   StopFailure: "stop-failure"

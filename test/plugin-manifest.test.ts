@@ -209,6 +209,12 @@ describe('Claude Code plugin manifests', () => {
     expect(hooksConfig.hooks.PostToolUse.length).toBeGreaterThan(0);
   });
 
+  it('hooks.json wires PostToolUseFailure, so a failed tool call reaches the collector', () => {
+    expect(hooksConfig.hooks.PostToolUseFailure?.[0]?.hooks[0]?.command).toMatch(
+      / post-tool-failure$/,
+    );
+  });
+
   it('hooks.json wires the same events, matchers, and subcommands as preflight install', () => {
     const shape = (entries: Record<string, HookGroup[]>) =>
       Object.fromEntries(

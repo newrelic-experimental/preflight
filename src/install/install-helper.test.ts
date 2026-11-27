@@ -19,6 +19,7 @@ import {
   areHooksInstalledAtAnyScope,
   NR_HOOK_RE,
   siblingBinPath,
+  type HookEntry,
 } from './install-helper.js';
 import { writeJsonFile } from './json-utils.js';
 
@@ -853,6 +854,18 @@ describe('mergeSettings', () => {
     expect(hooks.PermissionDenied).toHaveLength(1);
   });
 
+  it.each([undefined, '/usr/local/bin/preflight'])(
+    'registers PostToolUseFailure once across re-installs (binPath %s), and uninstall removes it',
+    (binPath) => {
+      const twice = mergeSettings(mergeSettings({}, binPath), binPath);
+
+      const failureHooks = (twice.hooks as Record<string, HookEntry[]>).PostToolUseFailure;
+      expect(failureHooks).toHaveLength(1);
+      expect(failureHooks[0].hooks[0].command).toMatch(/preflight-collector"? post-tool-failure$/);
+      expect(removeSettings(twice)).toEqual({});
+    },
+  );
+
   it('upgrades a bare-name hook entry to a quoted absolute path on re-install', () => {
     const withBare = mergeSettings({});
     const withAbsolute = mergeSettings(withBare, '/usr/local/bin/preflight');
@@ -1211,11 +1224,14 @@ describe('mergeMcpConfig', () => {
 // ---------------------------------------------------------------------------
 
 describe('mergeSettings malformed input', () => {
-  it('throws a descriptive error when existing.hooks.PreToolUse is not an array', () => {
-    expect(() =>
-      mergeSettings({ hooks: { PreToolUse: 'not-an-array' } }, '/usr/local/bin/preflight'),
-    ).toThrow(/unexpected shape/);
-  });
+  it.each(['PreToolUse', 'PostToolUseFailure'])(
+    'throws a descriptive error when existing.hooks.%s is not an array',
+    (event) => {
+      expect(() =>
+        mergeSettings({ hooks: { [event]: 'not-an-array' } }, '/usr/local/bin/preflight'),
+      ).toThrow(/unexpected shape/);
+    },
+  );
 });
 
 describe('mergeMcpConfig malformed input', () => {
@@ -1465,6 +1481,12 @@ describe('areHooksInstalled()', () => {
       { matcher: '', hooks: [{ type: 'command', command: 'preflight-collector post-tool' }] },
     ];
     expect(areHooksInstalled({ hooks: { PreToolUse: pre, PostToolUse: post } })).toBe(false);
+  });
+
+  it('returns false for an install made before PostToolUseFailure was registered', () => {
+    const hooks = { ...(mergeSettings({}).hooks as Record<string, unknown>) };
+    delete hooks.PostToolUseFailure;
+    expect(areHooksInstalled({ hooks })).toBe(false);
   });
 });
 

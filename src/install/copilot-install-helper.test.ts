@@ -238,6 +238,19 @@ describe('mergeCopilotHooksFile', () => {
     expect(merged.version).toBe(1);
   });
 
+  it.each([undefined, '/bin/preflight'])(
+    'registers PostToolUseFailure once across re-installs (binPath %s), and uninstall removes it',
+    (binPath) => {
+      const twice = mergeCopilotHooksFile(mergeCopilotHooksFile({}, binPath), binPath);
+
+      const failureHooks = (twice.hooks as Record<string, CopilotHookCommand[]>).PostToolUseFailure;
+      expect(failureHooks).toHaveLength(1);
+      expect(failureHooks[0].command).toMatch(/preflight-collector"? post-tool-failure$/);
+      expect(failureHooks[0].powershell).toMatch(/ post-tool-failure$/);
+      expect(removeCopilotHooksFile(twice)).toEqual({ version: 1 });
+    },
+  );
+
   it('upgrades a stale bare-command entry to the absolute path when binPath is known', () => {
     const existing = {
       version: 1,
@@ -507,11 +520,14 @@ describe('mergeCopilotHooksFile', () => {
     expect(merged.someOtherKey).toBe('value');
   });
 
-  it('throws on a malformed existing file', () => {
-    expect(() =>
-      mergeCopilotHooksFile({ hooks: { PreToolUse: 'not-an-array' } }, '/bin/preflight'),
-    ).toThrow();
-  });
+  it.each(['PreToolUse', 'PostToolUseFailure'])(
+    'throws on a malformed existing file whose %s is not an array',
+    (event) => {
+      expect(() =>
+        mergeCopilotHooksFile({ hooks: { [event]: 'not-an-array' } }, '/bin/preflight'),
+      ).toThrow(/unexpected shape/);
+    },
+  );
 });
 
 describe('removeCopilotHooksFile', () => {

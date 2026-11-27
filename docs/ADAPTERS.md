@@ -41,7 +41,7 @@ Each `MCP_CLIENT === '<name>'` or `NEW_RELIC_AI_PLATFORM === '<name>'` check bel
 
 ## Claude Code (`claude-code`)
 
-**Mechanism:** Native `PreToolUse`/`PostToolUse`/`PostToolUseFailure` hooks, installed by Preflight itself, plus six separate top-level settings.json hooks keys (not `PostToolUse` payload variants): `StopFailure`, which feeds `ApiFailureTracker` with model-API-call failures; `SessionStart`, which fires on every session but is only actionable when Claude Code reports resume-cost fields (`source: 'resume'`/`'fork'` with a prior response) — those feed `SessionResumeTracker`, surfaced in `nr_observe_get_cost_forecast`'s `resumeContext`; `InstructionsLoaded`, which feeds `InstructionDriftTracker` the exact moment a CLAUDE.md/`.claude/rules/*.md` file enters context — including session-start eager loads, which have no visible `Read` tool call at all; `PostModelSwitch`, which feeds `ModelUsageTracker` a discrete switch event (deliberate `/model` changes, and persistent automatic changes tagged `source: 'auto'`) — `PreModelSwitch` is intentionally not installed, since Preflight has no reason to block or confirm a switch; and `UserPromptSubmit`/`Stop`, which feed precise turn/task-boundary timestamps into `TurnTracker.finalizeTurnAt()`/`TaskDetector.startTaskIfNone()`/`TaskDetector.markBoundary()` — corroborating signals for the existing idle-gap heuristics, not replacements (`Stop` doesn't fire on a user interrupt, so the heuristics stay as the fallback). No prompt/response content is captured from either hook, only timestamp and session ID.
+**Mechanism:** Native `PreToolUse`/`PostToolUse`/`PostToolUseFailure` hooks, installed by Preflight itself (`PostToolUseFailure` carries the failed call's error, so a failure is recorded when it happens, not as a timeout once its unpaired `PreToolUse` expires), plus six separate top-level settings.json hooks keys (not `PostToolUse` payload variants): `StopFailure`, which feeds `ApiFailureTracker` with model-API-call failures; `SessionStart`, which fires on every session but is only actionable when Claude Code reports resume-cost fields (`source: 'resume'`/`'fork'` with a prior response) — those feed `SessionResumeTracker`, surfaced in `nr_observe_get_cost_forecast`'s `resumeContext`; `InstructionsLoaded`, which feeds `InstructionDriftTracker` the exact moment a CLAUDE.md/`.claude/rules/*.md` file enters context — including session-start eager loads, which have no visible `Read` tool call at all; `PostModelSwitch`, which feeds `ModelUsageTracker` a discrete switch event (deliberate `/model` changes, and persistent automatic changes tagged `source: 'auto'`) — `PreModelSwitch` is intentionally not installed, since Preflight has no reason to block or confirm a switch; and `UserPromptSubmit`/`Stop`, which feed precise turn/task-boundary timestamps into `TurnTracker.finalizeTurnAt()`/`TaskDetector.startTaskIfNone()`/`TaskDetector.markBoundary()` — corroborating signals for the existing idle-gap heuristics, not replacements (`Stop` doesn't fire on a user interrupt, so the heuristics stay as the fallback). No prompt/response content is captured from either hook, only timestamp and session ID.
 
 **Detection (`isSupported()`):** any of `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, or `CLAUDE_CODE_SESSION_ID` set (the vars current Claude Code actually sets in child process envs), or the legacy `CLAUDE_CODE`/`CLAUDE_CODE_VERSION`, or `MCP_CLIENT === 'claude-code'` in any spelling. An unrecognized `MCP_CLIENT` doesn't hide those signals. The list is the exported `CLAUDE_CODE_ENV_SIGNALS` const, shared with `collector-script.ts`'s hook-time platform stamping. Any process started from a Claude Code shell inherits these signals, so the collector stamps a hook `claude-code` only when `CLAUDE_CODE_SESSION_ID` is unset or equals the hook's `session_id`. Otherwise the hook files as `unattributed`.
 
@@ -691,6 +691,13 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
            "command": "NEW_RELIC_AI_PLATFORM=copilot preflight-collector post-tool",
            "powershell": "$env:NEW_RELIC_AI_PLATFORM='copilot'; & 'preflight-collector.cmd' post-tool"
          }
+       ],
+       "PostToolUseFailure": [
+         {
+           "type": "command",
+           "command": "NEW_RELIC_AI_PLATFORM=copilot preflight-collector post-tool-failure",
+           "powershell": "$env:NEW_RELIC_AI_PLATFORM='copilot'; & 'preflight-collector.cmd' post-tool-failure"
+         }
        ]
      }
    }
@@ -708,7 +715,7 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
 
 ## GitHub Copilot SDK (`copilot-sdk`)
 
-**Mechanism:** The Copilot SDK / agent-host runtime — distinct from the VS Code Copilot Chat adapter above (`copilot`): different session-id space (`~/.copilot/session-state/<id>/`, no `workspaceStorage`) and a different tool-name vocabulary. The GitHub Copilot CLI is the confirmed host of this runtime. The GitHub Copilot desktop app is a confirmed second host — it runs a warm pool of Copilot CLI processes — but it gets its own adapter (`copilot-app`, see its section below) because two assumptions this section makes for the CLI do not hold there: the app cannot load the `.mjs` extension mechanism documented under "Token-exact cost" (it is a Rust binary with no `extensions/` loading), and `~/.copilot/session-state/<id>/` is not unique to the standalone CLI (the app's pooled CLI processes create it too). Tool calls arrive via the host's own `PreToolUse`/`PostToolUse` hooks, parsed by `preflight-collector` (the same uniform hook envelope `collector-script.ts` already handles for other hook-based platforms).
+**Mechanism:** The Copilot SDK / agent-host runtime — distinct from the VS Code Copilot Chat adapter above (`copilot`): different session-id space (`~/.copilot/session-state/<id>/`, no `workspaceStorage`) and a different tool-name vocabulary. The GitHub Copilot CLI is the confirmed host of this runtime. The GitHub Copilot desktop app is a confirmed second host — it runs a warm pool of Copilot CLI processes — but it gets its own adapter (`copilot-app`, see its section below) because two assumptions this section makes for the CLI do not hold there: the app cannot load the `.mjs` extension mechanism documented under "Token-exact cost" (it is a Rust binary with no `extensions/` loading), and `~/.copilot/session-state/<id>/` is not unique to the standalone CLI (the app's pooled CLI processes create it too). Tool calls arrive via the host's own `PreToolUse`/`PostToolUse` hooks, and failed calls via `PostToolUseFailure` (GitHub's hooks reference lists it for the Copilot CLI; VS Code Copilot Chat has no such event and never fires it), parsed by `preflight-collector` (the same uniform hook envelope `collector-script.ts` already handles for other hook-based platforms).
 
 **Detection (`isSupported()`):** `MCP_CLIENT === 'copilot-sdk'`, or `NEW_RELIC_AI_PLATFORM === 'copilot-sdk'`.
 
@@ -740,6 +747,13 @@ then **reload the window** (`Developer: Reload Window`). Until then the debug-lo
            "type": "command",
            "command": "NEW_RELIC_AI_PLATFORM=copilot preflight-collector post-tool",
            "powershell": "$env:NEW_RELIC_AI_PLATFORM='copilot'; & 'preflight-collector.cmd' post-tool"
+         }
+       ],
+       "PostToolUseFailure": [
+         {
+           "type": "command",
+           "command": "NEW_RELIC_AI_PLATFORM=copilot preflight-collector post-tool-failure",
+           "powershell": "$env:NEW_RELIC_AI_PLATFORM='copilot'; & 'preflight-collector.cmd' post-tool-failure"
          }
        ]
      }

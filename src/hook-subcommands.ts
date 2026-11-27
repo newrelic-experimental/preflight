@@ -7,6 +7,7 @@
 export const HOOK_EVENT_TYPES = [
   'PreToolUse',
   'PostToolUse',
+  'PostToolUseFailure',
   'PermissionRequest',
   'PermissionDenied',
   'StopFailure',
@@ -22,6 +23,7 @@ export type HookEventType = (typeof HOOK_EVENT_TYPES)[number];
 export const HOOK_SUBCOMMANDS = {
   PreToolUse: 'pre-tool',
   PostToolUse: 'post-tool',
+  PostToolUseFailure: 'post-tool-failure',
   PermissionRequest: 'permission-request',
   PermissionDenied: 'permission-denied',
   StopFailure: 'stop-failure',
