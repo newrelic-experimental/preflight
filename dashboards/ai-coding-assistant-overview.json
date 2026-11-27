@@ -200,6 +200,46 @@
               }
             ]
           }
+        },
+        {
+          "title": "Cache Hit Rate",
+          "layout": {
+            "column": 1,
+            "row": 13,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM Metric SELECT sum(ai.cost.tokens_cache_read) / (sum(ai.cost.tokens_input) + sum(ai.cost.tokens_cache_read) + sum(ai.cost.tokens_cache_creation)) * 100 AS 'Cache Hit %' WHERE developer = {{developer}} AND session_id = {{session_id}} SINCE 1 hour ago"
+              }
+            ]
+          }
+        },
+        {
+          "title": "Cost Avoided by Caching",
+          "layout": {
+            "column": 7,
+            "row": 13,
+            "width": 6,
+            "height": 3
+          },
+          "visualization": {
+            "id": "viz.billboard"
+          },
+          "rawConfiguration": {
+            "nrqlQueries": [
+              {
+                "accountIds": [],
+                "query": "FROM Metric SELECT sum(ai.cost.cache_savings_usd) / (sum(ai.cost.session_total_usd) + sum(ai.cost.cache_savings_usd)) * 100 AS 'Savings % of Spend' WHERE developer = {{developer}} AND session_id = {{session_id}} SINCE 1 hour ago"
+              }
+            ]
+          }
         }
       ]
     }
