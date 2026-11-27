@@ -4254,35 +4254,6 @@ describe('NrIngestManager instrumentation attributes', () => {
   });
 });
 
-describe('NrIngestManager instrumentation common attributes', () => {
-  it('hands the same three attributes to the Metric API and Logs API senders', async () => {
-    const manager = new NrIngestManager(makeIngestOptions());
-
-    manager.ingestToolCall(makeRecord({ toolName: 'Edit' }));
-    manager.ingestAuditRecord({
-      id: 'audit-common-1',
-      timestamp: 1_700_000_000_000,
-      sessionId: 'sess-1',
-      action: 'HookInstall',
-      tool: 'nr_observe_install_hooks',
-      detail: 'HookInstall: /home/dev/.claude/settings.json',
-      developer: 'dev',
-    });
-    manager.start();
-    await manager.stop();
-
-    const expected = {
-      'instrumentation.provider': 'preflight',
-      'instrumentation.name': 'preflight',
-      'instrumentation.version': VERSION,
-    };
-    const metricOptions = (mockSendMetrics.mock.calls[0] as unknown[])[2];
-    const logOptions = (mockSendLogs.mock.calls[0] as unknown[])[2];
-    expect(metricOptions).toMatchObject({ commonAttributes: expected });
-    expect(logOptions).toMatchObject({ commonAttributes: expected });
-  });
-});
-
 describe('AiTurnCost coverage of token reports', () => {
   const attrs = { developer: 'dev', appName: 'app' };
   const tokens = (timestamp: number) => ({

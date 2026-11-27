@@ -71,8 +71,6 @@ Every event sent through the Events API except `NrAiObserveSetupCheck` carries t
 
 These are added when the event is routed, so they appear on every tier, including local JSONL tiers. They are not listed again in the per-event tables below.
 
-The Metric API gauges and the Logs API audit entries carry the same three attributes in each batch's `common.attributes` block, so `FROM Metric` and `FROM Log` queries can filter on `instrumentation.provider` too. Because `instrumentation.version` is part of each metric's identity, every release starts a new series for each metric.
-
 ### MCP Server Events
 
 These events are emitted by the MCP server (`preflight`) when Claude Code or another IDE uses a tool.

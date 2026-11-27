@@ -128,24 +128,4 @@ describe('sendMetrics', () => {
     expect(result.statusCode).toBeNull();
     expect(fetchSpy).not.toHaveBeenCalled();
   });
-
-  it('sends commonAttributes in the common.attributes block', async () => {
-    const commonAttributes = { 'instrumentation.provider': 'preflight' };
-    await sendMetrics(testMetrics, 'us01xxTESTKEY', { ...baseOptions, commonAttributes });
-
-    const body = fetchSpy.mock.calls[0][1]!.body as Buffer;
-    const payload = JSON.parse((await gunzipAsync(body)).toString());
-    expect(payload[0].common).toEqual({ attributes: commonAttributes });
-    expect(payload[0].metrics).toHaveLength(2);
-  });
-
-  it('omits the common block when commonAttributes is absent or empty', async () => {
-    await sendMetrics(testMetrics, 'us01xxTESTKEY', baseOptions);
-    await sendMetrics(testMetrics, 'us01xxTESTKEY', { ...baseOptions, commonAttributes: {} });
-
-    for (const call of fetchSpy.mock.calls) {
-      const payload = JSON.parse((await gunzipAsync(call[1]!.body as Buffer)).toString());
-      expect(payload[0]).not.toHaveProperty('common');
-    }
-  });
 });

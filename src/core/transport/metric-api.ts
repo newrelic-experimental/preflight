@@ -1,5 +1,5 @@
 import type { NrMetric, TransportOptions, TransportResult } from './types.js';
-import { sendWithRetry, resolveRegion, getMetricApiUrl, commonBlock } from './http-client.js';
+import { sendWithRetry, resolveRegion, getMetricApiUrl } from './http-client.js';
 
 /**
  * Wire-format shape for an `NrMetric` after the camelCase → dotted-key
@@ -35,7 +35,7 @@ export async function sendMetrics(
   // NR Metric API expects: [{ metrics: [...] }]. Rewrite each metric so the
   // camelCase `intervalMs` becomes the literal wire key `interval.ms` per NR
   // Metric API contract.
-  const payload = [{ ...commonBlock(options), metrics: metrics.map(toWireMetric) }];
+  const payload = [{ metrics: metrics.map(toWireMetric) }];
 
   return sendWithRetry({
     url,
