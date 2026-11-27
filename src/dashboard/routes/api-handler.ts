@@ -3054,6 +3054,8 @@ export function createApiHandler(
       }) as unknown as readonly {
         sessionId: string;
         outcome?: string;
+        endTime?: number;
+        toolCallCount?: number;
         timeline?: readonly ReplayTimelineEntry[];
         repoName?: string | null;
       }[];

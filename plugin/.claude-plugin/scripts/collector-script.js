@@ -45,6 +45,7 @@ var OPERATOR = charTable(OPERATORS);
 var SPECIAL = charTable(`	
 \v\f\r ${OPERATORS}"'\\$`);
 var isSpace = (c) => c === 32 || c >= 9 && c <= 13;
+var isBlank = (c) => c === 32 || c === 9;
 var isOperator = (c) => c >= 0 && c < 128 && OPERATOR[c] === 1;
 var isBlankOrOperator = (c) => isSpace(c) || isOperator(c);
 function cutAtWord(text, end) {
@@ -131,15 +132,34 @@ function bareWord(text, from, context) {
 }
 function valueEnd(text, from, quote) {
   let end = readValue(text, from, quote);
-  for (let run = quotedRun(text, end, quote); run > end; run = quotedRun(text, end, quote)) {
-    end = readValue(text, run, quote);
+  for (let close = reopenedClose(text, end, quote); close >= 0; ) {
+    end = readValue(text, close + 1, quote);
+    close = reopenedClose(text, end, quote);
   }
   return end;
 }
-function quotedRun(text, from, quote) {
-  const end = skipPlain(text, from + 1);
-  const run = quote !== "comment" && unitAt(text, from, quote) === CLOSE && text[end] === text[from];
-  return run ? end + 1 : from;
+function reopenedClose(text, at, quote) {
+  if (quote === "comment" || unitAt(text, at, quote) !== CLOSE) return -1;
+  return plainPartClose(text, at, 1);
+}
+function plainPartClose(text, at, width) {
+  const limit = at + width + MAX_QUOTED_PART;
+  const word = skipPlain(text, at + width);
+  let i = word;
+  while (isBlank(text.charCodeAt(i)) && text.charCodeAt(i + 1) !== HASH) {
+    i = skipPlain(text, i + 1);
+  }
+  const closes = text.slice(i, i + width) === text.slice(at, at + width);
+  return closes && (i === word || i <= limit) ? i : -1;
+}
+function plainTail(text, from, quote) {
+  for (let end = skipPlain(text, from); ; ) {
+    const c = text.charCodeAt(end);
+    const width = quote === "double" && c === BACKSLASH && text.charCodeAt(end + 1) === DOUBLE_QUOTE ? 2 : c === SINGLE_QUOTE || c === DOUBLE_QUOTE ? 1 : 0;
+    const close = width === 0 ? -1 : plainPartClose(text, end, width);
+    if (close < 0) return end;
+    end = skipPlain(text, close + width);
+  }
 }
 function plainPrefix(text, from) {
   let i = skipPlain(text, from);
@@ -198,7 +218,10 @@ var HEADER = new RegExp(
   String.raw`((?:-H|--(?:proxy-)?header)(?:[\s=]|${CONTINUATION}){0,8}(${QUOTE})?)${CREDENTIAL_HEADER}`,
   "gi"
 );
-var CURL_HEADER = new RegExp(String.raw`((${QUOTE})?)${CREDENTIAL_HEADER}`, "iy");
+var CURL_HEADER = new RegExp(
+  String.raw`((?:${CONTINUATION})*(${QUOTE})?)${CREDENTIAL_HEADER}`,
+  "iy"
+);
 var UNESCAPED_QUOTE = String.raw`(?:(?<!\\)(${QUOTE}))`;
 var HEADER_WORD = new RegExp(
   String.raw`:(?<=${UNESCAPED_QUOTE}?(?:${KEY_HEADER}|${AUTH_HEADER}):)(${QUOTE})?(?:(?<=${KEY_HEADER}:(?:${QUOTE})?)|[ \t]{0,4}basic[ \t]{1,4})`,
@@ -208,21 +231,37 @@ var quoteOpenedBy = (opener, quote) => {
   if (opener === "'") return "single";
   return opener === '"' || opener === '\\"' && quote === "double" ? "double" : "none";
 };
+var closesQuote = (text, end, outside, inside) => inside !== "none" && unitAt(text, end, outside) === (inside === "double" ? DOUBLE_QUOTE : SINGLE_QUOTE);
+function pushGlued(text, spans, close, outside) {
+  const next = close + unitLength(text, close, outside);
+  return pushValue(spans, next, next, plainTail(text, next, outside));
+}
 var headerValue = (text, match, quote, spans) => {
+  const start = match.index + match[1].length;
   const from = match.index + match[0].length;
-  const end = readValue(text, from, quote, quoteOpenedBy(match[2], quote));
-  return pushValue(spans, match.index + match[1].length, from, end);
+  const inside = quoteOpenedBy(match[2], quote);
+  const close = reopenedClose(text, start - (match[2]?.length ?? 0), quote);
+  const end = close >= 0 ? close : readValue(text, from, quote, inside);
+  pushValue(spans, start, from, end);
+  return close >= 0 || closesQuote(text, end, quote, inside) ? pushGlued(text, spans, end, quote) : end;
 };
 var headerWordValue = (text, match, quote, spans) => {
   const after = match[2];
+  const from = match.index + match[0].length;
+  const start = match.index + 1 + (after?.length ?? 0);
+  const close = after !== void 0 ? reopenedClose(text, match.index + 1, quote) : match[1] !== void 0 ? reopenedClose(
+    text,
+    text.lastIndexOf(match[1], match.index),
+    quoteOpenedBy(match[1], quote)
+  ) : -1;
   const before = quote === "none" ? void 0 : match[1];
   const beforeOpensQuote = quoteOpenedBy(before, "none") === (quote === "ansi" ? "single" : quote);
-  const outside = after === void 0 && beforeOpensQuote ? "none" : quote;
+  const outside = after !== void 0 ? quote : before === void 0 ? quoteOpenedBy(match[1], quote) : beforeOpensQuote ? "none" : quote;
   const inside = quoteOpenedBy(after ?? before, outside);
-  const from = match.index + match[0].length;
-  if (inside === "none") return from;
-  const start = match.index + 1 + (after?.length ?? 0);
-  return pushValue(spans, start, from, readValue(text, from, outside, inside));
+  if (close < 0 && inside === "none") return from;
+  const end = close >= 0 ? close : readValue(text, from, outside, inside);
+  pushValue(spans, start, from, end);
+  return close >= 0 || closesQuote(text, end, outside, inside) ? pushGlued(text, spans, end, outside) : end;
 };
 var NAME = /(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSPHRASE|PRIVATE_KEY)(?![a-z])\s*[=:]\s*/gi;
 var FLAG = new RegExp(
@@ -252,7 +291,13 @@ var MYSQL = /(?:mysql(?:dump|admin)?|mariadb)\b/g;
 var ESCAPED_P = new RegExp(String.raw`(?<=${AFTER_ESCAPE})-p`, "y");
 var PORT_MAPPING = /[\d.]+:\d/y;
 var REDIRECT = /&>>?|[<>][<>&|]*/y;
-var ONLY_CONTINUATION = new RegExp(String.raw`^${CONTINUATION}$`);
+var CONTINUATION_AT = new RegExp(CONTINUATION, "y");
+var CONTINUATION_END = new RegExp(String.raw`(?:${CONTINUATION})$`);
+function continuationBefore(text, from, end) {
+  const last = text.charCodeAt(end - 1);
+  if (last !== LF && last !== 110) return 0;
+  return CONTINUATION_END.exec(text.slice(Math.max(from, end - 4), end))?.[0].length ?? 0;
+}
 var WORD_START = new RegExp(String.raw`(?<!\w)|(?<=${AFTER_ESCAPE})`, "y");
 function startsWord(text, index) {
   WORD_START.lastIndex = index;
@@ -262,8 +307,14 @@ function commandWords(text, match, quote, visit) {
   let i = match.index + match[0].length;
   if (!startsWord(text, match.index)) return i;
   for (; ; ) {
-    while (isSpace(unitAt(text, i, quote)) && text.charCodeAt(i) !== LF) {
+    CONTINUATION_AT.lastIndex = i;
+    if (text.charCodeAt(i) === BACKSLASH && CONTINUATION_AT.test(text)) {
+      i = CONTINUATION_AT.lastIndex;
+      continue;
+    }
+    if (isSpace(unitAt(text, i, quote)) && text.charCodeAt(i) !== LF) {
       i += unitLength(text, i, quote);
+      continue;
     }
     REDIRECT.lastIndex = i;
     if ("<>&".includes(text[i]) && REDIRECT.test(text)) {
@@ -272,7 +323,11 @@ function commandWords(text, match, quote, visit) {
     }
     const end = valueEnd(text, i, quote);
     if (end === i) return i;
-    if (!ONLY_CONTINUATION.test(text.slice(i, end))) visit(i, end);
+    let last = end;
+    for (let n = continuationBefore(text, i, last); n > 0; n = continuationBefore(text, i, last)) {
+      last -= n;
+    }
+    visit(i, last);
     i = end;
   }
 }

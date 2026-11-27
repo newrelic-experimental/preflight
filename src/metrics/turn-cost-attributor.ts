@@ -412,9 +412,9 @@ export class TurnCostAttributor {
   }
 
   /**
-   * `openRun` is the skill run open in the event's session when the report
-   * arrives. Only a response turn uses it, since the attributor never learns
-   * when a run ends.
+   * `openRun` is the skill run open in the event's session when the report was
+   * written (`SkillActivationTracker.runAt`). Only a response turn uses it,
+   * since the attributor never learns when a run ends.
    */
   recordTokenEvent(event: TokenEvent, openRun: SkillStamp | null = null): ClosedTurn {
     const state = this.getOrCreateSession(event.sessionId);
