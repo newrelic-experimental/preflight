@@ -78,6 +78,22 @@ export const ZERO_QUALITY_PROXY_COUNTS: QualityProxyRawCounts = {
   selfCorrectionCount: 0,
 };
 
+export function subtractQualityProxyRawCounts(
+  total: QualityProxyRawCounts,
+  part: QualityProxyRawCounts,
+): QualityProxyRawCounts {
+  const less = (key: keyof QualityProxyRawCounts) => Math.max(0, total[key] - part[key]);
+  return {
+    totalSignals: less('totalSignals'),
+    diffApplyCleanCount: less('diffApplyCleanCount'),
+    diffFailCount: less('diffFailCount'),
+    testPassCount: less('testPassCount'),
+    testFailCount: less('testFailCount'),
+    backtrackCount: less('backtrackCount'),
+    selfCorrectionCount: less('selfCorrectionCount'),
+  };
+}
+
 export interface QualityProxyRates {
   readonly totalSignals: number;
   readonly diffApplyRate: number | null;

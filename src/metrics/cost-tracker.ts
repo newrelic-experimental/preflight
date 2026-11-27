@@ -14,7 +14,7 @@ import { CallUsageBook, type CallUsageByDay } from './call-usage.js';
 import { priceModelUsage } from './pricing-overlay.js';
 import { localDateKey } from '../lib/date.js';
 import type { SessionTracker } from './session-tracker.js';
-import type { Resettable, SeedOrigin } from './tracker-contracts.js';
+import type { Resettable } from './tracker-contracts.js';
 import { HIGH_CONTEXT_TOKENS } from '../storage/types.js';
 import type { AttributionBucket } from '../storage/types.js';
 
@@ -790,11 +790,8 @@ export class CostTracker implements Resettable {
    * `cost_unknown` flag (see its doc comment in `src/dashboard/workflow-store.ts`)
    * depends on `hasCostForWorkflowRun()` staying accurate across a restart
    * too, so it gets the same treatment as everything else here.
-   *
-   * `getMetrics()` includes every seed. `getOwnMetrics()` includes only a
-   * `drainedHere` one (see `SeedOrigin`).
    */
-  seedFromPersisted(seed: CostTrackerSeed, origin: SeedOrigin = 'alreadySaved'): void {
+  seedFromPersisted(seed: CostTrackerSeed): void {
     const hasAnyTotal =
       seed.totalCostUsd !== 0 ||
       seed.totalInputTokens !== 0 ||
@@ -811,7 +808,6 @@ export class CostTracker implements Resettable {
       );
     }
     this.held.addSeed(seed);
-    if (origin === 'drainedHere') this.own.addSeed(seed);
     if (seed.dayCostUsd !== 0) this.lastMutationMsByDay.set(seed.dayKey, Date.now());
     for (const runId of Object.keys(seed.costByWorkflowRunId)) this.seededWorkflowRunIds.add(runId);
   }
@@ -938,12 +934,20 @@ export class CostTracker implements Resettable {
     return this.metricsOf(this.held);
   }
 
-  /** A real report replaced byte estimates this tracker held, seeded ones included. */
+  /**
+   * The session's byte estimates are retracted: a real report replaced ones this
+   * tracker held, seeded ones included, or `markRetracted` was called.
+   */
   hasRetractedEstimates(): boolean {
     return this.retractedEstimates;
   }
 
-  /** Only what this process produced itself, plus any `drainedHere` seed. */
+  /** Another writer retracted the session's estimates, so this tracker drops its own and stops. */
+  markRetracted(): void {
+    this.retractedEstimates = true;
+    for (const book of this.books()) book.discardByteEstimates();
+  }
+
   getOwnMetrics(): CostMetrics {
     return this.metricsOf(this.own);
   }

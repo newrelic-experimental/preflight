@@ -248,6 +248,7 @@ describe('byte-estimate sessions across a real restart', () => {
     return shouldApplyCostEstimate({
       estimateBytes: 400,
       reportCount: tracker.getMetrics().reportCount,
+      estimatesRetracted: tracker.hasRetractedEstimates(),
       recordSessionId: 'own',
       ownSessionId: 'own',
     });

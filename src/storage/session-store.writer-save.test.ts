@@ -86,6 +86,11 @@ const own = (summary: FullSessionSummary, retracted = false): WriterContribution
 
 const ids = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => `${prefix}${i}`);
 
+const withoutToolUseIds = (s: FullSessionSummary): FullSessionSummary => ({
+  ...s,
+  timeline: s.timeline?.map((call) => ({ ...call, toolUseId: undefined })),
+});
+
 const totals = (s: FullSessionSummary | null | undefined) =>
   s && {
     calls: s.toolCallCount,
@@ -169,6 +174,45 @@ describe('SessionStore.writer', () => {
     expect(totals(store.loadSession(SID))).toEqual({ calls: 10, usd: 1, input: 100 });
   });
 
+  const keepIds = (s: FullSessionSummary) => s;
+  it.each([
+    ['both with its toolUseId', keepIds, keepIds],
+    ['both without one', withoutToolUseIds, withoutToolUseIds],
+    ['only the share with one', withoutToolUseIds, keepIds],
+  ])(
+    'counts a call once that a saved file and an engine share both hold, %s',
+    (_, fileIds, shareIds) => {
+      const firstFails = (s: FullSessionSummary): FullSessionSummary => ({
+        ...s,
+        toolSuccessRate: (s.toolCallCount - 1) / s.toolCallCount,
+        timeline: s.timeline?.map((call, i) => (i === 0 ? { ...call, success: false } : call)),
+      });
+      store.saveSession(fileIds(firstFails(activity(ids('p', 3)))));
+      store.writer('engine').save(own(shareIds(firstFails(activity(ids('p', 4))))));
+
+      expect(new SessionStore({ storagePath }).loadSession(SID)).toMatchObject({
+        toolCallCount: 4,
+        toolBreakdown: { Read: 4 },
+        toolSuccessRate: 0.75,
+      });
+    },
+  );
+
+  it('rates each call once, and leaves out the calls of a file saved without a rate', () => {
+    const rated = (calls: string[], failed: number[], endTime: number): FullSessionSummary => {
+      const s = activity(calls);
+      const timeline = s.timeline?.map((call, i) => ({ ...call, success: !failed.includes(i) }));
+      const toolSuccessRate = (calls.length - failed.length) / calls.length;
+      return { ...s, endTime, timeline, toolSuccessRate };
+    };
+    writeIndex({ ...activity(ids('q', 4)), endTime: START + 2_000, toolSuccessRate: null });
+    store.writer('engine').save(own(rated([...ids('p', 3), 'a0'], [0], START + 1_000)));
+    const failed = [0, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+    store.writer('engine').save(own(rated(ids('p', 23), failed, START + 3_000)));
+
+    expect(store.loadSession(SID)).toMatchObject({ toolCallCount: 28, toolSuccessRate: 14 / 24 });
+  });
+
   it('folds a session split across dates into one index at its earliest date', () => {
     writeIndex(activity(ids('p', 2)));
     writeIndex(activity(ids('q', 3), { start: START + 86_400_000 }), '2026-03-02');
@@ -205,6 +249,18 @@ describe('SessionStore.writer', () => {
     );
     expect(save(activity([], { usd: 0 }))).toEqual(skip('no-recorded-usage'));
     expect(existsSync(sessionsDir)).toBe(false);
+  });
+
+  it('saves a share with nothing in it into a session that has usage, so its outcome lands', () => {
+    store.writer('aggregator').save(own({ ...activity(ids('a', 2)), outcome: 'in progress' }));
+
+    const saved = store
+      .writer('engine')
+      .save(own({ ...activity([], { usd: 0, start: START + 5_000 }), outcome: 'completed' }));
+
+    expect(saved).toEqual({ kind: 'saved', retracted: false });
+    expect(totals(store.loadSession(SID))).toEqual({ calls: 2, usd: 0.2, input: 20 });
+    expect(store.loadSession(SID)?.outcome).toBe('completed');
   });
 
   it('tells every writer the session is retracted once one writer retracts it', () => {

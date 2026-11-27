@@ -1,6 +1,7 @@
 import {
   QualityProxyTracker,
   combineQualityProxyRawCounts,
+  subtractQualityProxyRawCounts,
   ZERO_QUALITY_PROXY_COUNTS,
 } from './quality-proxy-tracker.js';
 import type { ToolCallRecord } from '../storage/types.js';
@@ -392,6 +393,30 @@ describe('combineQualityProxyRawCounts', () => {
     expect(combined.totalSignals).toBe(metrics.totalSignals);
     expect(combined.diffApplyRate).toBe(metrics.diffApplyRate);
     expect(combined.testPassRate).toBe(metrics.testPassRate);
+  });
+});
+
+describe('subtractQualityProxyRawCounts', () => {
+  it('takes a share out of a total, leaving no count below zero', () => {
+    const total = {
+      ...ZERO_QUALITY_PROXY_COUNTS,
+      totalSignals: 3,
+      testPassCount: 2,
+      diffFailCount: 1,
+    };
+    const share = {
+      ...ZERO_QUALITY_PROXY_COUNTS,
+      totalSignals: 1,
+      testPassCount: 1,
+      backtrackCount: 1,
+    };
+
+    expect(subtractQualityProxyRawCounts(total, share)).toEqual({
+      ...ZERO_QUALITY_PROXY_COUNTS,
+      totalSignals: 2,
+      testPassCount: 1,
+      diffFailCount: 1,
+    });
   });
 });
 

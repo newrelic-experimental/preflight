@@ -77,7 +77,7 @@ import {
 import type { HeldSessionCost, UnbookedSeedCost } from './metrics/cost-tracker-seed.js';
 import { DecisionTracker } from './metrics/decision-tracker.js';
 import { EfficiencyScorer } from './metrics/efficiency-score.js';
-import { FirstSaveBaselines, seedDrainedRollups } from './metrics/first-save-baselines.js';
+import { FirstSaveBaselines, seedSavedRollups } from './metrics/first-save-baselines.js';
 import type { RepoContext } from './metrics/git-efficiency-tracker.js';
 import {
   GitEfficiencyTracker,
@@ -102,7 +102,11 @@ import {
 import { ModelUsageTracker } from './metrics/model-usage-tracker.js';
 import { PersonalCoach } from './metrics/personal-coach.js';
 import { PromptFeedbackEngine } from './metrics/prompt-feedback.js';
-import { QualityProxyTracker } from './metrics/quality-proxy-tracker.js';
+import {
+  QualityProxyTracker,
+  subtractQualityProxyRawCounts,
+  type QualityProxyRawCounts,
+} from './metrics/quality-proxy-tracker.js';
 import { RecommendationEngine } from './metrics/recommendation-engine.js';
 import { RetryDetector } from './metrics/retry-detector.js';
 import { SessionTracker } from './metrics/session-tracker.js';
@@ -136,7 +140,9 @@ import { hasLiveOwningEngine } from './storage/local-store.js';
 import { computeHistoricalCosts } from './storage/historical-costs.js';
 import { purgeOldSessions, purgeOldWeeklySummaries } from './storage/retention.js';
 import {
+  buildContribution,
   buildSessionSummary,
+  type BuildSessionSummarySources,
   type FullSessionSummary,
   savedToolNameByUseId,
   SessionStore,
@@ -144,6 +150,7 @@ import {
   deserializeFullSessionSummary,
   type SerializedFullSessionSummary,
 } from './storage/session-store.js';
+import type { SaveResult, WriterContribution } from './storage/session-writers.js';
 import { amendRecord, type ToolCallRecord } from './storage/types.js';
 import { WeeklySummaryGenerator } from './storage/weekly-summary.js';
 import type { ConfigSummary } from './tools/session-stats.js';
@@ -1528,37 +1535,55 @@ async function main(): Promise<void> {
     const firstSaveBaselines = new FirstSaveBaselines();
     // A session's calls in its file before this process first wrote it, none of them this process's.
     const callsBeforeFirstWrite = new Map<string, SavedCalls>();
+    // The rollup saved at adoption holds the tasks and quality signals the engine's trackers
+    // replayed, so its share leaves them out. The fold counts each replayed call once.
+    const rolledUpAtAdoption = new Map<
+      string,
+      { readonly qualityProxy: QualityProxyRawCounts; readonly taskCount: number }
+    >();
     const savedCallsOf = (file: FullSessionSummary | null | undefined): SavedCalls => ({
       count: file?.toolCallCount ?? 0,
       toolUseIds: new Set(savedToolNameByUseId(file).keys()),
     });
-    const saveSessionRememberingBaseline = (
-      summary: FullSessionSummary,
+    const rememberFirstSave = (
+      sessionId: string,
+      previous: FullSessionSummary | null,
       from: 'ownTrackers' | 'rollup',
-    ): boolean => {
-      const saved = sessionStore!.saveSession(summary);
-      if (saved && !callsBeforeFirstWrite.has(summary.sessionId)) {
-        callsBeforeFirstWrite.set(summary.sessionId, savedCallsOf(saved.previous));
+    ): void => {
+      if (!callsBeforeFirstWrite.has(sessionId)) {
+        callsBeforeFirstWrite.set(sessionId, savedCallsOf(previous));
       }
       // Only a --stdio engine ever adopts a real session id and seeds it.
-      if (saved && options.stdio && !rehydratedTrackerSessionIds.has(summary.sessionId)) {
-        firstSaveBaselines.recordSave({
-          sessionId: summary.sessionId,
-          previous: saved.previous,
-          ownSession: from === 'ownTrackers',
-        });
+      if (options.stdio && !rehydratedTrackerSessionIds.has(sessionId)) {
+        firstSaveBaselines.recordSave({ sessionId, previous, ownSession: from === 'ownTrackers' });
       }
+    };
+    const saveSessionRememberingBaseline = (summary: FullSessionSummary): boolean => {
+      const saved = sessionStore!.saveSession(summary);
+      if (saved) rememberFirstSave(summary.sessionId, saved.previous, 'rollup');
       return saved !== null;
+    };
+    const engineWriter = sessionStore.writer('engine');
+    const saveOwnContribution = (contribution: WriterContribution): SaveResult => {
+      const { sessionId } = contribution.summary;
+      const firstSave = !callsBeforeFirstWrite.has(sessionId);
+      const previous = firstSave ? sessionStore!.loadSession(sessionId) : null;
+      const result = engineWriter.save(contribution);
+      if (firstSave && result.kind === 'saved') {
+        rememberFirstSave(sessionId, previous, 'ownTrackers');
+      }
+      return result;
     };
     const liftObserverCompleted = (sessionId: string): void => {
       if (!sessionStore) return;
       try {
         const saved = sessionStore.loadSession(sessionId);
         if (saved?.observerCompletedAt === undefined) return;
-        saveSessionRememberingBaseline(
-          { ...saved, outcome: 'in progress', observerCompletedAt: undefined },
-          'rollup',
-        );
+        saveSessionRememberingBaseline({
+          ...saved,
+          outcome: 'in progress',
+          observerCompletedAt: undefined,
+        });
       } catch (err) {
         logger.warn('Failed to lift an observer-completed session', { error: String(err) });
       }
@@ -1572,10 +1597,10 @@ async function main(): Promise<void> {
           sessionStore!.loadSession(sessionId),
         );
         if (cost) {
-          costTracker.seedFromPersisted(cost.costTracker, 'alreadySaved');
+          costTracker.seedFromPersisted(cost.costTracker);
           ownUnbookedCosts.set(sessionId, cost.unbooked);
           budgetTracker.seedFiredThresholdsFromSessionTotal(cost.estimatedCostUsd ?? 0);
-          modelUsageTracker.seedFromPersisted(cost.modelBreakdown, 'alreadySaved');
+          modelUsageTracker.seedFromPersisted(cost.modelBreakdown);
         }
         if (toolCalls) {
           sessionTracker!.seedFromPersisted(toolCalls.sessionTracker);
@@ -1826,8 +1851,8 @@ async function main(): Promise<void> {
         return;
       }
       const seed = settledCostTrackerSeed(persisted);
-      costTracker.seedFromPersisted(seed, 'alreadySaved');
-      modelUsageTracker.seedFromPersisted(persisted.modelBreakdown, 'alreadySaved');
+      costTracker.seedFromPersisted(seed);
+      modelUsageTracker.seedFromPersisted(persisted.modelBreakdown);
       localHeldCosts.set(sessionId, heldSessionCostOf(persisted, Date.now(), seed));
       refreshPriorCostBaseline();
     };
@@ -2638,6 +2663,7 @@ async function main(): Promise<void> {
           shouldApplyCostEstimate({
             estimateBytes,
             reportCount: costTracker.getMetrics().reportCount,
+            estimatesRetracted: costTracker.hasRetractedEstimates(),
             recordSessionId: record.sessionId,
             ownSessionId: sessionTraceId,
           })
@@ -3007,8 +3033,7 @@ async function main(): Promise<void> {
             ...outcomeOf(sessionId, onFile, Number(rollup.endTime)),
             toolCallCount: prior.count + Number(kept.toolCallCount),
           };
-          if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary, 'rollup'))
-            continue;
+          if (!saveSessionRememberingBaseline(summary as unknown as FullSessionSummary)) continue;
           localSessionAggregator.markSaved(sessionId);
           saved += 1;
           if (prior.count === 0) eventProcessor?.persistCountedIdsOfSavedSessions([sessionId]);
@@ -3039,19 +3064,26 @@ async function main(): Promise<void> {
     const rolledUpWhilePending = (sessionId: string): ReturnType<typeof observedRollups> =>
       readRollups((id) => id === sessionId);
     let cwdGuessRolledUpWhilePending: ReturnType<typeof observedRollups> = [];
-    // Saves what the engine rolled up for its cwd guess before adopting it, then
-    // seeds the trackers from the file, which now holds it.
+    // Saves what the engine rolled up for its cwd guess before adopting it, once.
+    // A rollup whose save fails stays held, and the next session save retries it.
+    const flushCwdGuessRollup = (): ReturnType<typeof observedRollups> => {
+      const held = cwdGuessRolledUpWhilePending;
+      cwdGuessRolledUpWhilePending = held.filter(
+        (rollup) => saveRollups([rollup], 'running') === 0,
+      );
+      return held;
+    };
     const seedCwdGuess = (guessId: string): void => {
-      saveRollups(cwdGuessRolledUpWhilePending, 'running');
+      flushCwdGuessRollup();
       rehydrateTrackersIfResumed(guessId);
     };
     // Past the confirmation cap the engine saves its cwd guess's file as its own
     // session, so its cost trackers take what it rolled up for the guess before
     // adopting it. Never the file's other cost, which may be another session's.
-    const takeCwdGuessRollup = (guessId: string): void => {
+    const seedCwdGuessFromRollup = (guessId: string): void => {
       try {
-        seedDrainedRollups(
-          cwdGuessRolledUpWhilePending.map((rollup) =>
+        seedSavedRollups(
+          flushCwdGuessRollup().map((rollup) =>
             deserializeFullSessionSummary(rollup as unknown as SerializedFullSessionSummary),
           ),
           costTracker,
@@ -3068,10 +3100,8 @@ async function main(): Promise<void> {
     persistSession = (opts?: { periodic?: boolean }) => {
       if (!sessionStore || !sessionTracker || !taskDetector || !config) return;
       try {
-        // Only the exit save runs while the cwd guess is unconfirmed, and it
-        // writes the guess's file. Unseeded, its max-merge drops what the
-        // file and the held rollup already hold.
         if (pendingConfirmation) seedCwdGuess(sessionTraceId);
+        else flushCwdGuessRollup();
         transcriptMessageTracker.refresh();
         // Phase 2 freshness: re-read Claude Code's own name sources (job-state
         // title + transcript ai-title) right before building the summary, so a
@@ -3082,7 +3112,7 @@ async function main(): Promise<void> {
         // the no-downgrade invariant, so this can only upgrade or refresh —
         // never demote a user name to auto/cwd. A no-op for synthetic ids.
         applyAuthoritativeSessionName(sessionTraceId);
-        const builtSummary = buildSessionSummary({
+        const sources: BuildSessionSummarySources = {
           sessionTracker,
           costTracker,
           turnCostAttributor,
@@ -3102,7 +3132,8 @@ async function main(): Promise<void> {
           platform: eventProcessor?.activePlatform,
           instructionPromptHash: instructionDriftTracker.promptHash,
           backfillRecord: (record) => subagentAttribution.backfill(record),
-        });
+        };
+        const builtSummary = buildSessionSummary(sources);
         // The rollup counts only this session's own tasks; the detector above sees every drained session's.
         const summary = {
           ...builtSummary,
@@ -3138,7 +3169,22 @@ async function main(): Promise<void> {
           readRollups((id) => id !== summary.sessionId && localSessionAggregator.isUnsaved(id)),
           'running',
         );
-        if (saveSessionRememberingBaseline(summary, 'ownTrackers')) {
+        const own = buildContribution(sources);
+        const rolledUp = rolledUpAtAdoption.get(summary.sessionId);
+        const saved = saveOwnContribution({
+          ...own,
+          summary: {
+            ...own.summary,
+            taskCount:
+              (localSessionAggregator.ownTaskCountOf(summary.sessionId) ?? own.summary.taskCount) -
+              (rolledUp?.taskCount ?? 0),
+            qualityProxy: rolledUp
+              ? subtractQualityProxyRawCounts(own.summary.qualityProxy, rolledUp.qualityProxy)
+              : own.summary.qualityProxy,
+          },
+        });
+        if (saved.kind === 'saved') {
+          if (saved.retracted) costTracker.markRetracted();
           eventProcessor?.persistCountedIdsOfSavedSessions([summary.sessionId]);
         }
         // checkAndGenerateLastWeek() is idempotent (existsSync check before
@@ -3461,8 +3507,13 @@ async function main(): Promise<void> {
       // against the corrected id's own transcript, replacing any name derived
       // for the previously-adopted (wrong) id.
       applyAuthoritativeSessionName(realId);
-      if (viaCwdOnly) cwdGuessRolledUpWhilePending = rolledUpWhilePending(realId);
-      else saveRollups(rolledUpWhilePending(realId), 'running');
+      rolledUpAtAdoption.set(realId, {
+        qualityProxy: localSessionAggregator.qualityOf(realId),
+        taskCount: localSessionAggregator.ownTaskCountOf(realId) ?? 0,
+      });
+      // A correction saves the stale guess's whole rollup below, so the guess's held one goes.
+      cwdGuessRolledUpWhilePending = viaCwdOnly ? rolledUpWhilePending(realId) : [];
+      if (!viaCwdOnly) saveRollups(rolledUpWhilePending(realId), 'running');
       // Session thresholds fired so far belong to a conversation the engine
       // followed while pending, or to a wrong guess. The rehydrate below seeds
       // them again from the adopted session's saved total.
@@ -3628,7 +3679,7 @@ async function main(): Promise<void> {
       source: 'cwd' | 'ppid-ancestor',
       readsParentLevel = true,
     ): void => {
-      if (source === 'cwd') armPendingConfirmation(() => takeCwdGuessRollup(staleId));
+      if (source === 'cwd') armPendingConfirmation(() => seedCwdGuessFromRollup(staleId));
       ppidCorrectionAbort = new AbortController();
       // Guards against both watches below firing: in practice only one ever
       // can (see the win32 branch's own comment), but a shared flag makes

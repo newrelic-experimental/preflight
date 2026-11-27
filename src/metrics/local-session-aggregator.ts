@@ -40,7 +40,11 @@ import type { ModelBreakdownEntry } from './model-usage-tracker.js';
 import { parsePrRepo } from './pr-ref.js';
 import { resolvePricingDetail } from './pricing-overlay.js';
 import { readShell, type ShellReading } from './shell-lexer.js';
-import { QualityProxyTracker } from './quality-proxy-tracker.js';
+import {
+  QualityProxyTracker,
+  ZERO_QUALITY_PROXY_COUNTS,
+  type QualityProxyRawCounts,
+} from './quality-proxy-tracker.js';
 import { TaskDetector } from './task-detector.js';
 import { ToolSelectionScorer, toToolSelectionSummary } from './tool-selection-scorer.js';
 
@@ -307,6 +311,14 @@ export class LocalSessionAggregator {
   taskCountOf(sessionId: string): number | null {
     const rollup = this.sessions.get(sessionId);
     return rollup ? taskCountOf(rollup.tasks) : null;
+  }
+
+  ownTaskCountOf(sessionId: string): number | null {
+    return this.sessions.get(sessionId)?.tasks.getOwnTasksCompleted() ?? null;
+  }
+
+  qualityOf(sessionId: string): QualityProxyRawCounts {
+    return this.sessions.get(sessionId)?.quality.getRawCounts() ?? ZERO_QUALITY_PROXY_COUNTS;
   }
 
   recordsOf(sessionId: string): readonly ToolCallRecord[] {

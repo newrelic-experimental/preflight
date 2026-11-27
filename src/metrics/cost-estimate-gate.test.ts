@@ -10,6 +10,7 @@ function makeParams(
   return {
     estimateBytes: 400,
     reportCount: 0,
+    estimatesRetracted: false,
     recordSessionId: 'session-own',
     ownSessionId: 'session-own',
     ...overrides,
@@ -19,6 +20,10 @@ function makeParams(
 describe('shouldApplyCostEstimate', () => {
   it('applies to a record from the process own session before any token report', () => {
     expect(shouldApplyCostEstimate(makeParams())).toBe(true);
+  });
+
+  it('skips once the session is retracted, though this process saw no report', () => {
+    expect(shouldApplyCostEstimate(makeParams({ estimatesRetracted: true }))).toBe(false);
   });
 
   it('applies when the record carries no session id', () => {

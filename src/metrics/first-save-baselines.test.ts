@@ -2,7 +2,7 @@ import { describe, it, expect } from '@jest/globals';
 import {
   FirstSaveBaselines,
   costSeedOf,
-  seedDrainedRollups,
+  seedSavedRollups,
   toolCallSeedOf,
 } from './first-save-baselines.js';
 import { buildContribution, type FullSessionSummary } from '../storage/session-store.js';
@@ -231,7 +231,7 @@ describe('toolCallSeedOf', () => {
   });
 });
 
-describe('seedDrainedRollups', () => {
+describe('seedSavedRollups', () => {
   const MODEL = 'claude-sonnet-4-6';
   const rollup = makeSummary({
     estimatedCostUsd: 0.6,
@@ -249,14 +249,14 @@ describe('seedDrainedRollups', () => {
     },
   });
 
-  it("counts a rollup this process drained in its own contribution, beside the file's seed", () => {
+  it('shows a rollup this process drained and saved, but leaves it out of its own contribution', () => {
     const sessionTracker = new SessionTracker('sess-a');
     const costTracker = new CostTracker(sessionTracker);
     const modelUsageTracker = new ModelUsageTracker();
     const other = costSeedOf(makeSummary({ estimatedCostUsd: 2, tokensInput: 9_000 }));
-    costTracker.seedFromPersisted(other.costTracker, 'alreadySaved');
+    costTracker.seedFromPersisted(other.costTracker);
 
-    seedDrainedRollups([rollup], costTracker, modelUsageTracker);
+    seedSavedRollups([rollup], costTracker, modelUsageTracker);
     const own = buildContribution({
       sessionTracker,
       costTracker,
@@ -264,9 +264,10 @@ describe('seedDrainedRollups', () => {
       developer: 'alice',
     }).summary;
 
-    expect(own.estimatedCostUsd).toBeCloseTo(0.6, 9);
-    expect(own.tokensInput).toBe(100_000);
-    expect(own.modelBreakdown[MODEL]).toMatchObject({ requestCount: 1, totalInputTokens: 100_000 });
+    expect(own.estimatedCostUsd).toBeNull();
+    expect(own.tokensInput).toBe(0);
+    expect(own.modelBreakdown).toEqual({});
     expect(costTracker.getMetrics().sessionTotalCostUsd).toBeCloseTo(2.6, 9);
+    expect(modelUsageTracker.getRawBreakdown()[MODEL]).toMatchObject({ requestCount: 1 });
   });
 });

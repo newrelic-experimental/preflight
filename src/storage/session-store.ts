@@ -951,15 +951,32 @@ function sharesTimelineEntry(x: FullSessionSummary, y: FullSessionSummary): bool
   return (y.timeline ?? []).some(heldIn(x.timeline ?? []));
 }
 
+/** The calls added so far, by the keys `mergeTimeline` dedupes on. */
+export function callIndex(): {
+  readonly has: (e: ReplayTimelineEntry) => boolean;
+  readonly add: (e: ReplayTimelineEntry) => void;
+} {
+  const ids = new Set<string>();
+  const keys = new Set<string>();
+  const keysWithoutId = new Set<string>();
+  return {
+    has: (e) =>
+      e.toolUseId
+        ? ids.has(e.toolUseId) || keysWithoutId.has(legacyTimelineKey(e))
+        : keys.has(legacyTimelineKey(e)),
+    add: (e) => {
+      if (e.toolUseId) ids.add(e.toolUseId);
+      else keysWithoutId.add(legacyTimelineKey(e));
+      keys.add(legacyTimelineKey(e));
+    },
+  };
+}
+
 /** Whether `entries` hold an entry's call, by the keys `mergeTimeline` dedupes on. */
 function heldIn(entries: readonly ReplayTimelineEntry[]): (e: ReplayTimelineEntry) => boolean {
-  const ids = new Set(entries.flatMap((e) => (e.toolUseId ? [e.toolUseId] : [])));
-  const keys = new Set(entries.map(legacyTimelineKey));
-  const keysWithoutId = new Set(entries.filter((e) => !e.toolUseId).map(legacyTimelineKey));
-  return (e) =>
-    e.toolUseId
-      ? ids.has(e.toolUseId) || keysWithoutId.has(legacyTimelineKey(e))
-      : keys.has(legacyTimelineKey(e));
+  const index = callIndex();
+  for (const e of entries) index.add(e);
+  return index.has;
 }
 
 /**
@@ -1725,7 +1742,7 @@ export class SessionStore {
   private saveContribution(writerId: string, contribution: WriterContribution): SaveResult {
     const { sessionId } = contribution.summary;
     if (!isValidSessionId(sessionId)) return { kind: 'skipped', reason: 'invalid-session-id' };
-    if (!hasRecordedUsage(contribution.summary)) {
+    if (!hasRecordedUsage(contribution.summary) && !this.loadSession(sessionId)) {
       return { kind: 'skipped', reason: 'no-recorded-usage' };
     }
     try {
