@@ -640,7 +640,7 @@ describe('runDiagnostics', () => {
       expect(checks.find((x) => x.check === 'Hooks wired')?.status).toBe('fail');
     });
 
-    it('returns ok when all five preflight hooks are present', async () => {
+    it('returns ok when all six preflight hooks are present', async () => {
       mockedExistSync.mockImplementation((p) => p === '/test-home/.claude/settings.json');
       mockedReadFileSync.mockImplementation((p) => {
         if (p === '/test-home/.claude/settings.json')
@@ -648,6 +648,7 @@ describe('runDiagnostics', () => {
             hooks: {
               PreToolUse: [nrHookEntry('pre-tool')],
               PostToolUse: [nrHookEntry('post-tool')],
+              PostToolUseFailure: [nrHookEntry('post-tool-failure')],
               PermissionRequest: [nrHookEntry('permission-request')],
               PermissionDenied: [nrHookEntry('permission-denied')],
               StopFailure: [nrHookEntry('stop-failure')],
@@ -677,6 +678,28 @@ describe('runDiagnostics', () => {
       expect(c.detail).toContain('PermissionRequest');
       expect(c.detail).toContain('PermissionDenied');
       expect(c.fix).toContain('preflight install');
+    });
+
+    it('returns fail naming PostToolUseFailure for an install made before it was registered', async () => {
+      mockedExistSync.mockImplementation((p) => p === '/test-home/.claude/settings.json');
+      mockedReadFileSync.mockImplementation((p) => {
+        if (p === '/test-home/.claude/settings.json')
+          return JSON.stringify({
+            hooks: {
+              PreToolUse: [nrHookEntry('pre-tool')],
+              PostToolUse: [nrHookEntry('post-tool')],
+              PermissionRequest: [nrHookEntry('permission-request')],
+              PermissionDenied: [nrHookEntry('permission-denied')],
+              StopFailure: [nrHookEntry('stop-failure')],
+            },
+          });
+        return '{}';
+      });
+      const checks = await runDiagnostics(makeOpts());
+      const c = checks.find((x) => x.check === 'Hooks wired')!;
+      expect(c.status).toBe('fail');
+      expect(c.detail).toMatch(/^PostToolUseFailure not found/);
+      expect(c.fix).toBe('preflight install');
     });
 
     it('includes malformed-file note when one path parses and another fails JSON.parse', async () => {
@@ -731,6 +754,7 @@ describe('runDiagnostics', () => {
             hooks: {
               PreToolUse: [nrHookEntry('pre-tool')],
               PostToolUse: [nrHookEntry('post-tool')],
+              PostToolUseFailure: [nrHookEntry('post-tool-failure')],
               PermissionRequest: [nrHookEntry('permission-request')],
               PermissionDenied: [nrHookEntry('permission-denied')],
               StopFailure: [nrHookEntry('stop-failure')],
@@ -754,6 +778,7 @@ describe('runDiagnostics', () => {
             hooks: {
               PreToolUse: [customEntry('pre-tool')],
               PostToolUse: [customEntry('post-tool')],
+              PostToolUseFailure: [customEntry('post-tool-failure')],
               PermissionRequest: [customEntry('permission-request')],
               PermissionDenied: [customEntry('permission-denied')],
               StopFailure: [customEntry('stop-failure')],
@@ -781,6 +806,7 @@ describe('runDiagnostics', () => {
             hooks: {
               PreToolUse: [nrHookEntry('pre-tool')],
               PostToolUse: [postCustomEntry],
+              PostToolUseFailure: [nrHookEntry('post-tool-failure')],
               PermissionRequest: [nrHookEntry('permission-request')],
               PermissionDenied: [nrHookEntry('permission-denied')],
               StopFailure: [nrHookEntry('stop-failure')],

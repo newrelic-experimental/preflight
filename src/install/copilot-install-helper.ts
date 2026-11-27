@@ -41,6 +41,7 @@ import { z } from 'zod';
 import { readJsonFileStrict, writeJsonFile, errMsg } from './json-utils.js';
 import { entryContainsNrObserve, shimExtension, siblingBinPath } from './install-helper.js';
 import { resolveDataDir } from '../deploy/data-paths.js';
+import { HOOK_SUBCOMMANDS } from '../hook-subcommands.js';
 import { copilotSdkExtensionInstallPath } from '../hooks/copilot-sdk-extension-health.js';
 
 // ---------------------------------------------------------------------------
@@ -65,7 +66,7 @@ export interface CopilotHookCommand {
 
 export interface CopilotHooksFile {
   version: 1;
-  hooks: { PreToolUse: CopilotHookCommand[]; PostToolUse: CopilotHookCommand[] };
+  hooks: Record<CopilotHookEvent, CopilotHookCommand[]>;
 }
 
 export interface VsCodeMcpServerConfig {
@@ -79,7 +80,10 @@ export interface VsCodeMcpServerConfig {
 // Generators
 // ---------------------------------------------------------------------------
 
-const HOOK_SUBCOMMANDS = { PreToolUse: 'pre-tool', PostToolUse: 'post-tool' } as const;
+// GitHub's Copilot hooks reference lists PostToolUseFailure for the Copilot
+// CLI. VS Code Copilot Chat reads the same file but has no such event.
+const COPILOT_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'] as const;
+type CopilotHookEvent = (typeof COPILOT_HOOK_EVENTS)[number];
 
 // The collector shim at `collectorPath`, given in any of its shim forms, that
 // sh or PowerShell can run.
@@ -167,6 +171,7 @@ export function generateCopilotHooksFile(binPath?: string | null): CopilotHooksF
     hooks: {
       PreToolUse: [hookCommand(HOOK_SUBCOMMANDS.PreToolUse)],
       PostToolUse: [hookCommand(HOOK_SUBCOMMANDS.PostToolUse)],
+      PostToolUseFailure: [hookCommand(HOOK_SUBCOMMANDS.PostToolUseFailure)],
     },
   };
 }
@@ -247,6 +252,7 @@ const HooksFieldSchema = z
   .object({
     PreToolUse: z.array(z.unknown()).optional(),
     PostToolUse: z.array(z.unknown()).optional(),
+    PostToolUseFailure: z.array(z.unknown()).optional(),
   })
   .passthrough();
 const CopilotHooksSchema = z
@@ -280,7 +286,7 @@ export function mergeCopilotHooksFile(
       ? { ...(result.hooks as Record<string, unknown>) }
       : {};
 
-  for (const hookType of ['PreToolUse', 'PostToolUse'] as const) {
+  for (const hookType of COPILOT_HOOK_EVENTS) {
     const existingArr = Array.isArray(hooks[hookType]) ? (hooks[hookType] as unknown[]) : [];
     const first = existingArr.findIndex(entryContainsNrObserve);
     // Preflight's entries collapse to the first, in place, since hook order
@@ -309,7 +315,7 @@ export function removeCopilotHooksFile(existing: Record<string, unknown>): Recor
   if (typeof result.hooks === 'object' && result.hooks !== null) {
     const hooks = { ...(result.hooks as Record<string, unknown>) };
 
-    for (const hookType of ['PreToolUse', 'PostToolUse'] as const) {
+    for (const hookType of COPILOT_HOOK_EVENTS) {
       if (Array.isArray(hooks[hookType])) {
         const filtered = (hooks[hookType] as unknown[]).filter((e) => !entryContainsNrObserve(e));
         if (filtered.length > 0) {

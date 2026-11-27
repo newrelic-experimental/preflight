@@ -143,6 +143,7 @@ export function generateHookEntries(
   return {
     PreToolUse: entryFor('PreToolUse'),
     PostToolUse: entryFor('PostToolUse'),
+    PostToolUseFailure: entryFor('PostToolUseFailure'),
     PermissionRequest: entryFor('PermissionRequest'),
     PermissionDenied: entryFor('PermissionDenied'),
     // StopFailure is its own top-level settings.json hooks key, distinct from
@@ -337,11 +338,11 @@ function filterNrObserveEntries(entries: unknown[]): unknown[] {
 /**
  * Returns true when settingsContent contains an NR-pattern (NR_HOOK_RE) entry
  * for every hook event type this installer registers. False for a pre-upgrade
- * install carrying only PreToolUse/PostToolUse, so install paths gated on
- * this re-run their merge and add the missing permission hooks.
+ * install that lacks any of them, so install paths gated on this re-run
+ * their merge and add the missing hooks.
  * Pure — no file I/O.
  *
- * Deliberately does NOT check StopFailure, InstructionsLoaded,
+ * Deliberately does NOT check InstructionsLoaded,
  * PostModelSwitch, SessionStart, UserPromptSubmit, or Stop: broadening what
  * counts as "hooks installed" would change behavior for existing users,
  * which is a scope cut for this PR, not an oversight — don't "fix" this
@@ -390,6 +391,7 @@ const HooksFieldSchema = z
   .object({
     PreToolUse: z.array(z.unknown()).optional(),
     PostToolUse: z.array(z.unknown()).optional(),
+    PostToolUseFailure: z.array(z.unknown()).optional(),
     PermissionRequest: z.array(z.unknown()).optional(),
     PermissionDenied: z.array(z.unknown()).optional(),
     StopFailure: z.array(z.unknown()).optional(),
