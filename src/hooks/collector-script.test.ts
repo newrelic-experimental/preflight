@@ -1860,6 +1860,28 @@ describe('collector-script', () => {
         expect(JSON.stringify(input)).toContain('"[REDACTED]"');
       });
 
+      it.each([
+        [{ password: ['arrPW-hunter'] }, { password: ['[REDACTED]'] }],
+        [{ token: [111, 222] }, { token: ['[REDACTED]', '[REDACTED]'] }],
+        [{ password: ['--password', 'hunter2'] }, { password: ['[REDACTED]', '[REDACTED]'] }],
+        [
+          { secret: ['hunter2', { note: 'kept' }, true] },
+          { secret: ['[REDACTED]', { note: 'kept' }, true] },
+        ],
+      ])('hides each string and number of an array under a secret key in %j', (value, stored) => {
+        expect(recorded(value)).toEqual([stored, stored]);
+      });
+
+      it('keeps arrays under keys that only mention a secret', () => {
+        const value = {
+          tokens_used: [1, 2],
+          passwordPolicy: ['min8'],
+          token: [],
+        };
+
+        expect(recorded(value)).toEqual([value, value]);
+      });
+
       it('keeps keys that only mention a secret, and values that are not strings or numbers', () => {
         const value = {
           passwordPolicy: 'strict',

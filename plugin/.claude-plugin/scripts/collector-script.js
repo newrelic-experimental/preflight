@@ -1591,21 +1591,21 @@ function recordedContent(value, maxLen) {
         let key = base;
         for (let n = 2; keys.has(key); n++) key = `${base} (${n})`;
         keys.add(key);
-        const secret = (typeof x === "string" || typeof x === "number") && SECRET_KEY.test(k);
-        return [key, secret ? REDACTED : x];
+        if (!SECRET_KEY.test(k)) return [key, x];
+        if (Array.isArray(x)) return [key, x.map((e) => isScalar(e) ? REDACTED : e)];
+        return [key, isScalar(x) ? REDACTED : x];
       })
     );
   });
   return truncate(content, maxLen);
 }
 var REDACTED = "[REDACTED]";
+var isScalar = (x) => typeof x === "string" || typeof x === "number";
 var SHELL_SPECIAL = /[\s"'\\$;|&()<>`#]/;
 var shellWord = (arg) => arg !== "" && !SHELL_SPECIAL.test(arg) ? arg : `'${arg.replaceAll("'", `'\\''`)}'`;
 var MAX_ARG_PROBE_CHARS = 262144;
 function hideArgs(value, room) {
-  const strings = value.flatMap(
-    (arg) => typeof arg === "string" || typeof arg === "number" ? [String(arg)] : []
-  );
+  const strings = value.flatMap((arg) => isScalar(arg) ? [String(arg)] : []);
   if (strings.length < value.length) return value;
   let count = 0;
   for (let left = room; count < strings.length && left > 0; count++) {

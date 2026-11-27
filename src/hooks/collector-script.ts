@@ -252,8 +252,9 @@ function recordedContent(value: unknown, maxLen: number): string {
               let key = base;
               for (let n = 2; keys.has(key); n++) key = `${base} (${n})`;
               keys.add(key);
-              const secret = (typeof x === 'string' || typeof x === 'number') && SECRET_KEY.test(k);
-              return [key, secret ? REDACTED : x];
+              if (!SECRET_KEY.test(k)) return [key, x];
+              if (Array.isArray(x)) return [key, x.map((e) => (isScalar(e) ? REDACTED : e))];
+              return [key, isScalar(x) ? REDACTED : x];
             }),
           );
         });
@@ -261,6 +262,8 @@ function recordedContent(value: unknown, maxLen: number): string {
 }
 
 const REDACTED = '[REDACTED]';
+const isScalar = (x: unknown): x is string | number =>
+  typeof x === 'string' || typeof x === 'number';
 const SHELL_SPECIAL = /[\s"'\\$;|&()<>`#]/;
 
 const shellWord = (arg: string): string =>
@@ -272,9 +275,7 @@ const MAX_ARG_PROBE_CHARS = 262_144;
 
 // A flag and its value can be separate strings, as in ["curl", "-u", "me:pw"].
 function hideArgs(value: unknown[], room: number): unknown[] {
-  const strings = value.flatMap((arg) =>
-    typeof arg === 'string' || typeof arg === 'number' ? [String(arg)] : [],
-  );
+  const strings = value.flatMap((arg) => (isScalar(arg) ? [String(arg)] : []));
   if (strings.length < value.length) return value;
   // Strings that start past the cap are stored as the truncation marker, so they are not read.
   let count = 0;
