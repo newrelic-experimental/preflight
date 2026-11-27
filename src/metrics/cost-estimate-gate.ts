@@ -1,6 +1,7 @@
 export interface CostEstimateParams {
   readonly estimateBytes: number;
   readonly reportCount: number;
+  /** A real report replaced the session's byte estimates, in this process or another writer. */
   readonly estimatesRetracted: boolean;
   /** The session the record belongs to, or null when the hook did not carry one. */
   readonly recordSessionId: string | null;
@@ -11,7 +12,8 @@ export interface CostEstimateParams {
 /**
  * Whether the byte-size cost fallback (`CostTracker.recordEstimatedTokens`)
  * should fire for a given tool call. The fallback covers the handful of calls
- * before a session's first exact token report, so it only makes sense for the
+ * before a session's first exact token report, which this process drained or
+ * another writer of the session saw. It only makes sense for the
  * session this process owns: `CostTracker` is process-wide and its total is
  * saved as that session's `estimatedCostUsd`, so an estimate for any other
  * session's call (drained by `--local`, or by a provisional `--stdio` engine

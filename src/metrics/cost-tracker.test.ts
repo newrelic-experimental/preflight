@@ -2354,6 +2354,24 @@ describe('getOwnMetrics()', () => {
     expect(after.getMetrics().sessionTotalCostUsd).toBeCloseTo(exact.totalUsd, 12);
   });
 
+  it('drops every estimate, seeded ones included, and keeps its exact cost once marked retracted', () => {
+    const before = new CostTracker();
+    before.recordEstimatedTokens(40_000, 8_000, MODEL);
+    const after = new CostTracker();
+    after.seedFromPersisted(buildCostTrackerSeed(savedSessionOf(before)));
+    after.recordEstimatedTokens(4_000, 2_000, MODEL);
+    const exact = after.recordTokenUsage(turn, MODEL);
+
+    after.markRetracted();
+
+    expect(after.hasRetractedEstimates()).toBe(true);
+    for (const metrics of [after.getMetrics(), after.getOwnMetrics()]) {
+      expect(metrics.sessionTotalCostUsd).toBeCloseTo(exact.totalUsd, 12);
+      expect(metrics.totalInputTokens).toBe(2_000);
+      expect(metrics.byteEstimates?.costUsd ?? 0).toBe(0);
+    }
+  });
+
   it('anchors its own first spend today when the seed has none', () => {
     const tracker = new CostTracker();
     tracker.seedFromPersisted(

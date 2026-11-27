@@ -934,11 +934,15 @@ export class CostTracker implements Resettable {
     return this.metricsOf(this.held);
   }
 
-  /** A real report replaced byte estimates this tracker held, seeded ones included. */
+  /**
+   * The session's byte estimates are retracted: a real report replaced ones this
+   * tracker held, seeded ones included, or `markRetracted` was called.
+   */
   hasRetractedEstimates(): boolean {
     return this.retractedEstimates;
   }
 
+  /** Another writer retracted the session's estimates, so this tracker drops its own and stops. */
   markRetracted(): void {
     this.retractedEstimates = true;
     for (const book of this.books()) book.discardByteEstimates();

@@ -1535,6 +1535,8 @@ async function main(): Promise<void> {
     const firstSaveBaselines = new FirstSaveBaselines();
     // A session's calls in its file before this process first wrote it, none of them this process's.
     const callsBeforeFirstWrite = new Map<string, SavedCalls>();
+    // The rollup saved at adoption holds the tasks and quality signals the engine's trackers
+    // replayed, so its share leaves them out. The fold counts each replayed call once.
     const rolledUpAtAdoption = new Map<
       string,
       { readonly qualityProxy: QualityProxyRawCounts; readonly taskCount: number }
@@ -3062,16 +3064,22 @@ async function main(): Promise<void> {
     const rolledUpWhilePending = (sessionId: string): ReturnType<typeof observedRollups> =>
       readRollups((id) => id === sessionId);
     let cwdGuessRolledUpWhilePending: ReturnType<typeof observedRollups> = [];
+    // Saves what the engine rolled up for its cwd guess before adopting it, once.
+    // A rollup whose save fails stays held, and the next session save retries it.
     const flushCwdGuessRollup = (): ReturnType<typeof observedRollups> => {
       const held = cwdGuessRolledUpWhilePending;
-      cwdGuessRolledUpWhilePending = [];
-      saveRollups(held, 'running');
+      cwdGuessRolledUpWhilePending = held.filter(
+        (rollup) => saveRollups([rollup], 'running') === 0,
+      );
       return held;
     };
     const seedCwdGuess = (guessId: string): void => {
       flushCwdGuessRollup();
       rehydrateTrackersIfResumed(guessId);
     };
+    // Past the confirmation cap the engine saves its cwd guess's file as its own
+    // session, so its cost trackers take what it rolled up for the guess before
+    // adopting it. Never the file's other cost, which may be another session's.
     const seedCwdGuessFromRollup = (guessId: string): void => {
       try {
         seedSavedRollups(
@@ -3093,6 +3101,7 @@ async function main(): Promise<void> {
       if (!sessionStore || !sessionTracker || !taskDetector || !config) return;
       try {
         if (pendingConfirmation) seedCwdGuess(sessionTraceId);
+        else flushCwdGuessRollup();
         transcriptMessageTracker.refresh();
         // Phase 2 freshness: re-read Claude Code's own name sources (job-state
         // title + transcript ai-title) right before building the summary, so a
@@ -3502,8 +3511,9 @@ async function main(): Promise<void> {
         qualityProxy: localSessionAggregator.qualityOf(realId),
         taskCount: localSessionAggregator.ownTaskCountOf(realId) ?? 0,
       });
-      if (viaCwdOnly) cwdGuessRolledUpWhilePending = rolledUpWhilePending(realId);
-      else saveRollups(rolledUpWhilePending(realId), 'running');
+      // A correction saves the stale guess's whole rollup below, so the guess's held one goes.
+      cwdGuessRolledUpWhilePending = viaCwdOnly ? rolledUpWhilePending(realId) : [];
+      if (!viaCwdOnly) saveRollups(rolledUpWhilePending(realId), 'running');
       // Session thresholds fired so far belong to a conversation the engine
       // followed while pending, or to a wrong guess. The rehydrate below seeds
       // them again from the adopted session's saved total.

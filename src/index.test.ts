@@ -3545,6 +3545,47 @@ describe('stdio integration', () => {
         });
       }, 40000);
 
+      it("a pending engine whose save of the guess's rollup fails at the cap saves it at its next session save", async () => {
+        const preloadDir = mkdtempSync(join(tmpdir(), 'nr-cap-save-fails-'));
+        const failed = resolve(preloadDir, 'failed');
+        const storeUrl = pathToFileURL(resolve(distDir, 'storage', 'session-store.js')).href;
+        writeFileSync(
+          resolve(preloadDir, 'preload.mjs'),
+          [
+            "import { existsSync, writeFileSync } from 'node:fs';",
+            `const { SessionStore } = await import(${JSON.stringify(storeUrl)});`,
+            'const save = SessionStore.prototype.saveSession;',
+            'SessionStore.prototype.saveSession = function (summary) {',
+            `  if (summary.sessionId !== 'conv-guess' || existsSync(${JSON.stringify(failed)}))`,
+            '    return save.call(this, summary);',
+            `  writeFileSync(${JSON.stringify(failed)}, String(new Error().stack));`,
+            '  return null;',
+            '};',
+          ].join('\n'),
+        );
+        const preload = pathToFileURL(resolve(preloadDir, 'preload.mjs')).href;
+        try {
+          await withPendingEngine(
+            '600000',
+            async (env, _adopt, close) => {
+              const storage = env.NEW_RELIC_AI_MCP_STORAGE_PATH;
+              await subagentTurn(storage, 'conv-guess', 'msg_sub_1');
+              await guessFromCwd(storage, 'conv-guess');
+              await new Promise((r) => setTimeout(r, 1000));
+              expect(existsSync(failed)).toBe(true);
+              await close();
+
+              expect(savedSession(storage, 'conv-guess')?.tokensInput).toBe(100000);
+            },
+            () => ['--import', preload],
+            'claude-code',
+            capEnv,
+          );
+        } finally {
+          rmSync(preloadDir, { recursive: true, force: true });
+        }
+      }, 40000);
+
       it('a pending engine the ppid confirms before the cap saves the subagent turn it drained before the guess', async () => {
         await withPendingEngine(
           '600000',
@@ -4840,13 +4881,14 @@ describe('stdio integration', () => {
     }, 60000);
 
     describe('engines that share a session', () => {
-      const engineFiles = (storagePath: string, sessionId: string): WriterContribution[] => {
+      const engineFiles = (storagePath: string, sessionId: string) => {
         const dir = resolve(storagePath, 'sessions', WRITERS_DIR, sessionId);
-        return readdirSync(dir)
+        return listDirOrEmpty(dir)
           .filter((name) => name.startsWith('engine.'))
-          .map(
-            (name) => JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) as WriterContribution,
-          );
+          .map((name) => ({
+            name,
+            ...(JSON.parse(readFileSync(resolve(dir, name), 'utf-8')) as WriterContribution),
+          }));
       };
       const adoptAll = async (storagePath: string, sessionId: string, engines: Engine[]) => {
         writeFileSync(ppidBreadcrumb(storagePath), sessionId);
@@ -4911,7 +4953,7 @@ describe('stdio integration', () => {
           await restarted.close();
 
           const files = engineFiles(storagePath, 'restarted-id');
-          const own = files.find((file) => file !== first && file.summary.tokensInput !== 400);
+          const own = files.find((file) => file.name !== first!.name);
           expect(files).toHaveLength(2);
           expect(own?.summary.tokensInput).toBe(100);
           expect(own?.summary.startTime).toBeGreaterThan(first!.summary.endTime);
@@ -4989,6 +5031,38 @@ describe('stdio integration', () => {
           const saved = new SessionStore({ storagePath }).loadSession('replayed-id');
           expect(saved).toMatchObject({ toolCallCount: 1, taskCount: 1 });
           expect(saved?.qualityProxy).toMatchObject({ totalSignals: 1, diffApplyCleanCount: 1 });
+        } finally {
+          await cleanup();
+        }
+      }, 60000);
+
+      it('counts once, in its calls and success rate, the calls without a toolUseId it drained while pending', async () => {
+        const { storagePath, projectCwd, cleanup } = makeDirs();
+        try {
+          const engine = await startEngine(storagePath, projectCwd, {
+            NR_AI_SESSION_PERSIST_INTERVAL_MS: '600000',
+          });
+          const at = Date.now();
+          const edit = (i: number) =>
+            bufferLine(storagePath, 'id-less-id', {
+              mode: 'post',
+              tool: 'Edit',
+              timestamp: at + i,
+              success: i > 0,
+              toolInput: { file_path: `/repo/${i}.ts` },
+            });
+          [0, 1, 2].forEach(edit);
+          expect(await waitUntil(bufferDrained(storagePath, 'id-less-id'))).toBe(true);
+          await adoptAll(storagePath, 'id-less-id', [engine]);
+          edit(3);
+          expect(await waitUntil(bufferDrained(storagePath, 'id-less-id'))).toBe(true);
+          await engine.close();
+
+          expect(new SessionStore({ storagePath }).loadSession('id-less-id')).toMatchObject({
+            toolCallCount: 4,
+            toolBreakdown: { Edit: 4 },
+            toolSuccessRate: 0.75,
+          });
         } finally {
           await cleanup();
         }

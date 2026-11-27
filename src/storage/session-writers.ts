@@ -6,16 +6,17 @@ import { renameIntoPlace } from './rename-into-place.js';
 import {
   addSummaries,
   byWriteOrder,
+  callIndex,
   combineSessionFiles,
   deserializeFullSessionSummary,
   exactTotalsOf,
-  savedToolNameByUseId,
   subtractCallUsageParts,
   subtractSummaries,
   warnOnce,
   type FullSessionSummary,
   type SerializedFullSessionSummary,
 } from './session-store.js';
+import type { ReplayTimelineEntry } from './types.js';
 
 /**
  * Each writer's files for session `<sid>` live in `sessions/.writers/<sid>/`,
@@ -92,9 +93,11 @@ export function createOnce(path: string, body: string): void {
 /**
  * One writer's own share of a session: only what this process drained, never a
  * total seeded from the saved file. Hook events and transcript turns are each
- * drained once, so shares add, except a call whose pre and post two engines
- * drained. Its counts must include every call its timeline holds by toolUseId,
- * under that entry's tool name, so the fold can take the repeat back out.
+ * drained once, so shares add, except a call two writers hold: one whose pre
+ * and post two engines drained, or one an engine replayed at adoption that the
+ * rollup it saved then also holds. Its counts must include every call its
+ * timeline holds, under that entry's tool name, so the fold can take the
+ * repeat back out.
  */
 export interface WriterContribution {
   readonly summary: FullSessionSummary;
@@ -113,7 +116,8 @@ const NO_ESTIMATES: ByteEstimateLedger = {
 /**
  * The session every writer's share adds up to. Inputs fold oldest writer first,
  * so the result does not depend on the order they are listed in. One call two
- * engines both drained counts once where the timelines carry its toolUseId.
+ * writers both hold counts once, in the counts and the success rate, where both
+ * timelines carry it: by its toolUseId, else by its timestamp and tool name.
  * Retraction is a fact about the session, so one retracted writer drops every
  * writer's estimates.
  */
@@ -124,16 +128,19 @@ export function foldWriterContributions(
   const summaries = contributions
     .map((c) => (retracted ? withoutEstimates(c.summary) : c.summary))
     .sort(byWriteOrder);
-  const sum = summaries.reduce((a, b) => addSummaries(a, b));
-  const repeats = repeatedCallNames(summaries);
+  const sum = {
+    ...summaries.reduce((a, b) => addSummaries(a, b)),
+    toolSuccessRate: foldedToolSuccessRate(summaries),
+  };
+  const repeats = repeatedCalls(summaries).flat();
   if (repeats.length === 0) return sum;
   const toolBreakdown = { ...sum.toolBreakdown };
-  for (const name of repeats) toolBreakdown[name] -= 1;
+  for (const { toolName } of repeats) toolBreakdown[toolName] -= 1;
   return {
     ...sum,
     toolCallCount: sum.toolCallCount - repeats.length,
     toolBreakdown,
-    bashCommandCount: sum.bashCommandCount - repeats.filter((name) => name === 'Bash').length,
+    bashCommandCount: sum.bashCommandCount - repeats.filter((e) => e.toolName === 'Bash').length,
   };
 }
 
@@ -198,16 +205,29 @@ function savedRetraction({ byteEstimates: ledger }: FullSessionSummary): boolean
   );
 }
 
-function repeatedCallNames(summaries: readonly FullSessionSummary[]): string[] {
-  const seen = new Set<string>();
-  const repeats: string[] = [];
-  for (const summary of summaries) {
-    for (const [toolUseId, toolName] of savedToolNameByUseId(summary)) {
-      if (seen.has(toolUseId)) repeats.push(toolName);
-      else seen.add(toolUseId);
-    }
-  }
-  return repeats;
+function foldedToolSuccessRate(inWriteOrder: readonly FullSessionSummary[]): number | null {
+  const rated = inWriteOrder.flatMap((s) =>
+    s.toolSuccessRate === null ? [] : [{ s, rate: s.toolSuccessRate }],
+  );
+  const repeats = repeatedCalls(rated.map(({ s }) => s));
+  let calls = 0;
+  let successes = 0;
+  rated.forEach(({ s, rate }, i) => {
+    calls += s.toolCallCount - repeats[i].length;
+    successes += Math.round(rate * s.toolCallCount) - repeats[i].filter((e) => e.success).length;
+  });
+  return calls > 0 ? successes / calls : null;
+}
+
+/** Each summary's timeline entries that an earlier summary's timeline already holds. */
+function repeatedCalls(summaries: readonly FullSessionSummary[]): ReplayTimelineEntry[][] {
+  const seen = callIndex();
+  return summaries.map((s) => {
+    const calls = s.timeline ?? [];
+    const repeats = calls.filter(seen.has);
+    for (const e of calls) seen.add(e);
+    return repeats;
+  });
 }
 
 function withoutEstimates(s: FullSessionSummary): FullSessionSummary {
