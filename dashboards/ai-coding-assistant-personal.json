@@ -328,7 +328,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "FROM Metric SELECT sum(ai.cost.tokens_cache_read) / (sum(ai.cost.tokens_input) + sum(ai.cost.tokens_cache_read)) * 100 AS 'Cache Hit %' WHERE developer = {{developer}} SINCE 7 days ago"
+                "query": "FROM Metric SELECT sum(ai.cost.tokens_cache_read) / (sum(ai.cost.tokens_input) + sum(ai.cost.tokens_cache_read) + sum(ai.cost.tokens_cache_creation)) * 100 AS 'Cache Hit %' WHERE developer = {{developer}} SINCE 7 days ago"
               }
             ]
           }
@@ -348,7 +348,7 @@
             "nrqlQueries": [
               {
                 "accountIds": [],
-                "query": "FROM Metric SELECT sum(ai.cost.tokens_cache_read) / (sum(ai.cost.tokens_input) + sum(ai.cost.tokens_cache_read)) * 100 AS 'Cache Hit %' WHERE developer = {{developer}} SINCE 8 weeks ago TIMESERIES 1 week"
+                "query": "FROM Metric SELECT sum(ai.cost.tokens_cache_read) / (sum(ai.cost.tokens_input) + sum(ai.cost.tokens_cache_read) + sum(ai.cost.tokens_cache_creation)) * 100 AS 'Cache Hit %' WHERE developer = {{developer}} SINCE 8 weeks ago TIMESERIES 1 week"
               }
             ]
           }
