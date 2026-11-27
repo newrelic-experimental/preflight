@@ -44,6 +44,7 @@ var OPERATORS = ";|&()<>`";
 var OPERATOR = charTable(OPERATORS);
 var SPECIAL = charTable(`	
 \v\f\r ${OPERATORS}"'\\$`);
+var QUOTING = charTable(`"'\\$`);
 var isSpace = (c) => c === 32 || c >= 9 && c <= 13;
 var isBlank = (c) => c === 32 || c === 9;
 var isOperator = (c) => c >= 0 && c < 128 && OPERATOR[c] === 1;
@@ -82,7 +83,13 @@ function unitAt(text, i, context) {
 function unitLength(text, i, context) {
   return context === "double" && text.charCodeAt(i) === BACKSLASH && i + 1 < text.length ? 2 : 1;
 }
+var OUTLASTED = -1;
+var UNCLOSED = -2;
 function readValue(text, from, context, inside = "none") {
+  const end = readParts(text, from, context, inside);
+  return end < 0 ? bareWord(text, from, context) : end;
+}
+function readParts(text, from, context, inside) {
   let i = from;
   let part = inside;
   let opened = from - 1;
@@ -95,7 +102,8 @@ function readValue(text, from, context, inside = "none") {
     }
     const c = unitAt(text, i, context);
     if (part !== "none") {
-      if (c === EOF || c === CLOSE) return bareWord(text, from, context);
+      if (c === CLOSE) return OUTLASTED;
+      if (c === EOF) return UNCLOSED;
       if (i - opened - 1 > MAX_QUOTED_PART) return plainPrefix(text, from);
     } else if (c === EOF || c === CLOSE || isBlankOrOperator(c)) {
       return i;
@@ -210,6 +218,28 @@ function pushValue(spans, spanStart, from, end) {
   if (end > from) spans.push(spanStart, end);
   return end;
 }
+function hideValue(text, quote, spans, start, word, end) {
+  let i = Math.max(start, word);
+  while (i < end && QUOTING[text.charCodeAt(i)] !== 1) i++;
+  if (i === end || !outlastsQuote(text, word, end, quote))
+    return pushValue(spans, start, word, end);
+  for (; i < end; i++) {
+    if (QUOTING[text.charCodeAt(i)] !== 1) continue;
+    pushValue(spans, start, start, i);
+    start = i + 1;
+  }
+  return pushValue(spans, start, start, end);
+}
+function outlastsQuote(text, from, end, quote) {
+  if (quote === "none" || quote === "comment") return false;
+  for (let i = from; ; ) {
+    const partsEnd = readParts(text, i, quote, "none");
+    if (partsEnd < 0) return partsEnd === OUTLASTED;
+    const close = reopenedClose(text, partsEnd, quote);
+    if (close < 0 || close >= end) return false;
+    i = close + 1;
+  }
+}
 var QUOTE = String.raw`\\"|"|'`;
 var KEY_HEADER = String.raw`(?:x-)?(?:api-?key|auth-token|access-token)`;
 var AUTH_HEADER = String.raw`(?:proxy-)?authorization`;
@@ -242,7 +272,8 @@ var headerValue = (text, match, quote, spans) => {
   const inside = quoteOpenedBy(match[2], quote);
   const close = reopenedClose(text, start - (match[2]?.length ?? 0), quote);
   const end = close >= 0 ? close : readValue(text, from, quote, inside);
-  pushValue(spans, start, from, end);
+  if (inside === "none") hideValue(text, quote, spans, start, from, end);
+  else pushValue(spans, start, from, end);
   return close >= 0 || closesQuote(text, end, quote, inside) ? pushGlued(text, spans, end, quote) : end;
 };
 var headerWordValue = (text, match, quote, spans) => {
@@ -270,9 +301,8 @@ var FLAG = new RegExp(
 );
 var wordValue = (text, match, quote, spans) => {
   const from = match.index + match[0].length;
-  return pushValue(spans, match.index, from, valueEnd(text, from, quote));
+  return hideValue(text, quote, spans, match.index, from, valueEnd(text, from, quote));
 };
-var QUOTING = charTable(`"'\\$`);
 var nameValue = (text, match, quote, spans) => {
   let [start, floor] = [match.index, match.index + match[0].length];
   let end = valueEnd(text, floor, quote);
@@ -280,11 +310,11 @@ var nameValue = (text, match, quote, spans) => {
   for (; i < text.length && !isBlankOrOperator(text.charCodeAt(i)); i++) {
     if (QUOTING[text.charCodeAt(i)] !== 1) end = i + 1;
     else {
-      pushValue(spans, start, floor, end);
+      hideValue(text, quote, spans, start, floor, end);
       start = end = floor = i + 1;
     }
   }
-  pushValue(spans, start, floor, end);
+  hideValue(text, quote, spans, start, floor, end);
   return i;
 };
 var MYSQL = /(?:mysql(?:dump|admin)?|mariadb)\b/g;
@@ -333,7 +363,7 @@ function commandWords(text, match, quote, visit) {
 }
 var mysqlPasswords = (text, match, quote, spans) => commandWords(text, match, quote, (from, end) => {
   const flag = passwordFlag(text, from, end);
-  if (flag >= 0) spans.push(flag, end);
+  if (flag >= 0) hideValue(text, quote, spans, flag, from, end);
 });
 function passwordFlag(text, from, end) {
   for (let flag = from; flag + 2 < end; flag++) {
@@ -393,7 +423,7 @@ var curlShortValue = (c) => {
   return CURL_CREDENTIAL[c] === 1 ? "credential" : "other";
 };
 function redactCurlValue(text, quote, spans, kind, start, from, end) {
-  if (kind === "credential") spans.push(start, end);
+  if (kind === "credential") hideValue(text, quote, spans, start, from, end);
   if (kind !== "header") return;
   CURL_HEADER.lastIndex = from;
   const header = CURL_HEADER.exec(text);
@@ -412,7 +442,7 @@ var curlCredentials = (text, match, quote, spans) => {
     if (name.startsWith("--")) {
       const credential = CURL_LONG_CREDENTIAL.has(name);
       if (word.includes("=")) {
-        if (credential) spans.push(from, end);
+        if (credential) hideValue(text, quote, spans, from, from, end);
       } else if (credential || CURL_LONG_TAKES_VALUE.has(name)) {
         pending = { start: from, kind: credential ? "credential" : "other" };
       }
@@ -436,10 +466,11 @@ var passwordValue = ({ flags, joined, wrapperOptions }) => (text, match, quote, 
   let wrapped = false;
   return commandWords(text, match, quote, (from, end) => {
     const word = text.slice(from, end);
-    if (pending >= 0 && word[0] !== "-") spans.push(pending, end);
+    if (pending >= 0 && word[0] !== "-") hideValue(text, quote, spans, pending, from, end);
     else if (wrapped || skipNext) skipNext = false;
     else if (flags.includes(word)) pending = from;
-    else if (joined && flags.some((flag) => word.startsWith(flag))) spans.push(from, end);
+    else if (joined && flags.some((flag) => word.startsWith(flag)))
+      hideValue(text, quote, spans, from, from, end);
     else if (wrapperOptions !== void 0) {
       wrapped = word[0] !== "-";
       skipNext = wrapperOptions.includes(word);
