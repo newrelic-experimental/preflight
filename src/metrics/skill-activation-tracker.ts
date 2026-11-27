@@ -10,6 +10,7 @@ const MAIN_AGENT_KEY = '';
 const DEFAULT_MAX_SESSIONS = 50;
 const MAX_AGENTS_PER_SESSION = 100;
 const MAX_STARTED_CALLS = 2000;
+const MAX_RUN_CHANGES = 32;
 
 export interface SkillActivationMetrics {
   /** Every open run, main agent and subagents, across the sessions in view. */
@@ -22,6 +23,22 @@ export interface SkillRunOpenContext {
   readonly platform?: string;
   /** The subagent whose Skill call opened the run. Absent for the main agent. */
   readonly agentId?: string;
+}
+
+/** A main-agent run change: the run that is open from `at` until the next change. */
+interface RunChange {
+  readonly at: number;
+  readonly stamp: SkillStamp | null;
+}
+
+/** A session's main-agent run changes, oldest first, for `runAt`. */
+interface RunHistory {
+  readonly changes: RunChange[];
+  /**
+   * False once a change was dropped or arrived without a timestamp, so a
+   * timestamp before the first kept change can't be answered from the history.
+   */
+  complete: boolean;
 }
 
 export interface SkillActivationTrackerOptions {
@@ -45,13 +62,17 @@ export interface SkillActivationTrackerOptions {
  * until then the run open when the subagent first appeared; later prompts,
  * idle gaps, and skills on the main agent don't move it. A main-agent call
  * whose start was seen keeps the run open at its start, since its record can
- * arrive after a later prompt.
+ * arrive after a later prompt. `runAt` looks up the main run open at a given
+ * time, so a reply takes the run it was written in even when the prompt that
+ * ends that run is read first.
  */
 export class SkillActivationTracker implements Resettable {
   /** Per session, per agent; `null` pins a subagent that appeared outside any run. */
   private readonly sessions = new Map<string, Map<string, SkillStamp | null>>();
   private readonly lastActivity = new Map<string, number>();
   private readonly promptedSessions = new Set<string>();
+  /** The main agent's run changes per session, for `runAt`. */
+  private readonly runHistory = new Map<string, RunHistory>();
   /** Runs a subagent's own Skill call opened, which a spawn pin must not replace. */
   private readonly subagentOpenedRuns = new WeakSet<SkillStamp>();
   /** The main agent's open run when each call started, by session and toolUseId. */
@@ -76,6 +97,7 @@ export class SkillActivationTracker implements Resettable {
           this.sessions.delete(oldest);
           this.lastActivity.delete(oldest);
           this.promptedSessions.delete(oldest);
+          this.runHistory.delete(oldest);
         }
       }
       runs = new Map();
@@ -102,7 +124,8 @@ export class SkillActivationTracker implements Resettable {
 
   recordToolCall(record: ToolCallRecord): SkillStamp | null {
     const runs = this.runsFor(record.sessionId);
-    this.closeMainRunAfterIdleGap(record.sessionId ?? NULL_SESSION_KEY, runs, record);
+    const sessionKey = record.sessionId ?? NULL_SESSION_KEY;
+    this.closeMainRunAfterIdleGap(sessionKey, runs, record);
     const agentKey = record.agentId ?? MAIN_AGENT_KEY;
     if (agentKey !== MAIN_AGENT_KEY && !runs.has(agentKey)) {
       admitAgent(runs, agentKey, runs.get(MAIN_AGENT_KEY) ?? null);
@@ -125,6 +148,7 @@ export class SkillActivationTracker implements Resettable {
         ...(open && { parentRunId: open.runId }),
       };
       runs.set(agentKey, stamp);
+      if (agentKey === MAIN_AGENT_KEY) this.recordRunChange(sessionKey, record.timestamp, stamp);
       if (agentKey !== MAIN_AGENT_KEY) this.subagentOpenedRuns.add(stamp);
       this.options.onRunOpened?.(stamp, {
         sessionId: record.sessionId ?? null,
@@ -191,6 +215,7 @@ export class SkillActivationTracker implements Resettable {
       this.idleGapEnds(sessionKey, record.timestamp)
     ) {
       runs.set(MAIN_AGENT_KEY, null);
+      this.recordRunChange(sessionKey, record.timestamp, null);
       this.options.onRunIdleClosed?.(open, record.timestamp);
     }
     const last = this.lastActivity.get(sessionKey);
@@ -216,9 +241,49 @@ export class SkillActivationTracker implements Resettable {
       : null;
     this.runsFor(sessionId).set(MAIN_AGENT_KEY, stamp);
     const sessionKey = sessionId ?? NULL_SESSION_KEY;
+    this.recordRunChange(sessionKey, timestamp, stamp);
     this.promptedSessions.add(sessionKey);
     if (stamp) this.options.onRunOpened?.(stamp, { sessionId: sessionId ?? null, timestamp });
     return stamp;
+  }
+
+  /**
+   * The main agent's run open in a session at `timestamp`, the time a report
+   * was written. Falls back to the live run when no timestamp is given, or
+   * when the recorded changes can't answer for that time.
+   */
+  runAt(sessionId: string | null | undefined, timestamp: number | undefined): SkillStamp | null {
+    const history = this.runHistory.get(sessionId ?? NULL_SESSION_KEY);
+    if (timestamp === undefined || history === undefined) return this.openRun(sessionId);
+    let i = history.changes.length - 1;
+    while (i >= 0 && history.changes[i].at > timestamp) i--;
+    if (i >= 0) return history.changes[i].stamp;
+    return history.complete ? null : this.openRun(sessionId);
+  }
+
+  /** Keeps a session's main-agent run changes in time order, bounded to the most recent. */
+  private recordRunChange(
+    sessionKey: string,
+    at: number | undefined,
+    stamp: SkillStamp | null,
+  ): void {
+    let history = this.runHistory.get(sessionKey);
+    if (history === undefined) {
+      history = { changes: [], complete: true };
+      this.runHistory.set(sessionKey, history);
+    }
+    if (at === undefined) {
+      history.changes.splice(0);
+      history.complete = false;
+      return;
+    }
+    let i = history.changes.length;
+    while (i > 0 && history.changes[i - 1].at > at) i--;
+    history.changes.splice(i, 0, { at, stamp });
+    if (history.changes.length > MAX_RUN_CHANGES) {
+      history.changes.shift();
+      history.complete = false;
+    }
   }
 
   getMetrics(sessionId?: string): SkillActivationMetrics {
@@ -236,6 +301,7 @@ export class SkillActivationTracker implements Resettable {
     this.sessions.clear();
     this.lastActivity.clear();
     this.promptedSessions.clear();
+    this.runHistory.clear();
   }
 }
 

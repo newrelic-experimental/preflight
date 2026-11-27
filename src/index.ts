@@ -2665,9 +2665,9 @@ async function main(): Promise<void> {
         // are priced for that session's rollup only. --local owns no single
         // session and keeps folding everything.
         const isOwnEvent = isForThisEngine(tokenEvent.sessionId);
-        const openRun = skillActivationTracker.openRun(tokenEvent.sessionId);
+        const replyRun = skillActivationTracker.runAt(tokenEvent.sessionId, tokenEvent.timestamp);
         runOrHold(tokenEvent.sessionId, () => {
-          const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent, openRun);
+          const closedTurn = turnCostAttributor.recordTokenEvent(tokenEvent, replyRun);
           skillRunLedger.recordClosedTurn(closedTurn);
           if (isOwnEvent) capturedNrIngest?.ingestTurnCost(closedTurn);
         });
